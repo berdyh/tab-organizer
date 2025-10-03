@@ -5,19 +5,34 @@ import json
 import hashlib
 import base64
 import re
+import uuid
+import secrets
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, field, asdict
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, parse_qs
 import asyncio
 import aiohttp
+from concurrent.futures import ThreadPoolExecutor
+import queue
+import threading
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel, HttpUrl
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import structlog
+
+# Import browser automation libraries
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 structlog.configure(
     processors=[
@@ -57,6 +72,46 @@ class DomainAuthMapping:
     success_count: int = 0
     failure_count: int = 0
 
+@dataclass
+class AuthSession:
+    """Represents an active authentication session."""
+    session_id: str
+    domain: str
+    auth_method: str
+    cookies: Dict[str, Any] = field(default_factory=dict)
+    headers: Dict[str, str] = field(default_factory=dict)
+    tokens: Dict[str, str] = field(default_factory=dict)  # OAuth tokens, JWT, etc.
+    created_at: datetime = field(default_factory=datetime.now)
+    expires_at: Optional[datetime] = None
+    last_used: datetime = field(default_factory=datetime.now)
+    is_active: bool = True
+    user_agent: Optional[str] = None
+
+@dataclass
+class OAuthConfig:
+    """OAuth 2.0 configuration for a provider."""
+    provider: str
+    client_id: str
+    client_secret: str
+    authorization_url: str
+    token_url: str
+    redirect_uri: str
+    scope: List[str] = field(default_factory=list)
+    additional_params: Dict[str, str] = field(default_factory=dict)
+
+@dataclass
+class AuthenticationTask:
+    """Represents a queued authentication task."""
+    task_id: str
+    domain: str
+    auth_method: str
+    credentials: Dict[str, Any]
+    priority: int = 1
+    created_at: datetime = field(default_factory=datetime.now)
+    status: str = "pending"  # pending, processing, completed, failed
+    result: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+
 # Pydantic Models for API
 class URLAnalysisRequest(BaseModel):
     url: HttpUrl
@@ -76,6 +131,33 @@ class AuthDetectionResponse(BaseModel):
     confidence: float
     indicators: List[str]
     recommended_action: str
+
+class InteractiveAuthRequest(BaseModel):
+    domain: str
+    auth_method: str
+    credentials: Dict[str, Any]
+    login_url: str
+    browser_type: str = "chrome"  # chrome, firefox, playwright
+    headless: bool = True
+    timeout: int = 30
+
+class OAuthAuthRequest(BaseModel):
+    domain: str
+    provider: str
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+    scope: Optional[List[str]] = None
+
+class SessionRequest(BaseModel):
+    domain: str
+    session_data: Optional[Dict[str, Any]] = None
+
+class AuthTaskResponse(BaseModel):
+    task_id: str
+    status: str
+    message: str
+    session_id: Optional[str] = None
 
 # Core Classes
 class AuthenticationDetector:
@@ -345,10 +427,631 @@ class DomainAuthMapper:
         """Get all domain authentication mappings."""
         return self.domain_mappings.copy()
 
+class InteractiveAuthenticator:
+    """Handles popup-based authentication using browser automation."""
+    
+    def __init__(self):
+        self.active_sessions: Dict[str, AuthSession] = {}
+        self.browser_pool = {}
+        self.max_concurrent_browsers = 5
+        
+    async def authenticate_with_popup(self, domain: str, auth_method: str, 
+                                    credentials: Dict[str, Any], login_url: str,
+                                    browser_type: str = "chrome", headless: bool = True,
+                                    timeout: int = 30) -> Dict[str, Any]:
+        """Perform authentication using browser automation."""
+        try:
+            if browser_type == "playwright":
+                return await self._authenticate_with_playwright(
+                    domain, auth_method, credentials, login_url, headless, timeout
+                )
+            else:
+                return await self._authenticate_with_selenium(
+                    domain, auth_method, credentials, login_url, browser_type, headless, timeout
+                )
+                
+        except Exception as e:
+            logger.error("Interactive authentication failed", 
+                        domain=domain, error=str(e), auth_method=auth_method)
+            raise HTTPException(status_code=500, detail=f"Authentication failed: {str(e)}")
+    
+    async def _authenticate_with_playwright(self, domain: str, auth_method: str,
+                                          credentials: Dict[str, Any], login_url: str,
+                                          headless: bool, timeout: int) -> Dict[str, Any]:
+        """Authenticate using Playwright."""
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=headless)
+            context = await browser.new_context()
+            page = await context.new_page()
+            
+            try:
+                # Navigate to login page
+                await page.goto(login_url, timeout=timeout * 1000)
+                await page.wait_for_load_state('networkidle')
+                
+                if auth_method == "form":
+                    success = await self._handle_form_auth_playwright(page, credentials, timeout)
+                elif auth_method == "oauth":
+                    success = await self._handle_oauth_playwright(page, credentials, timeout)
+                else:
+                    raise ValueError(f"Unsupported auth method: {auth_method}")
+                
+                if success:
+                    # Extract session data
+                    cookies = await context.cookies()
+                    session_data = {
+                        'cookies': {cookie['name']: cookie['value'] for cookie in cookies},
+                        'user_agent': await page.evaluate('navigator.userAgent'),
+                        'current_url': page.url
+                    }
+                    
+                    # Create session
+                    session_id = self._create_session(domain, auth_method, session_data)
+                    
+                    return {
+                        'success': True,
+                        'session_id': session_id,
+                        'message': 'Authentication successful',
+                        'session_data': session_data
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'message': 'Authentication failed - invalid credentials or form not found'
+                    }
+                    
+            finally:
+                await browser.close()
+    
+    async def _authenticate_with_selenium(self, domain: str, auth_method: str,
+                                        credentials: Dict[str, Any], login_url: str,
+                                        browser_type: str, headless: bool, timeout: int) -> Dict[str, Any]:
+        """Authenticate using Selenium."""
+        driver = None
+        try:
+            # Setup browser options
+            if browser_type == "chrome":
+                options = ChromeOptions()
+                if headless:
+                    options.add_argument("--headless")
+                options.add_argument("--no-sandbox")
+                options.add_argument("--disable-dev-shm-usage")
+                driver = webdriver.Chrome(options=options)
+            elif browser_type == "firefox":
+                options = FirefoxOptions()
+                if headless:
+                    options.add_argument("--headless")
+                driver = webdriver.Firefox(options=options)
+            else:
+                raise ValueError(f"Unsupported browser type: {browser_type}")
+            
+            driver.set_page_load_timeout(timeout)
+            driver.implicitly_wait(10)
+            
+            # Navigate to login page
+            driver.get(login_url)
+            
+            if auth_method == "form":
+                success = self._handle_form_auth_selenium(driver, credentials, timeout)
+            elif auth_method == "oauth":
+                success = self._handle_oauth_selenium(driver, credentials, timeout)
+            else:
+                raise ValueError(f"Unsupported auth method: {auth_method}")
+            
+            if success:
+                # Extract session data
+                cookies = {cookie['name']: cookie['value'] for cookie in driver.get_cookies()}
+                session_data = {
+                    'cookies': cookies,
+                    'user_agent': driver.execute_script("return navigator.userAgent;"),
+                    'current_url': driver.current_url
+                }
+                
+                # Create session
+                session_id = self._create_session(domain, auth_method, session_data)
+                
+                return {
+                    'success': True,
+                    'session_id': session_id,
+                    'message': 'Authentication successful',
+                    'session_data': session_data
+                }
+            else:
+                return {
+                    'success': False,
+                    'message': 'Authentication failed - invalid credentials or form not found'
+                }
+                
+        finally:
+            if driver:
+                driver.quit()
+    
+    async def _handle_form_auth_playwright(self, page: Page, credentials: Dict[str, Any], timeout: int) -> bool:
+        """Handle form-based authentication with Playwright."""
+        try:
+            # Common selectors for username/email fields
+            username_selectors = [
+                'input[name="username"]', 'input[name="email"]', 'input[name="login"]',
+                'input[type="email"]', 'input[id*="username"]', 'input[id*="email"]',
+                'input[placeholder*="username"]', 'input[placeholder*="email"]'
+            ]
+            
+            # Common selectors for password fields
+            password_selectors = [
+                'input[type="password"]', 'input[name="password"]', 'input[name="pass"]',
+                'input[id*="password"]', 'input[id*="pass"]'
+            ]
+            
+            # Find and fill username/email field
+            username_filled = False
+            for selector in username_selectors:
+                try:
+                    await page.wait_for_selector(selector, timeout=5000)
+                    await page.fill(selector, credentials.get('username', credentials.get('email', '')))
+                    username_filled = True
+                    break
+                except:
+                    continue
+            
+            if not username_filled:
+                logger.warning("Username field not found", selectors=username_selectors)
+                return False
+            
+            # Find and fill password field
+            password_filled = False
+            for selector in password_selectors:
+                try:
+                    await page.wait_for_selector(selector, timeout=5000)
+                    await page.fill(selector, credentials.get('password', ''))
+                    password_filled = True
+                    break
+                except:
+                    continue
+            
+            if not password_filled:
+                logger.warning("Password field not found", selectors=password_selectors)
+                return False
+            
+            # Submit form
+            submit_selectors = [
+                'button[type="submit"]', 'input[type="submit"]', 'button:has-text("Login")',
+                'button:has-text("Sign in")', 'button:has-text("Log in")', 'form button'
+            ]
+            
+            for selector in submit_selectors:
+                try:
+                    await page.click(selector)
+                    break
+                except:
+                    continue
+            
+            # Wait for navigation or success indicators
+            try:
+                await page.wait_for_load_state('networkidle', timeout=timeout * 1000)
+                
+                # Check for success indicators (absence of error messages, presence of user content)
+                error_indicators = await page.query_selector_all('text=/error|invalid|incorrect|failed/i')
+                if len(error_indicators) == 0:
+                    return True
+                    
+            except TimeoutException:
+                pass
+            
+            return False
+            
+        except Exception as e:
+            logger.error("Form authentication failed", error=str(e))
+            return False
+    
+    def _handle_form_auth_selenium(self, driver, credentials: Dict[str, Any], timeout: int) -> bool:
+        """Handle form-based authentication with Selenium."""
+        try:
+            wait = WebDriverWait(driver, timeout)
+            
+            # Common selectors for username/email fields
+            username_selectors = [
+                (By.NAME, "username"), (By.NAME, "email"), (By.NAME, "login"),
+                (By.CSS_SELECTOR, 'input[type="email"]'), (By.ID, "username"), (By.ID, "email")
+            ]
+            
+            # Find and fill username/email field
+            username_element = None
+            for by, selector in username_selectors:
+                try:
+                    username_element = wait.until(EC.presence_of_element_located((by, selector)))
+                    break
+                except TimeoutException:
+                    continue
+            
+            if not username_element:
+                logger.warning("Username field not found")
+                return False
+            
+            username_element.clear()
+            username_element.send_keys(credentials.get('username', credentials.get('email', '')))
+            
+            # Find and fill password field
+            password_element = None
+            password_selectors = [
+                (By.CSS_SELECTOR, 'input[type="password"]'), (By.NAME, "password"), (By.NAME, "pass")
+            ]
+            
+            for by, selector in password_selectors:
+                try:
+                    password_element = driver.find_element(by, selector)
+                    break
+                except:
+                    continue
+            
+            if not password_element:
+                logger.warning("Password field not found")
+                return False
+            
+            password_element.clear()
+            password_element.send_keys(credentials.get('password', ''))
+            
+            # Submit form
+            submit_selectors = [
+                (By.CSS_SELECTOR, 'button[type="submit"]'), (By.CSS_SELECTOR, 'input[type="submit"]'),
+                (By.XPATH, "//button[contains(text(), 'Login') or contains(text(), 'Sign in')]")
+            ]
+            
+            for by, selector in submit_selectors:
+                try:
+                    submit_element = driver.find_element(by, selector)
+                    submit_element.click()
+                    break
+                except:
+                    continue
+            
+            # Wait for page to load and check for success
+            time.sleep(3)  # Give time for redirect
+            
+            # Check for error messages
+            error_selectors = [
+                "//div[contains(@class, 'error')]", "//span[contains(@class, 'error')]",
+                "//div[contains(text(), 'Invalid') or contains(text(), 'Error')]"
+            ]
+            
+            for selector in error_selectors:
+                try:
+                    error_element = driver.find_element(By.XPATH, selector)
+                    if error_element.is_displayed():
+                        return False
+                except:
+                    continue
+            
+            return True
+            
+        except Exception as e:
+            logger.error("Selenium form authentication failed", error=str(e))
+            return False
+    
+    async def _handle_oauth_playwright(self, page: Page, credentials: Dict[str, Any], timeout: int) -> bool:
+        """Handle OAuth authentication with Playwright."""
+        # This is a simplified OAuth handler - in practice, you'd need provider-specific logic
+        try:
+            # Look for OAuth buttons
+            oauth_selectors = [
+                'button:has-text("Sign in with Google")', 'button:has-text("Continue with Google")',
+                'button:has-text("Sign in with GitHub")', 'button:has-text("Continue with GitHub")',
+                'a[href*="oauth"]', 'button[class*="oauth"]'
+            ]
+            
+            for selector in oauth_selectors:
+                try:
+                    await page.click(selector)
+                    await page.wait_for_load_state('networkidle', timeout=timeout * 1000)
+                    return True
+                except:
+                    continue
+            
+            return False
+            
+        except Exception as e:
+            logger.error("OAuth authentication failed", error=str(e))
+            return False
+    
+    def _handle_oauth_selenium(self, driver, credentials: Dict[str, Any], timeout: int) -> bool:
+        """Handle OAuth authentication with Selenium."""
+        # Simplified OAuth handler
+        try:
+            oauth_selectors = [
+                (By.XPATH, "//button[contains(text(), 'Sign in with')]"),
+                (By.CSS_SELECTOR, "button[class*='oauth']"),
+                (By.CSS_SELECTOR, "a[href*='oauth']")
+            ]
+            
+            for by, selector in oauth_selectors:
+                try:
+                    oauth_element = driver.find_element(by, selector)
+                    oauth_element.click()
+                    time.sleep(5)  # Wait for OAuth flow
+                    return True
+                except:
+                    continue
+            
+            return False
+            
+        except Exception as e:
+            logger.error("Selenium OAuth authentication failed", error=str(e))
+            return False
+    
+    def _create_session(self, domain: str, auth_method: str, session_data: Dict[str, Any]) -> str:
+        """Create and store an authentication session."""
+        session_id = str(uuid.uuid4())
+        
+        session = AuthSession(
+            session_id=session_id,
+            domain=domain,
+            auth_method=auth_method,
+            cookies=session_data.get('cookies', {}),
+            headers={'User-Agent': session_data.get('user_agent', '')},
+            expires_at=datetime.now() + timedelta(hours=24)  # Default 24h expiry
+        )
+        
+        self.active_sessions[session_id] = session
+        
+        logger.info("Authentication session created", 
+                   session_id=session_id, domain=domain, auth_method=auth_method)
+        
+        return session_id
+    
+    def get_session(self, session_id: str) -> Optional[AuthSession]:
+        """Retrieve an active session."""
+        session = self.active_sessions.get(session_id)
+        if session and session.is_active:
+            if session.expires_at and datetime.now() > session.expires_at:
+                session.is_active = False
+                return None
+            session.last_used = datetime.now()
+            return session
+        return None
+    
+    def invalidate_session(self, session_id: str) -> bool:
+        """Invalidate an authentication session."""
+        if session_id in self.active_sessions:
+            self.active_sessions[session_id].is_active = False
+            return True
+        return False
+    
+    def cleanup_expired_sessions(self):
+        """Remove expired sessions."""
+        now = datetime.now()
+        expired_sessions = [
+            sid for sid, session in self.active_sessions.items()
+            if session.expires_at and now > session.expires_at
+        ]
+        
+        for session_id in expired_sessions:
+            del self.active_sessions[session_id]
+            
+        logger.info("Cleaned up expired sessions", count=len(expired_sessions))
+
+class OAuthFlowHandler:
+    """Handles OAuth 2.0 authentication flows."""
+    
+    def __init__(self):
+        self.oauth_configs: Dict[str, OAuthConfig] = {}
+        self.active_flows: Dict[str, Dict[str, Any]] = {}
+        
+    def register_oauth_provider(self, provider: str, config: OAuthConfig):
+        """Register an OAuth provider configuration."""
+        self.oauth_configs[provider] = config
+        logger.info("OAuth provider registered", provider=provider)
+    
+    def initiate_oauth_flow(self, provider: str, state: Optional[str] = None) -> Dict[str, Any]:
+        """Initiate OAuth 2.0 authorization flow."""
+        if provider not in self.oauth_configs:
+            raise HTTPException(status_code=400, detail=f"OAuth provider {provider} not configured")
+        
+        config = self.oauth_configs[provider]
+        
+        # Generate state parameter for CSRF protection
+        if not state:
+            state = secrets.token_urlsafe(32)
+        
+        # Build authorization URL
+        auth_params = {
+            'client_id': config.client_id,
+            'redirect_uri': config.redirect_uri,
+            'scope': ' '.join(config.scope) if config.scope else '',
+            'state': state,
+            'response_type': 'code'
+        }
+        auth_params.update(config.additional_params)
+        
+        auth_url = f"{config.authorization_url}?" + "&".join([
+            f"{k}={v}" for k, v in auth_params.items() if v
+        ])
+        
+        # Store flow state
+        flow_id = str(uuid.uuid4())
+        self.active_flows[flow_id] = {
+            'provider': provider,
+            'state': state,
+            'created_at': datetime.now(),
+            'config': config
+        }
+        
+        return {
+            'flow_id': flow_id,
+            'authorization_url': auth_url,
+            'state': state
+        }
+    
+    async def complete_oauth_flow(self, flow_id: str, authorization_code: str, 
+                                state: str) -> Dict[str, Any]:
+        """Complete OAuth 2.0 flow by exchanging code for tokens."""
+        if flow_id not in self.active_flows:
+            raise HTTPException(status_code=400, detail="Invalid or expired OAuth flow")
+        
+        flow = self.active_flows[flow_id]
+        
+        # Verify state parameter
+        if flow['state'] != state:
+            raise HTTPException(status_code=400, detail="Invalid state parameter")
+        
+        config = flow['config']
+        
+        # Exchange authorization code for access token
+        token_data = {
+            'grant_type': 'authorization_code',
+            'client_id': config.client_id,
+            'client_secret': config.client_secret,
+            'code': authorization_code,
+            'redirect_uri': config.redirect_uri
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(config.token_url, data=token_data) as response:
+                if response.status == 200:
+                    tokens = await response.json()
+                    
+                    # Clean up flow
+                    del self.active_flows[flow_id]
+                    
+                    return {
+                        'success': True,
+                        'tokens': tokens,
+                        'provider': flow['provider']
+                    }
+                else:
+                    error_text = await response.text()
+                    logger.error("OAuth token exchange failed", 
+                               status=response.status, error=error_text)
+                    raise HTTPException(status_code=400, detail="Token exchange failed")
+
+class AuthenticationQueue:
+    """Manages queued authentication tasks with parallel processing."""
+    
+    def __init__(self, max_workers: int = 3):
+        self.task_queue = queue.PriorityQueue()
+        self.active_tasks: Dict[str, AuthenticationTask] = {}
+        self.completed_tasks: Dict[str, AuthenticationTask] = {}
+        self.max_workers = max_workers
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.authenticator = InteractiveAuthenticator()
+        self._running = False
+        self._worker_threads = []
+    
+    def start_processing(self):
+        """Start the authentication queue processing."""
+        if self._running:
+            return
+        
+        self._running = True
+        for i in range(self.max_workers):
+            thread = threading.Thread(target=self._worker_loop, daemon=True)
+            thread.start()
+            self._worker_threads.append(thread)
+        
+        logger.info("Authentication queue processing started", workers=self.max_workers)
+    
+    def stop_processing(self):
+        """Stop the authentication queue processing."""
+        self._running = False
+        logger.info("Authentication queue processing stopped")
+    
+    def queue_authentication(self, domain: str, auth_method: str, 
+                           credentials: Dict[str, Any], login_url: str,
+                           priority: int = 1) -> str:
+        """Queue an authentication task."""
+        task_id = str(uuid.uuid4())
+        
+        task = AuthenticationTask(
+            task_id=task_id,
+            domain=domain,
+            auth_method=auth_method,
+            credentials=credentials,
+            priority=priority
+        )
+        
+        # Add login_url to credentials for processing
+        task.credentials['login_url'] = login_url
+        
+        self.active_tasks[task_id] = task
+        self.task_queue.put((-priority, task_id))  # Negative for max-heap behavior
+        
+        logger.info("Authentication task queued", task_id=task_id, domain=domain)
+        return task_id
+    
+    def get_task_status(self, task_id: str) -> Optional[AuthenticationTask]:
+        """Get the status of a queued task."""
+        if task_id in self.active_tasks:
+            return self.active_tasks[task_id]
+        elif task_id in self.completed_tasks:
+            return self.completed_tasks[task_id]
+        return None
+    
+    def _worker_loop(self):
+        """Worker thread loop for processing authentication tasks."""
+        while self._running:
+            try:
+                # Get task from queue with timeout
+                try:
+                    priority, task_id = self.task_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                
+                if task_id not in self.active_tasks:
+                    continue
+                
+                task = self.active_tasks[task_id]
+                task.status = "processing"
+                
+                logger.info("Processing authentication task", task_id=task_id, domain=task.domain)
+                
+                # Process the authentication task
+                try:
+                    # Run authentication in thread pool to avoid blocking
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    result = loop.run_until_complete(
+                        self.authenticator.authenticate_with_popup(
+                            domain=task.domain,
+                            auth_method=task.auth_method,
+                            credentials=task.credentials,
+                            login_url=task.credentials['login_url']
+                        )
+                    )
+                    
+                    task.result = result
+                    task.status = "completed" if result.get('success') else "failed"
+                    
+                    if not result.get('success'):
+                        task.error_message = result.get('message', 'Authentication failed')
+                    
+                    logger.info("Authentication task completed", 
+                               task_id=task_id, success=result.get('success'))
+                    
+                except Exception as e:
+                    task.status = "failed"
+                    task.error_message = str(e)
+                    logger.error("Authentication task failed", task_id=task_id, error=str(e))
+                
+                finally:
+                    # Move task to completed
+                    self.completed_tasks[task_id] = task
+                    if task_id in self.active_tasks:
+                        del self.active_tasks[task_id]
+                    
+                    self.task_queue.task_done()
+                    
+            except Exception as e:
+                logger.error("Worker thread error", error=str(e))
+
 # Global instances
 auth_detector = AuthenticationDetector()
 credential_store = SecureCredentialStore()
 domain_mapper = DomainAuthMapper()
+interactive_auth = InteractiveAuthenticator()
+oauth_handler = OAuthFlowHandler()
+auth_queue = AuthenticationQueue()
+
+# Start the authentication queue processing
+auth_queue.start_processing()
 
 app = FastAPI(
     title="Authentication Service",
@@ -566,3 +1269,264 @@ async def get_domain_mapping(domain: str):
     except Exception as e:
         logger.error("Domain mapping retrieval failed", domain=domain, error=str(e))
         raise HTTPException(status_code=500, detail=f"Mapping retrieval failed: {str(e)}")
+
+# Interactive Authentication Endpoints
+
+@app.post("/api/auth/interactive", response_model=AuthTaskResponse)
+async def authenticate_interactively(request: InteractiveAuthRequest, background_tasks: BackgroundTasks):
+    """Perform interactive authentication using browser automation."""
+    try:
+        # Queue the authentication task for parallel processing
+        task_id = auth_queue.queue_authentication(
+            domain=request.domain,
+            auth_method=request.auth_method,
+            credentials=request.credentials,
+            login_url=request.login_url,
+            priority=1
+        )
+        
+        return AuthTaskResponse(
+            task_id=task_id,
+            status="queued",
+            message=f"Authentication task queued for {request.domain}"
+        )
+        
+    except Exception as e:
+        logger.error("Interactive authentication request failed", 
+                    domain=request.domain, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Authentication request failed: {str(e)}")
+
+@app.get("/api/auth/task/{task_id}")
+async def get_authentication_task_status(task_id: str):
+    """Get the status of an authentication task."""
+    try:
+        task = auth_queue.get_task_status(task_id)
+        
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        response_data = {
+            "task_id": task.task_id,
+            "domain": task.domain,
+            "auth_method": task.auth_method,
+            "status": task.status,
+            "created_at": task.created_at.isoformat(),
+            "error_message": task.error_message
+        }
+        
+        if task.result:
+            response_data["result"] = task.result
+            if task.result.get('session_id'):
+                response_data["session_id"] = task.result['session_id']
+        
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Task status retrieval failed", task_id=task_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Status retrieval failed: {str(e)}")
+
+@app.post("/api/auth/oauth/initiate")
+async def initiate_oauth_flow(request: OAuthAuthRequest):
+    """Initiate OAuth 2.0 authentication flow."""
+    try:
+        # Register OAuth provider configuration
+        oauth_config = OAuthConfig(
+            provider=request.provider,
+            client_id=request.client_id,
+            client_secret=request.client_secret,
+            authorization_url=f"https://accounts.{request.provider}.com/oauth/authorize",  # Simplified
+            token_url=f"https://accounts.{request.provider}.com/oauth/token",  # Simplified
+            redirect_uri=request.redirect_uri,
+            scope=request.scope or []
+        )
+        
+        oauth_handler.register_oauth_provider(request.provider, oauth_config)
+        
+        # Initiate OAuth flow
+        flow_data = oauth_handler.initiate_oauth_flow(request.provider)
+        
+        return {
+            "success": True,
+            "flow_id": flow_data["flow_id"],
+            "authorization_url": flow_data["authorization_url"],
+            "state": flow_data["state"],
+            "message": f"OAuth flow initiated for {request.provider}"
+        }
+        
+    except Exception as e:
+        logger.error("OAuth flow initiation failed", provider=request.provider, error=str(e))
+        raise HTTPException(status_code=500, detail=f"OAuth initiation failed: {str(e)}")
+
+@app.post("/api/auth/oauth/callback")
+async def oauth_callback(flow_id: str, code: str, state: str):
+    """Handle OAuth callback and complete authentication."""
+    try:
+        result = await oauth_handler.complete_oauth_flow(flow_id, code, state)
+        
+        if result['success']:
+            # Create session with OAuth tokens
+            session_data = {
+                'tokens': result['tokens'],
+                'provider': result['provider'],
+                'auth_method': 'oauth'
+            }
+            
+            session_id = interactive_auth._create_session(
+                domain=result['provider'],  # Use provider as domain for OAuth
+                auth_method='oauth',
+                session_data=session_data
+            )
+            
+            return {
+                "success": True,
+                "session_id": session_id,
+                "provider": result['provider'],
+                "message": "OAuth authentication completed successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "OAuth authentication failed"
+            }
+            
+    except Exception as e:
+        logger.error("OAuth callback failed", flow_id=flow_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"OAuth callback failed: {str(e)}")
+
+# Session Management Endpoints
+
+@app.get("/api/auth/session/{session_id}")
+async def get_session_info(session_id: str):
+    """Get information about an authentication session."""
+    try:
+        session = interactive_auth.get_session(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or expired")
+        
+        return {
+            "session_id": session.session_id,
+            "domain": session.domain,
+            "auth_method": session.auth_method,
+            "created_at": session.created_at.isoformat(),
+            "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+            "last_used": session.last_used.isoformat(),
+            "is_active": session.is_active,
+            "has_cookies": len(session.cookies) > 0,
+            "has_tokens": len(session.tokens) > 0
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Session info retrieval failed", session_id=session_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Session retrieval failed: {str(e)}")
+
+@app.post("/api/auth/session/{session_id}/renew")
+async def renew_session(session_id: str):
+    """Renew an authentication session."""
+    try:
+        session = interactive_auth.get_session(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or expired")
+        
+        # Extend session expiry
+        session.expires_at = datetime.now() + timedelta(hours=24)
+        session.last_used = datetime.now()
+        
+        return {
+            "success": True,
+            "session_id": session_id,
+            "new_expires_at": session.expires_at.isoformat(),
+            "message": "Session renewed successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Session renewal failed", session_id=session_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Session renewal failed: {str(e)}")
+
+@app.delete("/api/auth/session/{session_id}")
+async def invalidate_session(session_id: str):
+    """Invalidate an authentication session."""
+    try:
+        success = interactive_auth.invalidate_session(session_id)
+        
+        if success:
+            return {
+                "success": True,
+                "message": f"Session {session_id} invalidated successfully"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Session invalidation failed", session_id=session_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Session invalidation failed: {str(e)}")
+
+@app.get("/api/auth/sessions")
+async def list_active_sessions():
+    """List all active authentication sessions."""
+    try:
+        sessions = []
+        for session_id, session in interactive_auth.active_sessions.items():
+            if session.is_active:
+                sessions.append({
+                    "session_id": session_id,
+                    "domain": session.domain,
+                    "auth_method": session.auth_method,
+                    "created_at": session.created_at.isoformat(),
+                    "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+                    "last_used": session.last_used.isoformat()
+                })
+        
+        return {
+            "sessions": sessions,
+            "total_count": len(sessions)
+        }
+        
+    except Exception as e:
+        logger.error("Session listing failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Session listing failed: {str(e)}")
+
+@app.post("/api/auth/sessions/cleanup")
+async def cleanup_expired_sessions():
+    """Clean up expired authentication sessions."""
+    try:
+        initial_count = len(interactive_auth.active_sessions)
+        interactive_auth.cleanup_expired_sessions()
+        final_count = len(interactive_auth.active_sessions)
+        cleaned_count = initial_count - final_count
+        
+        return {
+            "success": True,
+            "cleaned_sessions": cleaned_count,
+            "remaining_sessions": final_count,
+            "message": f"Cleaned up {cleaned_count} expired sessions"
+        }
+        
+    except Exception as e:
+        logger.error("Session cleanup failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Session cleanup failed: {str(e)}")
+
+@app.get("/api/auth/queue/status")
+async def get_queue_status():
+    """Get authentication queue status."""
+    try:
+        return {
+            "active_tasks": len(auth_queue.active_tasks),
+            "completed_tasks": len(auth_queue.completed_tasks),
+            "queue_size": auth_queue.task_queue.qsize(),
+            "max_workers": auth_queue.max_workers,
+            "is_running": auth_queue._running
+        }
+        
+    except Exception as e:
+        logger.error("Queue status retrieval failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Queue status failed: {str(e)}")
