@@ -1,0 +1,7 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+scrapy==2.11.0
+beautifulsoup4==4.12.2
+trafilatura==1.6.4
+requests==2.31.0
+structlog==23.2.0

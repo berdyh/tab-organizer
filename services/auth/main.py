@@ -1,0 +1,42 @@
+"""Authentication Service - Handles website authentication requirements."""
+
+import time
+from fastapi import FastAPI
+import structlog
+
+structlog.configure(
+    processors=[
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer()
+    ],
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+logger = structlog.get_logger()
+
+app = FastAPI(
+    title="Authentication Service",
+    description="Handles website authentication requirements and credential management",
+    version="1.0.0"
+)
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "service": "auth",
+        "timestamp": time.time()
+    }
+
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {
+        "service": "Authentication Service",
+        "version": "1.0.0",
+        "status": "running"
+    }

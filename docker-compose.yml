@@ -1,0 +1,302 @@
+version: '3.8'
+
+services:
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - scraping_network
+    restart: unless-stopped
+
+  # Ollama LLM Service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles:
+      - gpu
+
+  # Ollama CPU-only version
+  ollama-cpu:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    profiles:
+      - cpu
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_URL=http://ollama:11434
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+  # URL Input Service
+  url-input-service:
+    build:
+      context: ./services/url-input
+      dockerfile: Dockerfile
+    container_name: url-input-service
+    ports:
+      - "8081:8081"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+  # Authentication Service
+  auth-service:
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile
+    container_name: auth-service
+    ports:
+      - "8082:8082"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - auth_credentials:/app/credentials
+
+  # Web Scraper Service
+  scraper-service:
+    build:
+      context: ./services/scraper
+      dockerfile: Dockerfile
+    container_name: scraper-service
+    ports:
+      - "8083:8083"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+      - AUTH_SERVICE_URL=http://auth-service:8082
+    depends_on:
+      - auth-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+  # Content Analyzer Service
+  analyzer-service:
+    build:
+      context: ./services/analyzer
+      dockerfile: Dockerfile
+    container_name: analyzer-service
+    ports:
+      - "8084:8084"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_URL=http://ollama:11434
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+  # Clustering Service
+  clustering-service:
+    build:
+      context: ./services/clustering
+      dockerfile: Dockerfile
+    container_name: clustering-service
+    ports:
+      - "8085:8085"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_URL=http://ollama:11434
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+  # Export Service
+  export-service:
+    build:
+      context: ./services/export
+      dockerfile: Dockerfile
+    container_name: export-service
+    ports:
+      - "8086:8086"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+  # Session Management Service
+  session-service:
+    build:
+      context: ./services/session
+      dockerfile: Dockerfile
+    container_name: session-service
+    ports:
+      - "8087:8087"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8087/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+networks:
+  scraping_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  qdrant_storage:
+    driver: local
+  ollama_models:
+    driver: local
+  auth_credentials:
+    driver: local
