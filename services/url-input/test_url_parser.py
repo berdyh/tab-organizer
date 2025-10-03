@@ -3,7 +3,8 @@
 import pytest
 import json
 from io import StringIO
-from main import URLValidator, URLParser, InputFormatDetector, URLEntry
+from main import (URLValidator, URLParser, InputFormatDetector, URLEntry, 
+                  URLEnricher, URLDeduplicator, BatchProcessor, URLMetadata)
 
 
 class TestURLValidator:
@@ -175,7 +176,8 @@ class TestURLParser:
         first_url = urls[0]
         assert first_url.category == "test"
         assert first_url.priority == "high"
-        assert "source" in first_url.source_metadata
+        assert "metadata" in first_url.source_metadata
+        assert first_url.source_metadata["metadata"]["source"] == "test_data"
     
     def test_parse_json_file_invalid(self):
         """Test parsing invalid JSON."""
@@ -220,7 +222,172 @@ http://test.org,Test site
     def test_parse_csv_file_invalid(self):
         """Test parsing invalid CSV."""
         with pytest.raises(ValueError, match="Invalid CSV format"):
-            URLParser.parse_csv_file("invalid,csv,content\nwith,mismatched,columns,extra")
+            URLParser.parse_csv_file("\x00\x01\x02invalid binary data")
+
+
+class TestURLEnricher:
+    """Test URL enrichment functionality."""
+    
+    def test_extract_metadata(self):
+        """Test URL metadata extraction."""
+        url = "https://subdomain.example.com:8080/path/to/page?param1=value1&param2=value2#section"
+        metadata = URLEnricher.extract_metadata(url)
+        
+        assert isinstance(metadata, URLMetadata)
+        assert metadata.domain == "example.com"
+        assert metadata.subdomain == "subdomain"
+        assert metadata.path == "/path/to/page"
+        assert metadata.parameter_count == 2
+        assert metadata.path_depth == 3
+        assert metadata.port == 8080
+        assert metadata.scheme == "https"
+        assert metadata.tld == "com"
+        assert metadata.fragment == "section"
+        assert len(metadata.url_hash) == 32  # MD5 hash length
+    
+    def test_categorize_url(self):
+        """Test automatic URL categorization."""
+        test_cases = [
+            ("https://twitter.com/user", "social_media"),
+            ("https://github.com/repo", "documentation"),
+            ("https://news.example.com", "news_media"),
+            ("https://shop.example.com", "ecommerce"),
+            ("https://university.edu", "education"),
+            ("https://example.com", "general")
+        ]
+        
+        for url, expected_category in test_cases:
+            entry = URLEntry(url=url, validated=True)
+            entry.metadata = URLEnricher.extract_metadata(url)
+            category = URLEnricher.categorize_url(entry)
+            assert category == expected_category
+    
+    def test_enrich_url_entry(self):
+        """Test complete URL entry enrichment."""
+        entry = URLEntry(url="https://docs.python.org/3/tutorial/", validated=True)
+        enriched_entry = URLEnricher.enrich_url_entry(entry)
+        
+        assert enriched_entry.enriched == True
+        assert enriched_entry.metadata is not None
+        assert enriched_entry.category == "documentation"
+        assert enriched_entry.metadata.domain == "python.org"
+        assert enriched_entry.metadata.subdomain == "docs"
+
+
+class TestURLDeduplicator:
+    """Test URL deduplication functionality."""
+    
+    def test_normalize_url(self):
+        """Test URL normalization for deduplication."""
+        test_cases = [
+            ("https://example.com/page", "https://example.com/page"),
+            ("https://example.com/page/", "https://example.com/page"),
+            ("https://EXAMPLE.COM/PAGE", "https://example.com/page"),
+            ("https://example.com/page?utm_source=google", "https://example.com/page"),
+            ("https://example.com/page?param=value&utm_campaign=test", "https://example.com/page?param=value"),
+        ]
+        
+        for original, expected in test_cases:
+            normalized = URLDeduplicator.normalize_url(original)
+            assert normalized == expected
+    
+    def test_find_duplicates(self):
+        """Test duplicate detection."""
+        entries = [
+            URLEntry(url="https://example.com/page", validated=True),
+            URLEntry(url="https://example.com/page/", validated=True),
+            URLEntry(url="https://example.com/different", validated=True),
+            URLEntry(url="https://EXAMPLE.COM/page", validated=True),
+        ]
+        
+        duplicates = URLDeduplicator.find_duplicates(entries)
+        
+        # Should find one group with duplicates
+        assert len(duplicates) == 1
+        duplicate_group = list(duplicates.values())[0]
+        assert len(duplicate_group) == 3  # Three variations of the same URL
+    
+    def test_mark_duplicates(self):
+        """Test marking duplicates in URL list."""
+        entries = [
+            URLEntry(url="https://example.com/page", validated=True),
+            URLEntry(url="https://example.com/page/", validated=True),
+            URLEntry(url="https://example.com/different", validated=True),
+        ]
+        
+        marked_entries = URLDeduplicator.mark_duplicates(entries)
+        
+        # First entry should be primary, second should be marked as duplicate
+        assert marked_entries[0].duplicate_of is None
+        assert marked_entries[1].duplicate_of == "https://example.com/page"
+        assert marked_entries[2].duplicate_of is None
+    
+    def test_get_similarity_groups(self):
+        """Test grouping URLs by domain similarity."""
+        entries = [
+            URLEntry(url="https://example.com/page1", validated=True, metadata=URLEnricher.extract_metadata("https://example.com/page1")),
+            URLEntry(url="https://example.com/page2", validated=True, metadata=URLEnricher.extract_metadata("https://example.com/page2")),
+            URLEntry(url="https://test.org/page", validated=True, metadata=URLEnricher.extract_metadata("https://test.org/page")),
+        ]
+        
+        groups = URLDeduplicator.get_similarity_groups(entries)
+        
+        assert len(groups) == 2
+        assert "example.com" in groups
+        assert "test.org" in groups
+        assert len(groups["example.com"]) == 2
+        assert len(groups["test.org"]) == 1
+
+
+class TestBatchProcessor:
+    """Test batch processing functionality."""
+    
+    def test_process_urls_batch(self):
+        """Test batch processing of URLs."""
+        entries = [
+            URLEntry(url="https://example.com/page1", validated=True),
+            URLEntry(url="https://example.com/page2", validated=True),
+            URLEntry(url="https://example.com/page1", validated=True),  # Duplicate
+            URLEntry(url="invalid-url", validated=False),
+        ]
+        
+        processed = BatchProcessor.process_urls_batch(entries, batch_size=2)
+        
+        # Should have enriched valid URLs and marked duplicates
+        valid_entries = [e for e in processed if e.validated]
+        assert all(e.enriched for e in valid_entries)
+        
+        # Should have marked duplicates
+        duplicates = [e for e in processed if e.duplicate_of]
+        assert len(duplicates) == 1
+    
+    def test_get_processing_stats(self):
+        """Test processing statistics generation."""
+        entries = [
+            URLEntry(url="https://github.com/repo1", validated=True, enriched=True, category="documentation"),
+            URLEntry(url="https://github.com/repo2", validated=True, enriched=True, category="documentation"),
+            URLEntry(url="https://news.example.com", validated=True, enriched=True, category="news_media"),
+            URLEntry(url="https://github.com/repo1", validated=True, enriched=True, category="documentation", duplicate_of="https://github.com/repo1"),
+            URLEntry(url="invalid-url", validated=False),
+        ]
+        
+        # Add metadata to valid entries
+        for entry in entries:
+            if entry.validated:
+                entry.metadata = URLEnricher.extract_metadata(entry.url)
+        
+        stats = BatchProcessor.get_processing_stats(entries)
+        
+        assert stats["total_urls"] == 5
+        assert stats["valid_urls"] == 4
+        assert stats["invalid_urls"] == 1
+        assert stats["enriched_urls"] == 4
+        assert stats["duplicate_urls"] == 1
+        assert stats["unique_urls"] == 3
+        assert stats["categories"]["documentation"] == 3
+        assert stats["categories"]["news_media"] == 1
+        assert "github.com" in stats["top_domains"]
+        assert stats["processing_complete"] == True
 
 
 if __name__ == "__main__":
