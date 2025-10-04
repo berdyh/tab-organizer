@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # Test-only analyzer service that doesn't depend on external services
+  analyzer-test:
+    build:
+      context: ./services/analyzer
+      dockerfile: Dockerfile
+    container_name: analyzer-test
+    environment:
+      - TESTING=true
+      - LOG_LEVEL=DEBUG
+      - PYTHONPATH=/app
+    volumes:
+      - ./services/analyzer:/app/test_src
+      - ./config:/app/config
+    command: python -m pytest test_multi_model_integration.py -v --tb=short
+    networks:
+      - test_network
+
+  # Lightweight mock services for testing
+  mock-qdrant:
+    image: alpine:latest
+    container_name: mock-qdrant
+    command: sleep 3600
+    networks:
+      - test_network
+
+  mock-ollama:
+    image: alpine:latest
+    container_name: mock-ollama
+    command: sleep 3600
+    networks:
+      - test_network
+
+networks:
+  test_network:
+    driver: bridge
