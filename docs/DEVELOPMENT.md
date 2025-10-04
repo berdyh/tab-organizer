@@ -1,93 +1,199 @@
 # Development Guide
 
+## Table of Contents
+1. [Development Workflow](#development-workflow)
+2. [Implementation Status](#implementation-status)
+3. [Development Setup](#development-setup)
+4. [Service Development Guidelines](#service-development-guidelines)
+5. [Testing Strategy](#testing-strategy)
+6. [Code Quality Standards](#code-quality-standards)
+7. [Git Workflow](#git-workflow)
+8. [Debugging and Troubleshooting](#debugging-and-troubleshooting)
+9. [Contributing Guidelines](#contributing-guidelines)
+10. [Deployment](#deployment)
+
 ## Development Workflow
 
-This project follows a spec-driven development methodology with incremental implementation and comprehensive testing at each stage.
+This project follows a spec-driven development methodology with incremental implementation and comprehensive containerized testing at each stage.
+
+### Key Development Principles
+- **Container-First Development**: All development, testing, and deployment occurs within Docker containers
+- **Parallel Development**: Tasks are structured to allow parallel development of independent services
+- **Test-Driven Development**: Each task includes comprehensive testing requirements
+- **Incremental Delivery**: Each completed task delivers working functionality
+- **Microservice Architecture**: Independent, scalable services with clear boundaries
+
+### Development Timeline
+
+```mermaid
+gantt
+    title Implementation Timeline
+    dateFormat  YYYY-MM-DD
+    section Phase 1: Foundation
+    Docker Setup           :done, p1-1, 2024-01-01, 2024-01-07
+    Smart Model Management :active, p1-2, 2024-01-08, 2024-01-21
+    
+    section Phase 2: Core Services
+    URL Input Service      :done, p2-1, 2024-01-15, 2024-01-28
+    Authentication Service :done, p2-2, 2024-01-22, 2024-02-04
+    Web Scraper Service    :active, p2-3, 2024-01-29, 2024-02-18
+    
+    section Phase 3: AI Processing
+    Content Analysis       :p3-1, 2024-02-05, 2024-02-25
+    Clustering Service     :p3-2, 2024-02-12, 2024-03-04
+    
+    section Phase 4: User Interface
+    Web UI Development     :p4-1, 2024-02-19, 2024-03-11
+    Chatbot Integration    :p4-2, 2024-02-26, 2024-03-18
+    
+    section Phase 5: Integration
+    Export System          :p5-1, 2024-03-05, 2024-03-25
+    API Gateway            :p5-2, 2024-03-12, 2024-04-01
+    
+    section Phase 6: Finalization
+    Monitoring & Logging   :p6-1, 2024-03-19, 2024-04-08
+    Documentation & Testing:p6-2, 2024-03-26, 2024-04-15
+```
 
 ## Implementation Status
 
-### ✅ Completed Tasks
+### ✅ Completed Tasks (40% Complete)
 
 #### 1. Core Infrastructure Setup
-- [x] Docker Compose configuration for all services
-- [x] Qdrant vector database with persistent storage
-- [x] Ollama LLM service with model management
-- [x] Basic API Gateway with health checks
-- [x] Inter-service communication and networking
-- [x] Logging and monitoring infrastructure
+- [x] **Docker Compose configuration** for all 10 microservices
+- [x] **Qdrant vector database** with persistent storage and collection management
+- [x] **Ollama LLM service** with model management and hot-swapping
+- [x] **Basic API Gateway** with health checks and service discovery
+- [x] **Inter-service communication** and Docker networking
+- [x] **Logging and monitoring** infrastructure with structured logs
 
-#### 2. URL Input Service Foundation
-- [x] FastAPI service for URL input processing
-- [x] File upload endpoints (text, JSON, CSV, Excel)
-- [x] URL validation and format detection utilities
-- [x] Unit tests for URL parsing and validation
-- [x] Multi-format parsing with metadata extraction
+#### 2. URL Input Service (Complete)
+- [x] **FastAPI service** for multi-format URL input processing
+- [x] **File upload endpoints** (text, JSON, CSV, Excel) with validation
+- [x] **URL validation and format detection** utilities
+- [x] **Metadata extraction** (domain, path, parameters)
+- [x] **Unit tests** for URL parsing and validation
+- [x] **Batch processing** for large URL lists
 
-#### 8. AI Model Management (Advanced Implementation)
-- [x] Hardware detection and model recommendation system
-- [x] Dynamic model downloading and installation
-- [x] Intelligent fallback chains for resource constraints
-- [x] Hot model switching without service restart
-- [x] Performance monitoring and resource tracking
-- [x] Task-specific model optimization
+#### 3. Authentication Service (Complete)
+- [x] **Authentication detection** algorithms for various auth types
+- [x] **Secure credential storage** with AES-256 encryption
+- [x] **Interactive authentication** workflows with popup handling
+- [x] **Session management** and credential storage
+- [x] **OAuth 2.0 support** and domain authentication mapping
+- [x] **Integration tests** for authentication flows
 
-### 🚧 In Progress
+#### 4. Smart Model Management System (Complete)
+- [x] **Hardware detection** and model recommendation system
+- [x] **Smart LLM chooser** with automatic hardware analysis
+- [x] **Task-specific recommendations** (reasoning, code, multilingual, multimodal)
+- [x] **Dynamic model downloading** and installation
+- [x] **Intelligent fallback chains** for resource constraints
+- [x] **Hot model switching** without service restart
+- [x] **Performance monitoring** and resource tracking
 
-#### 2. URL Input Service (Remaining)
-- [ ] URL metadata extraction (domain, path, parameters)
-- [ ] URL deduplication and categorization logic
-- [ ] Preview functionality for parsed URL lists
-- [ ] Batch processing for large URL lists
-- [ ] Integration tests for URL processing pipeline
+#### 5. Content Analysis Foundation (Complete)
+- [x] **Configurable embedding generation** system
+- [x] **Multiple model support** (nomic-embed-text, all-minilm, mxbai-embed-large)
+- [x] **Ollama integration** with multiple LLM models
+- [x] **Qdrant vector database** integration
+- [x] **Model switching** and configuration management
+- [x] **Hardware detection** for optimal model selection
 
-### 📋 Upcoming Tasks
+#### 6. Clustering System Foundation (Complete)
+- [x] **UMAP dimensionality reduction** with model-aware optimization
+- [x] **Configurable UMAP parameters** based on embedding model
+- [x] **Batch processing** for large embedding datasets
+- [x] **Visualization generation** for 2D/3D cluster plots
+- [x] **Automatic parameter tuning** based on embedding characteristics
+- [x] **Unit tests** for dimensionality reduction accuracy
 
-#### 3. Authentication Service
-- [ ] Authentication requirement detection
-- [ ] Secure credential storage with AES-256 encryption
-- [ ] Popup-based authentication using Selenium/Playwright
-- [ ] OAuth 2.0 flow handlers
-- [ ] Session persistence and renewal
+### 🚧 In Progress (6.7% of Total)
 
-#### 4. Web Scraper Service
-- [ ] Scrapy-based scraping framework with rate limiting
-- [ ] Content extraction using Beautiful Soup and trafilatura
-- [ ] Authentication integration
-- [ ] Parallel processing of public/authenticated URLs
-- [ ] Smart retry mechanisms
+#### 7. Web Scraper Service with Parallel Authentication Workflow
+- [x] **FastAPI scraper service** with Scrapy framework in Docker container
+- [x] **Parallel processing architecture** - separate authenticated and non-authenticated URLs into different queues
+- [ ] **URL classifier** to identify authentication requirements and route to appropriate processing queues
+- [ ] **Content extraction** with multiple parsing strategies (Beautiful Soup, trafilatura)
+- [ ] **Rate limiting and respectful crawling** mechanisms with robots.txt compliance
+- [ ] **Duplicate detection** using content hashing and parallel worker pools
+- [ ] **Error handling and retry logic** with exponential backoff for failed requests
+- [ ] **Support for different content types** (HTML, PDF) and content quality assessment
+- [ ] **Real-time status tracking** for parallel scraping and authentication tasks
+- [ ] **Containerized integration tests** with authentication service and comprehensive error logging
 
-#### 5. Content Analyzer Service
-- [ ] Configurable embedding model selection
-- [ ] Text chunking with overlap preservation
-- [ ] Qdrant integration for vector storage
-- [ ] Keyword extraction and quality assessment
-- [ ] Model performance monitoring
+**Current Sprint Goal**: Complete Web Scraper Service with Parallel Authentication Workflow
+**Estimated Completion**: 2024-02-18
+**Progress**: 20% complete
 
-#### 6. Clustering Service
-- [ ] UMAP dimensionality reduction
-- [ ] HDBSCAN clustering implementation
-- [ ] Cluster quality metrics and visualization
-- [ ] LLM-powered cluster labeling
-- [ ] Automatic parameter tuning
+### 📋 Upcoming Tasks (53.3% Remaining)
 
-#### 7. Export Service
-- [ ] Template-based export system
-- [ ] Notion API integration
-- [ ] Obsidian markdown export
-- [ ] Word document generation
-- [ ] Batch export processing
+#### 8. Advanced Clustering and Similarity Analysis
+- [ ] **HDBSCAN clustering** with parameter optimization
+- [ ] **Cluster validation** and quality metrics
+- [ ] **Hierarchical clustering** visualization
+- [ ] **Vector similarity search** using embeddings
+- [ ] **Recommendation algorithms** based on user behavior
+- [ ] **Content-based filtering** and collaborative filtering
+- [ ] **Performance tests** for search efficiency
 
-#### 9. Session Management Service
-- [ ] Session-based Qdrant collection management
-- [ ] Incremental clustering for new content
-- [ ] Session comparison and evolution tracking
-- [ ] Backup/restore functionality
+#### 9. Web UI and User Interaction System
+- [ ] **React/Vue.js web interface** containerized with Docker
+- [ ] **URL management system**: add, delete, edit, organize URLs in collections
+- [ ] **Advanced search interface** with semantic search, keyword search, and filtering
+- [ ] **Real-time status display** for URLs (pending, scraping, completed, failed, authentication required)
+- [ ] **Content preview capabilities** with metadata display and cluster assignments
+- [ ] **Session management UI** for creating, switching, comparing, and managing analysis sessions
+- [ ] **Chatbot system** using local LLM models for natural language content queries
+- [ ] **Semantic search integration** for answering questions about scraped content
 
-#### 10. API Gateway Enhancement
-- [ ] Workflow orchestration system
-- [ ] Job queue for long-running operations
-- [ ] Circuit breaker patterns
-- [ ] Comprehensive monitoring
+#### 10. Export and Integration System
+- [ ] **Multi-format export system** (Notion, Obsidian, Word, Markdown)
+- [ ] **Template-based export** using Jinja2 engine
+- [ ] **Customizable export templates** and filters
+- [ ] **Batch export** for large datasets
+- [ ] **API endpoints** for programmatic export
+- [ ] **Export progress tracking** and monitoring
+
+#### 11. Session Management and Persistence
+- [ ] **Session lifecycle management** (creation, management, cleanup)
+- [ ] **Session persistence** with metadata storage
+- [ ] **Incremental clustering** for new content
+- [ ] **Session comparison** and evolution tracking
+- [ ] **Session sharing** and collaboration features
+- [ ] **Backup/restore functionality** with model configurations
+
+#### 12. API Gateway and Service Orchestration
+- [ ] **Centralized API gateway** with service discovery
+- [ ] **Request routing** and load balancing
+- [ ] **Authentication and authorization** middleware
+- [ ] **Rate limiting** and monitoring capabilities
+- [ ] **Circuit breaker patterns** and graceful degradation
+- [ ] **Job queue management** for long-running operations
+
+#### 13. Data Pipeline Visualization and Documentation
+- [ ] **Mermaid diagrams** for complete system architecture and data flow
+- [ ] **Interactive pipeline visualization** dashboard showing real-time processing status
+- [ ] **Service interaction diagrams** with API endpoints and data models
+- [ ] **Capacity planning visualizations** and resource allocation diagrams
+- [ ] **Troubleshooting tools** with pipeline bottleneck identification
+- [ ] **Auto-generated architecture documentation** from code and configuration
+
+#### 14. Comprehensive Testing and CI/CD
+- [ ] **Docker-based testing environments** for all services with proper isolation
+- [ ] **Containerized unit tests**, integration tests, and end-to-end tests
+- [ ] **Docker Compose** for orchestrating test environments with test data management
+- [ ] **Containerized CI/CD pipeline** with automated testing and deployment
+- [ ] **Containerized load testing** and performance benchmarking
+- [ ] **Container-based debugging** capabilities with proper logging and monitoring
+
+#### 15. Monitoring, Logging, and Performance Optimization
+- [ ] **Centralized logging** with structured logs across all containerized services
+- [ ] **Performance monitoring** and metrics collection for containerized microservices
+- [ ] **Health checks** and service monitoring with Docker health checks
+- [ ] **Alerting and notification system** for container and service failures
+- [ ] **Resource usage monitoring** for containers and AI model performance
+- [ ] **Distributed tracing** across microservices for request flow monitoring
 
 ## Development Setup
 
@@ -168,24 +274,126 @@ new-service:
     - scraping_network
 ```
 
-### Testing Guidelines
+## Testing Strategy
+
+### Containerized Testing Framework
+
+```mermaid
+graph TB
+    subgraph "Testing Pyramid"
+        UT[Unit Tests - 70%]
+        IT[Integration Tests - 20%]
+        E2E[End-to-End Tests - 10%]
+    end
+    
+    subgraph "Test Environments"
+        DEV[Development Containers]
+        TEST[Test Containers]
+        STAGE[Staging Containers]
+    end
+    
+    subgraph "Test Types"
+        FUNC[Functional Tests]
+        PERF[Performance Tests]
+        SEC[Security Tests]
+        LOAD[Load Tests]
+    end
+    
+    UT --> DEV
+    IT --> TEST
+    E2E --> STAGE
+    
+    DEV --> FUNC
+    TEST --> PERF
+    STAGE --> SEC
+    STAGE --> LOAD
+```
+
+### Test Coverage Requirements
+
+| Service | Unit Tests | Integration Tests | E2E Tests | Performance Tests |
+|---------|------------|-------------------|-----------|-------------------|
+| API Gateway | 95% | ✅ | ✅ | ✅ |
+| URL Input | 90% | ✅ | ✅ | ❌ |
+| Authentication | 95% | ✅ | ✅ | ❌ |
+| Web Scraper | 90% | ✅ | ✅ | ✅ |
+| Content Analyzer | 90% | ✅ | ✅ | ✅ |
+| Clustering | 85% | ✅ | ✅ | ✅ |
+| Export | 85% | ✅ | ✅ | ❌ |
+| Session Manager | 90% | ✅ | ✅ | ❌ |
+| Model Manager | 95% | ✅ | ✅ | ✅ |
+| Web UI | 80% | ✅ | ✅ | ✅ |
+
+### Automated Testing Pipeline
+
+```yaml
+# docker-compose.test.yml
+version: '3.8'
+services:
+  test-runner:
+    build: 
+      context: .
+      dockerfile: Dockerfile.test
+    volumes:
+      - ./tests:/app/tests
+      - ./coverage:/app/coverage
+    environment:
+      - TEST_ENV=containerized
+    depends_on:
+      - test-qdrant
+      - test-ollama
+    command: |
+      pytest tests/ 
+        --cov=src/ 
+        --cov-report=html:/app/coverage/html 
+        --cov-report=xml:/app/coverage/coverage.xml
+        --junit-xml=/app/coverage/junit.xml
+        -v
+
+  test-qdrant:
+    image: qdrant/qdrant:latest
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+    tmpfs:
+      - /qdrant/storage
+
+  test-ollama:
+    image: ollama/ollama:latest
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    tmpfs:
+      - /root/.ollama
+```
 
 #### Unit Tests
-- Use pytest for Python services
-- Test individual functions and classes
-- Mock external dependencies
-- Aim for >80% code coverage
+- **Framework**: pytest with async support running in dedicated test containers
+- **Coverage Target**: 85-95% depending on service criticality
+- **Container Setup**: Each service has its own test container with isolated test databases
+- **Test Categories**:
+  - Model validation and serialization
+  - Business logic and algorithms
+  - Smart LLM chooser functionality
+  - Parallel processing coordination
+  - Authentication workflow testing
 
 #### Integration Tests
-- Test service-to-service communication
-- Use Docker containers for realistic testing
-- Test complete workflows end-to-end
-- Include error scenarios and edge cases
+- **Service Communication**: Test inter-service APIs using Docker Compose test networks
+- **Database Operations**: Test data persistence and retrieval with containerized test databases
+- **External Dependencies**: Test Qdrant, Ollama integration in isolated container environments
+- **End-to-End Workflows**: Complete user journeys tested across containerized services
+- **Parallel Processing**: Test authentication and scraping workflows in parallel container environments
+
+#### Performance Tests
+- **Load Testing**: Concurrent user simulation using containerized load testing tools
+- **Stress Testing**: Resource limit validation within container constraints
+- **Benchmark Testing**: Algorithm performance measurement in standardized container environments
+- **Memory Testing**: Container memory usage and leak detection
+- **Model Performance**: Benchmarking of different AI models within container resource limits
 
 #### Example Test Structure:
 ```python
 import pytest
-from main import URLValidator, URLParser
+from main import URLValidator, URLParser, SmartModelChooser
 
 class TestURLValidator:
     def test_valid_urls(self):
@@ -197,6 +405,39 @@ class TestURLValidator:
         invalid_urls = ["not-a-url", "ftp://example.com"]
         for url in invalid_urls:
             assert not URLValidator.is_valid_url(url)
+
+class TestSmartModelChooser:
+    def test_hardware_detection(self):
+        chooser = SmartModelChooser()
+        hardware = chooser.detect_hardware()
+        assert "cpu" in hardware
+        assert "memory" in hardware
+        assert "gpu" in hardware
+    
+    def test_model_recommendation(self):
+        chooser = SmartModelChooser()
+        recommendation = chooser.recommend_model(
+            task_type="reasoning",
+            priority="balanced",
+            hardware_constraints={"memory": "8GB"}
+        )
+        assert recommendation["llm_model"] is not None
+        assert recommendation["embedding_model"] is not None
+        assert len(recommendation["fallback_chain"]) > 0
+
+class TestParallelProcessing:
+    @pytest.mark.asyncio
+    async def test_parallel_authentication_workflow(self):
+        urls = [
+            "https://public-site.com",
+            "https://auth-required-site.com"
+        ]
+        processor = ParallelURLProcessor()
+        results = await processor.process_urls(urls)
+        
+        assert len(results["public_queue"]) == 1
+        assert len(results["auth_queue"]) == 1
+        assert results["processing_time"] < 300  # 5 minutes max
 ```
 
 ### Code Quality Standards
@@ -343,6 +584,83 @@ docker-compose restart url-input-service
 - Configure log aggregation
 - Plan for model updates and migrations
 
+## Quality Gates
+
+### Definition of Done
+Each task is considered complete when:
+- [ ] All code is containerized and runs in Docker
+- [ ] Unit test coverage meets minimum requirements (85-95%)
+- [ ] Integration tests pass in containerized environment
+- [ ] Code review completed and approved
+- [ ] Documentation updated (API docs, README, etc.)
+- [ ] Performance benchmarks meet requirements
+- [ ] Security scan passes without critical issues
+- [ ] Monitoring and logging implemented
+- [ ] Deployment to staging environment successful
+
+### Code Quality Standards
+- **Code Coverage**: Minimum 85% for critical services, 80% for UI components
+- **Performance**: API response times < 2 seconds, batch processing < 5 minutes for 100 URLs
+- **Security**: No critical or high-severity vulnerabilities
+- **Documentation**: All public APIs documented with OpenAPI/Swagger
+- **Containerization**: All services must run in Docker with proper health checks
+
+### Continuous Integration Pipeline
+
+```yaml
+# .github/workflows/ci.yml
+name: CI/CD Pipeline
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build test environment
+        run: docker-compose -f docker-compose.test.yml build
+      - name: Run unit tests
+        run: docker-compose -f docker-compose.test.yml run test-runner
+      - name: Run integration tests
+        run: docker-compose -f docker-compose.test.yml run integration-tests
+      - name: Generate coverage report
+        run: docker-compose -f docker-compose.test.yml run coverage-report
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run security scan
+        run: docker run --rm -v $(pwd):/app securecodewarrior/docker-security-scan
+      - name: Run dependency check
+        run: docker run --rm -v $(pwd):/app owasp/dependency-check
+
+  performance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build performance test environment
+        run: docker-compose -f docker-compose.perf.yml build
+      - name: Run load tests
+        run: docker-compose -f docker-compose.perf.yml run load-tests
+      - name: Generate performance report
+        run: docker-compose -f docker-compose.perf.yml run performance-report
+```
+
+## Risk Management
+
+### Current Risks and Mitigation Strategies
+
+| Risk | Impact | Probability | Mitigation Strategy |
+|------|--------|-------------|-------------------|
+| Parallel authentication complexity | High | Medium | Incremental implementation with extensive testing |
+| Model management hot-swapping | Medium | Low | Comprehensive fallback chains and monitoring |
+| Container resource constraints | Medium | Medium | Hardware detection and automatic scaling |
+| Integration testing complexity | Medium | High | Isolated test environments and mock services |
+| Performance degradation | High | Low | Continuous benchmarking and optimization |
+
 ## Resources
 
 ### Documentation
@@ -350,11 +668,24 @@ docker-compose restart url-input-service
 - [Docker Compose Reference](https://docs.docker.com/compose/)
 - [Qdrant Documentation](https://qdrant.tech/documentation/)
 - [Ollama Documentation](https://ollama.ai/docs/)
+- [UMAP Documentation](https://umap-learn.readthedocs.io/)
+- [HDBSCAN Documentation](https://hdbscan.readthedocs.io/)
 
 ### Tools and Libraries
 - **Web Framework**: FastAPI
-- **Testing**: pytest
+- **Testing**: pytest, pytest-asyncio, pytest-cov
 - **Logging**: structlog
-- **Containerization**: Docker
+- **Containerization**: Docker, Docker Compose
 - **Vector Database**: Qdrant
 - **AI Models**: Ollama
+- **Clustering**: UMAP, HDBSCAN, scikit-learn
+- **Web Scraping**: Scrapy, Beautiful Soup, trafilatura
+- **Authentication**: Selenium, Playwright
+- **Export**: Jinja2, python-docx, notion-client
+
+### Development Tools
+- **Code Quality**: black, flake8, mypy
+- **Security**: bandit, safety
+- **Performance**: locust, pytest-benchmark
+- **Monitoring**: Prometheus, Grafana
+- **Documentation**: Sphinx, mkdocs
