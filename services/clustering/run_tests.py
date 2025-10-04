@@ -17,6 +17,7 @@ def run_tests():
     cmd = [
         sys.executable, "-m", "pytest",
         "test_umap_dimensionality.py",
+        "test_hdbscan_clustering.py",
         "-v",
         "--tb=short",
         "--color=yes"
