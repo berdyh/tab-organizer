@@ -12,7 +12,7 @@ services:
       - QDRANT__SERVICE__HTTP_PORT=6333
       - QDRANT__SERVICE__GRPC_PORT=6334
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -182,13 +182,10 @@ services:
     environment:
       - LOG_LEVEL=INFO
       - ENVIRONMENT=development
-      - QDRANT_URL=http://qdrant:6333
-      - OLLAMA_URL=http://ollama:11434
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
     depends_on:
-      qdrant:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
+      - qdrant
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
       interval: 30s
