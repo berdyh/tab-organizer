@@ -101,6 +101,17 @@ class ModelManager:
                         "description": "Lightweight embedding model",
                         "model_name": "all-MiniLM-L6-v2",
                         "max_sequence_length": 512,
+                        "recommended": False
+                    },
+                    "nomic-embed-text": {
+                        "name": "Nomic Embed Text",
+                        "size": "274MB",
+                        "dimensions": 768,
+                        "quality": "high",
+                        "min_ram_gb": 1.0,
+                        "description": "Best general purpose embedding model",
+                        "model_name": "nomic-ai/nomic-embed-text-v1",
+                        "max_sequence_length": 8192,
                         "recommended": True
                     }
                 }
