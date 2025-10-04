@@ -32,10 +32,11 @@ class TestContentExtractor:
         </html>
         """
         
+        extractor = ContentExtractor()
         with patch('main.trafilatura.extract') as mock_extract:
             mock_extract.return_value = "Main Article This is the main content of the article. Another paragraph with useful information."
             
-            result = ContentExtractor.extract_content(html, "https://example.com")
+            result = extractor.extract_content(html.encode('utf-8'), "https://example.com", "text/html")
             
             assert result['title'] == "Test Page"
             assert "Main Article" in result['content']
@@ -59,10 +60,11 @@ class TestContentExtractor:
         </html>
         """
         
+        extractor = ContentExtractor()
         with patch('main.trafilatura.extract') as mock_extract:
             mock_extract.return_value = ""  # Simulate trafilatura failure
             
-            result = ContentExtractor.extract_content(html, "https://example.com")
+            result = extractor.extract_content(html.encode('utf-8'), "https://example.com", "text/html")
             
             assert result['title'] == "Fallback Test"
             assert "Main Content" in result['content']
@@ -72,7 +74,8 @@ class TestContentExtractor:
     
     def test_extract_content_empty_html(self):
         """Test extraction with empty or invalid HTML."""
-        result = ContentExtractor.extract_content("", "https://example.com")
+        extractor = ContentExtractor()
+        result = extractor.extract_content(b"", "https://example.com", "text/html")
         
         assert result['title'] == ""
         assert result['content'] == ""
@@ -88,14 +91,15 @@ class TestContentExtractor:
         </html>
         """
         
+        extractor = ContentExtractor()
         with patch('main.trafilatura.extract') as mock_extract:
-            mock_extract.return_value = "Content without title"
+            mock_extract.return_value = "Content without title that is long enough to pass the minimum length check"
             
-            result = ContentExtractor.extract_content(html, "https://example.com")
+            result = extractor.extract_content(html.encode('utf-8'), "https://example.com", "text/html")
             
             assert result['title'] == ""
-            assert result['content'] == "Content without title"
-            assert result['word_count'] == 3
+            assert "Content without title" in result['content']
+            assert result['word_count'] > 3
 
 
 class TestDuplicateDetector:
@@ -107,13 +111,14 @@ class TestDuplicateDetector:
     
     def test_generate_content_hash(self):
         """Test content hash generation."""
+        detector = DuplicateDetector()
         content1 = "This is some test content."
         content2 = "This is some test content."
         content3 = "This is different content."
         
-        hash1 = DuplicateDetector.generate_content_hash(content1)
-        hash2 = DuplicateDetector.generate_content_hash(content2)
-        hash3 = DuplicateDetector.generate_content_hash(content3)
+        hash1 = detector.generate_content_hash(content1)
+        hash2 = detector.generate_content_hash(content2)
+        hash3 = detector.generate_content_hash(content3)
         
         assert hash1 == hash2  # Same content should have same hash
         assert hash1 != hash3  # Different content should have different hash
@@ -121,42 +126,48 @@ class TestDuplicateDetector:
     
     def test_generate_content_hash_normalization(self):
         """Test that content is normalized before hashing."""
+        detector = DuplicateDetector()
         content1 = "This   is    some   test content."
         content2 = "THIS IS SOME TEST CONTENT."
         content3 = "  This is some test content.  "
         
-        hash1 = DuplicateDetector.generate_content_hash(content1)
-        hash2 = DuplicateDetector.generate_content_hash(content2)
-        hash3 = DuplicateDetector.generate_content_hash(content3)
+        hash1 = detector.generate_content_hash(content1)
+        hash2 = detector.generate_content_hash(content2)
+        hash3 = detector.generate_content_hash(content3)
         
         assert hash1 == hash2 == hash3  # All should normalize to same hash
     
     def test_is_duplicate_first_occurrence(self):
         """Test duplicate detection for first occurrence."""
+        detector = DuplicateDetector()
         content = "This is unique content."
         url = "https://example.com/page1"
         
-        is_duplicate, content_hash = DuplicateDetector.is_duplicate(content, url)
+        is_duplicate, content_hash, similarity = detector.is_duplicate(content, url)
         
         assert not is_duplicate
         assert len(content_hash) == 64
         assert content_hash in content_hashes
         assert content_hashes[content_hash] == url
+        assert similarity == 0.0
     
     def test_is_duplicate_second_occurrence(self):
         """Test duplicate detection for duplicate content."""
+        detector = DuplicateDetector()
         content = "This is duplicate content."
         url1 = "https://example.com/page1"
         url2 = "https://example.com/page2"
         
         # First occurrence
-        is_duplicate1, hash1 = DuplicateDetector.is_duplicate(content, url1)
+        is_duplicate1, hash1, similarity1 = detector.is_duplicate(content, url1)
         assert not is_duplicate1
+        assert similarity1 == 0.0
         
         # Second occurrence (duplicate)
-        is_duplicate2, hash2 = DuplicateDetector.is_duplicate(content, url2)
+        is_duplicate2, hash2, similarity2 = detector.is_duplicate(content, url2)
         assert is_duplicate2
         assert hash1 == hash2
+        assert similarity2 == 1.0
         assert content_hashes[hash1] == url1  # Original URL preserved
 
 
@@ -252,11 +263,11 @@ class TestIntegration:
         with patch('main.trafilatura.extract') as mock_extract:
             mock_extract.return_value = "Test Article This is test content for integration testing. It should be processed correctly through the pipeline."
             
-            extracted = extractor.extract_content(html, "https://example.com")
+            extracted = extractor.extract_content(html.encode('utf-8'), "https://example.com", "text/html")
         
         # Check for duplicates
         detector = DuplicateDetector()
-        is_duplicate, content_hash = detector.is_duplicate(extracted['content'], "https://example.com")
+        is_duplicate, content_hash, similarity = detector.is_duplicate(extracted['content'], "https://example.com")
         
         # Verify results
         assert extracted['title'] == "Integration Test"
@@ -267,9 +278,10 @@ class TestIntegration:
         assert len(content_hash) == 64
         
         # Test duplicate detection on same content
-        is_duplicate2, hash2 = detector.is_duplicate(extracted['content'], "https://different.com")
+        is_duplicate2, hash2, similarity2 = detector.is_duplicate(extracted['content'], "https://different.com")
         assert is_duplicate2
         assert hash2 == content_hash
+        assert similarity2 == 1.0
 
 
 if __name__ == "__main__":

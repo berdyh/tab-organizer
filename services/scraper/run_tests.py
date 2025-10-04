@@ -19,6 +19,7 @@ def run_tests():
             'python', '-m', 'pytest', 
             'test_scraper.py',
             'test_auth_integration.py',
+            'test_integration.py',
             '-v',
             '--tb=short',
             '--color=yes'
