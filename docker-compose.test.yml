@@ -18,6 +18,25 @@ services:
     networks:
       - test_network
 
+  # Session management service tests
+  session-test:
+    build:
+      context: ./services/session
+      dockerfile: Dockerfile
+    container_name: session-test
+    environment:
+      - TESTING=true
+      - LOG_LEVEL=DEBUG
+      - PYTHONPATH=/app
+      - QDRANT_HOST=mock-qdrant
+    volumes:
+      - ./services/session:/app/test_src
+    command: python -m pytest test_session_management.py -v --tb=short
+    depends_on:
+      - mock-qdrant
+    networks:
+      - test_network
+
   # Lightweight mock services for testing
   mock-qdrant:
     image: alpine:latest

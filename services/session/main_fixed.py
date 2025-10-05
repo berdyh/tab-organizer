@@ -3,7 +3,6 @@
 import time
 import uuid
 import json
-import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 from enum import Enum
@@ -35,9 +34,7 @@ app = FastAPI(
 )
 
 # Qdrant client
-qdrant_host = os.getenv("QDRANT_HOST", "qdrant")
-qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
-qdrant_client = QdrantClient(host=qdrant_host, port=qdrant_port)
+qdrant_client = QdrantClient(host="qdrant", port=6333)
 
 class SessionStatus(str, Enum):
     ACTIVE = "active"
@@ -209,70 +206,6 @@ async def list_sessions(
         logger.error("Failed to list sessions", error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to list sessions: {str(e)}")
 
-@app.get("/sessions/compare")
-async def compare_sessions(session_ids: str):
-    """Compare multiple sessions and show differences."""
-    try:
-        session_id_list = [sid.strip() for sid in session_ids.split(",")]
-        
-        if len(session_id_list) < 2:
-            raise HTTPException(status_code=400, detail="At least 2 session IDs required for comparison")
-        
-        sessions = []
-        for session_id in session_id_list:
-            if session_id not in sessions_storage:
-                raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-            sessions.append(sessions_storage[session_id])
-        
-        # Compare sessions
-        comparison = {
-            "sessions": [
-                {
-                    "id": s.id,
-                    "name": s.name,
-                    "created_at": s.created_at,
-                    "status": s.status,
-                    "processing_stats": s.processing_stats,
-                    "model_usage": s.model_usage_history,
-                    "tags": s.tags
-                } for s in sessions
-            ],
-            "comparison_summary": {
-                "total_sessions": len(sessions),
-                "status_distribution": {},
-                "model_usage_overlap": {},
-                "processing_differences": {}
-            }
-        }
-        
-        # Calculate status distribution
-        for session in sessions:
-            status = session.status.value
-            comparison["comparison_summary"]["status_distribution"][status] = \
-                comparison["comparison_summary"]["status_distribution"].get(status, 0) + 1
-        
-        # Calculate model usage overlap
-        all_llm_models = set()
-        all_embedding_models = set()
-        for session in sessions:
-            all_llm_models.update(session.model_usage_history.llm_models_used)
-            all_embedding_models.update(session.model_usage_history.embedding_models_used)
-        
-        comparison["comparison_summary"]["model_usage_overlap"] = {
-            "unique_llm_models": list(all_llm_models),
-            "unique_embedding_models": list(all_embedding_models),
-            "total_unique_models": len(all_llm_models) + len(all_embedding_models)
-        }
-        
-        logger.info("Compared sessions", session_ids=session_id_list)
-        return comparison
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to compare sessions", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to compare sessions: {str(e)}")
-
 @app.get("/sessions/{session_id}", response_model=SessionModel)
 async def get_session(session_id: str):
     """Get session by ID."""
@@ -352,6 +285,10 @@ async def delete_session(session_id: str, permanent: bool = False):
     except Exception as e:
         logger.error("Failed to delete session", session_id=session_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8087)
 
 @app.post("/sessions/{session_id}/archive")
 async def archive_session(session_id: str):
@@ -693,6 +630,72 @@ async def update_model_usage(
     except Exception as e:
         logger.error("Failed to update model usage", session_id=session_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to update model usage: {str(e)}")
+
+# Session Comparison and Evolution Tracking
+
+@app.get("/sessions/compare")
+async def compare_sessions(session_ids: str):
+    """Compare multiple sessions and show differences."""
+    try:
+        session_id_list = [sid.strip() for sid in session_ids.split(",")]
+        
+        if len(session_id_list) < 2:
+            raise HTTPException(status_code=400, detail="At least 2 session IDs required for comparison")
+        
+        sessions = []
+        for session_id in session_id_list:
+            if session_id not in sessions_storage:
+                raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+            sessions.append(sessions_storage[session_id])
+        
+        # Compare sessions
+        comparison = {
+            "sessions": [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "created_at": s.created_at,
+                    "status": s.status,
+                    "processing_stats": s.processing_stats,
+                    "model_usage": s.model_usage_history,
+                    "tags": s.tags
+                } for s in sessions
+            ],
+            "comparison_summary": {
+                "total_sessions": len(sessions),
+                "status_distribution": {},
+                "model_usage_overlap": {},
+                "processing_differences": {}
+            }
+        }
+        
+        # Calculate status distribution
+        for session in sessions:
+            status = session.status.value
+            comparison["comparison_summary"]["status_distribution"][status] = \
+                comparison["comparison_summary"]["status_distribution"].get(status, 0) + 1
+        
+        # Calculate model usage overlap
+        all_llm_models = set()
+        all_embedding_models = set()
+        for session in sessions:
+            all_llm_models.update(session.model_usage_history.llm_models_used)
+            all_embedding_models.update(session.model_usage_history.embedding_models_used)
+        
+        comparison["comparison_summary"]["model_usage_overlap"] = {
+            "unique_llm_models": list(all_llm_models),
+            "unique_embedding_models": list(all_embedding_models),
+            "total_unique_models": len(all_llm_models) + len(all_embedding_models)
+        }
+        
+        logger.info("Compared sessions", session_ids=session_id_list)
+        return comparison
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to compare sessions", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to compare sessions: {str(e)}")
 
 # Incremental Processing Support (Requirement 8.3)
 
@@ -807,347 +810,3 @@ async def update_retention_policy(policy: RetentionPolicy):
         "message": "Retention policy updated successfully",
         "new_policy": policy.dict()
     }
-@app.post("/sessions/{session_id}/archive")
-async def archive_session(session_id: str):
-    """Archive a session."""
-    if session_id not in sessions_storage:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session = sessions_storage[session_id]
-        session.status = SessionStatus.ARCHIVED
-        session.updated_at = datetime.now(timezone.utc)
-        sessions_storage[session_id] = session
-        
-        logger.info("Archived session", session_id=session_id)
-        return {"message": "Session archived successfully"}
-        
-    except Exception as e:
-        logger.error("Failed to archive session", session_id=session_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to archive session: {str(e)}")
-
-@app.post("/sessions/{session_id}/restore")
-async def restore_session(session_id: str):
-    """Restore an archived or deleted session."""
-    if session_id not in sessions_storage:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session = sessions_storage[session_id]
-        session.status = SessionStatus.ACTIVE
-        session.updated_at = datetime.now(timezone.utc)
-        sessions_storage[session_id] = session
-        
-        logger.info("Restored session", session_id=session_id)
-        return {"message": "Session restored successfully"}
-        
-    except Exception as e:
-        logger.error("Failed to restore session", session_id=session_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to restore session: {str(e)}")
-
-# Session Sharing and Collaboration
-
-@app.post("/sessions/{session_id}/share")
-async def share_session(session_id: str, request: ShareSessionRequest):
-    """Share session with other users."""
-    if session_id not in sessions_storage:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session = sessions_storage[session_id]
-        
-        # Add users to shared_with list
-        for user_id in request.user_ids:
-            if user_id not in session.shared_with:
-                session.shared_with.append(user_id)
-        
-        session.status = SessionStatus.SHARED
-        session.updated_at = datetime.now(timezone.utc)
-        sessions_storage[session_id] = session
-        
-        logger.info("Shared session", session_id=session_id, shared_with=request.user_ids)
-        return {
-            "message": "Session shared successfully",
-            "shared_with": session.shared_with,
-            "permissions": request.permissions
-        }
-        
-    except Exception as e:
-        logger.error("Failed to share session", session_id=session_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to share session: {str(e)}")
-
-@app.delete("/sessions/{session_id}/share/{user_id}")
-async def unshare_session(session_id: str, user_id: str):
-    """Remove user access from shared session."""
-    if session_id not in sessions_storage:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session = sessions_storage[session_id]
-        
-        if user_id in session.shared_with:
-            session.shared_with.remove(user_id)
-            
-        # If no more shared users, change status back to active
-        if not session.shared_with:
-            session.status = SessionStatus.ACTIVE
-            
-        session.updated_at = datetime.now(timezone.utc)
-        sessions_storage[session_id] = session
-        
-        logger.info("Unshared session", session_id=session_id, user_id=user_id)
-        return {"message": "User access removed successfully"}
-        
-    except Exception as e:
-        logger.error("Failed to unshare session", session_id=session_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to unshare session: {str(e)}")
-
-@app.get("/sessions/{session_id}/collaborators")
-async def get_session_collaborators(session_id: str):
-    """Get list of users who have access to the session."""
-    if session_id not in sessions_storage:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions_storage[session_id]
-    return {
-        "owner_id": session.owner_id,
-        "shared_with": session.shared_with,
-        "total_collaborators": len(session.shared_with) + (1 if session.owner_id else 0)
-    }
-
-# Session Export and Import
-
-@app.get("/sessions/{session_id}/export", response_model=SessionExportData)
-async def export_session(session_id: str, include_data: bool = True):
-    """Export session with optional collection data."""
-    if session_id not in sessions_storage:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session = sessions_storage[session_id]
-        export_data = SessionExportData(session=session)
-        
-        if include_data:
-            # Export Qdrant collection data
-            client = get_qdrant_client()
-            try:
-                # Get collection info and sample points
-                collection_info = client.get_collection(collection_name=session.qdrant_collection_name)
-                points_count = collection_info.points_count
-                
-                # For large collections, we might want to limit the export
-                limit = min(points_count, 10000)  # Limit to 10k points for export
-                
-                points, _ = client.scroll(
-                    collection_name=session.qdrant_collection_name,
-                    limit=limit,
-                    with_payload=True,
-                    with_vectors=True
-                )
-                
-                export_data.collection_data = {
-                    "collection_name": session.qdrant_collection_name,
-                    "points_count": points_count,
-                    "exported_points": len(points),
-                    "points": [
-                        {
-                            "id": str(point.id),
-                            "vector": point.vector,
-                            "payload": point.payload
-                        } for point in points
-                    ]
-                }
-                
-                logger.info("Exported session with data", 
-                           session_id=session_id, points_exported=len(points))
-                
-            except Exception as e:
-                logger.warning("Failed to export collection data", 
-                              session_id=session_id, error=str(e))
-                export_data.collection_data = {"error": f"Failed to export data: {str(e)}"}
-        
-        return export_data
-        
-    except Exception as e:
-        logger.error("Failed to export session", session_id=session_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to export session: {str(e)}")
-
-@app.post("/sessions/import", response_model=SessionModel)
-async def import_session(export_data: SessionExportData, new_name: Optional[str] = None):
-    """Import session from export data."""
-    try:
-        # Create new session from imported data
-        imported_session = export_data.session
-        
-        # Generate new IDs to avoid conflicts
-        new_session_id = str(uuid.uuid4())
-        new_collection_name = f"session_{uuid.uuid4().hex}"
-        
-        session = SessionModel(
-            id=new_session_id,
-            name=new_name or f"{imported_session.name} (Imported)",
-            description=imported_session.description,
-            configuration=imported_session.configuration,
-            tags=imported_session.tags + ["imported"],
-            metadata={
-                **imported_session.metadata,
-                "imported_from": imported_session.id,
-                "import_timestamp": datetime.now(timezone.utc).isoformat()
-            },
-            qdrant_collection_name=new_collection_name
-        )
-        
-        # Create new Qdrant collection
-        await ensure_session_collection(session.id, session.qdrant_collection_name)
-        
-        # Import collection data if available
-        if export_data.collection_data and "points" in export_data.collection_data:
-            client = get_qdrant_client()
-            points_data = export_data.collection_data["points"]
-            
-            if points_data:
-                # Convert points back to Qdrant format
-                points = []
-                for point_data in points_data:
-                    points.append(models.PointStruct(
-                        id=str(uuid.uuid4()),  # Generate new IDs
-                        vector=point_data["vector"],
-                        payload=point_data["payload"]
-                    ))
-                
-                # Batch upsert points
-                batch_size = 100
-                for i in range(0, len(points), batch_size):
-                    batch = points[i:i + batch_size]
-                    client.upsert(
-                        collection_name=session.qdrant_collection_name,
-                        points=batch
-                    )
-                
-                logger.info("Imported collection data", 
-                           session_id=session.id, points_imported=len(points))
-        
-        # Store imported session
-        sessions_storage[session.id] = session
-        
-        logger.info("Imported session", 
-                   session_id=session.id, original_id=imported_session.id)
-        return session
-        
-    except Exception as e:
-        logger.error("Failed to import session", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to import session: {str(e)}")
-
-# Session Statistics and Metadata Management
-
-@app.get("/sessions/{session_id}/stats")
-async def get_session_stats(session_id: str):
-    """Get detailed session statistics."""
-    if session_id not in sessions_storage:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session = sessions_storage[session_id]
-        client = get_qdrant_client()
-        
-        # Get collection statistics
-        collection_stats = {}
-        try:
-            collection_info = client.get_collection(collection_name=session.qdrant_collection_name)
-            collection_stats = {
-                "points_count": collection_info.points_count,
-                "vectors_count": collection_info.vectors_count,
-                "indexed_vectors_count": collection_info.indexed_vectors_count,
-                "status": collection_info.status
-            }
-        except Exception as e:
-            logger.warning("Failed to get collection stats", 
-                          session_id=session_id, error=str(e))
-            collection_stats = {"error": str(e)}
-        
-        return {
-            "session_id": session_id,
-            "session_stats": session.processing_stats,
-            "model_usage": session.model_usage_history,
-            "collection_stats": collection_stats,
-            "session_age_days": (datetime.now(timezone.utc) - session.created_at).days,
-            "last_activity": session.updated_at,
-            "collaboration_info": {
-                "is_shared": len(session.shared_with) > 0,
-                "collaborator_count": len(session.shared_with)
-            }
-        }
-        
-    except Exception as e:
-        logger.error("Failed to get session stats", session_id=session_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to get session stats: {str(e)}")
-
-@app.put("/sessions/{session_id}/stats")
-async def update_session_stats(
-    session_id: str, 
-    stats_update: Dict[str, Any]
-):
-    """Update session processing statistics."""
-    if session_id not in sessions_storage:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session = sessions_storage[session_id]
-        
-        # Update processing stats
-        if "urls_processed" in stats_update:
-            session.processing_stats.urls_processed += stats_update["urls_processed"]
-        if "content_analyzed" in stats_update:
-            session.processing_stats.content_analyzed += stats_update["content_analyzed"]
-        if "clusters_generated" in stats_update:
-            session.processing_stats.clusters_generated += stats_update["clusters_generated"]
-        if "embeddings_created" in stats_update:
-            session.processing_stats.embeddings_created += stats_update["embeddings_created"]
-        
-        session.processing_stats.last_processing_time = datetime.now(timezone.utc)
-        session.updated_at = datetime.now(timezone.utc)
-        sessions_storage[session_id] = session
-        
-        logger.info("Updated session stats", session_id=session_id, updates=stats_update)
-        return {"message": "Session statistics updated successfully"}
-        
-    except Exception as e:
-        logger.error("Failed to update session stats", session_id=session_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to update session stats: {str(e)}")
-
-@app.put("/sessions/{session_id}/model-usage")
-async def update_model_usage(
-    session_id: str,
-    model_type: str,
-    model_name: str
-):
-    """Update model usage history for session."""
-    if session_id not in sessions_storage:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session = sessions_storage[session_id]
-        
-        if model_type == "llm":
-            if model_name not in session.model_usage_history.llm_models_used:
-                session.model_usage_history.llm_models_used.append(model_name)
-        elif model_type == "embedding":
-            if model_name not in session.model_usage_history.embedding_models_used:
-                session.model_usage_history.embedding_models_used.append(model_name)
-        
-        session.model_usage_history.model_switches += 1
-        session.model_usage_history.last_model_switch = datetime.now(timezone.utc)
-        session.updated_at = datetime.now(timezone.utc)
-        sessions_storage[session_id] = session
-        
-        logger.info("Updated model usage", 
-                   session_id=session_id, model_type=model_type, model_name=model_name)
-        return {"message": "Model usage updated successfully"}
-        
-    except Exception as e:
-        logger.error("Failed to update model usage", session_id=session_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to update model usage: {str(e)}")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8087)
