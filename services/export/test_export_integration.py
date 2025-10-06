@@ -164,6 +164,9 @@ class TestExportAPI:
         assert "csv" in format_names
         assert "markdown" in format_names
         assert "word" in format_names
+        assert "pdf" in format_names
+        assert "notion" in format_names
+        assert "obsidian" in format_names
 
     @patch('main.qdrant_client')
     def test_create_export_job(self, mock_qdrant, client, mock_qdrant_points):
@@ -350,6 +353,23 @@ class TestExportEngine:
         assert len(content) > 0
 
     @pytest.mark.asyncio
+    async def test_export_to_pdf(self, sample_session_data):
+        """Test PDF export functionality."""
+        result = await export_engine.export_to_pdf(sample_session_data)
+        
+        # Verify it's a BytesIO object with content
+        assert hasattr(result, 'read')
+        assert hasattr(result, 'seek')
+        
+        # Check that it has content
+        content = result.getvalue()
+        assert len(content) > 0
+        
+        # Check PDF magic bytes
+        content_bytes = content[:4]
+        assert content_bytes == b'%PDF'
+
+    @pytest.mark.asyncio
     async def test_custom_template_json(self, sample_session_data):
         """Test JSON export with custom template."""
         custom_template = '{"custom": "{{ session_name }}", "count": {{ total_items }}}'
@@ -370,6 +390,25 @@ class TestExportEngine:
         assert "# Custom Export" in result
         assert "Session: Test Session" in result
         assert "Items: 2" in result
+
+    @pytest.mark.asyncio
+    @patch('main.NotionClient')
+    async def test_export_to_notion_with_credentials(self, mock_notion_client, sample_session_data):
+        """Test Notion export with proper credentials."""
+        # Mock Notion client
+        mock_client = MagicMock()
+        mock_notion_client.return_value = mock_client
+        mock_client.pages.create.return_value = {'id': 'test_page_id'}
+        
+        result = await export_engine.export_to_notion(
+            sample_session_data, 
+            "test_token", 
+            "test_database_id"
+        )
+        
+        assert "created_pages" in result
+        assert result["created_pages"] == 2  # Should create 2 pages for 2 items
+        assert len(result["results"]) == 2
 
 
 class TestExportFilters:
@@ -442,6 +481,51 @@ class TestExportJobProcessing:
         assert processed_job.status == ExportStatus.COMPLETED
         assert processed_job.file_path is not None
         assert Path(processed_job.file_path).exists()
+        
+        # Clean up
+        if processed_job.file_path:
+            Path(processed_job.file_path).unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    @patch('main.qdrant_client')
+    async def test_process_export_job_pdf(self, mock_qdrant, mock_qdrant_points):
+        """Test processing a PDF export job."""
+        from main import process_export_job, ExportRequest, ExportJob, ExportStatus
+        from datetime import datetime
+        
+        # Mock Qdrant response
+        mock_qdrant.scroll.return_value = (mock_qdrant_points, None)
+        
+        # Create job and request
+        job_id = "test_job_pdf"
+        job = ExportJob(
+            job_id=job_id,
+            session_id="test_session",
+            format=ExportFormat.PDF,
+            status=ExportStatus.PENDING,
+            created_at=datetime.now()
+        )
+        export_jobs[job_id] = job
+        
+        request = ExportRequest(
+            session_id="test_session",
+            format=ExportFormat.PDF
+        )
+        
+        # Process the job
+        await process_export_job(job_id, request)
+        
+        # Verify job completion
+        processed_job = export_jobs[job_id]
+        assert processed_job.status == ExportStatus.COMPLETED
+        assert processed_job.file_path is not None
+        assert Path(processed_job.file_path).exists()
+        assert processed_job.file_path.endswith('.pdf')
+        
+        # Verify PDF content
+        with open(processed_job.file_path, 'rb') as f:
+            content = f.read()
+            assert content[:4] == b'%PDF'
         
         # Clean up
         if processed_job.file_path:

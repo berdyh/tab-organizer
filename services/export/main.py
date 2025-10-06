@@ -21,6 +21,12 @@ from notion_client import Client as NotionClient
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus.tableofcontents import TableOfContents
 
 structlog.configure(
     processors=[
@@ -101,6 +107,9 @@ class ExportRequest(BaseModel):
     include_clusters: bool = True
     include_embeddings: bool = False
     batch_size: Optional[int] = 1000
+    # Notion-specific parameters
+    notion_token: Optional[str] = None
+    notion_database_id: Optional[str] = None
 
 class ExportJob(BaseModel):
     job_id: str
@@ -431,6 +440,138 @@ total_clusters: {{ total_clusters }}
         
         return {"created_pages": len([r for r in results if 'notion_page_id' in r]), "results": results}
 
+    async def export_to_pdf(self, data: Dict[str, Any]) -> BytesIO:
+        """Export data to PDF format."""
+        pdf_io = BytesIO()
+        
+        # Create PDF document
+        doc = SimpleDocTemplate(
+            pdf_io,
+            pagesize=A4,
+            rightMargin=72,
+            leftMargin=72,
+            topMargin=72,
+            bottomMargin=18
+        )
+        
+        # Get styles
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            spaceAfter=30,
+            alignment=1  # Center alignment
+        )
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontSize=16,
+            spaceAfter=12,
+            textColor=colors.darkblue
+        )
+        normal_style = styles['Normal']
+        
+        # Build PDF content
+        story = []
+        
+        # Title
+        title = Paragraph(f"{data['session_name']} - Export Report", title_style)
+        story.append(title)
+        story.append(Spacer(1, 20))
+        
+        # Summary section
+        summary_data = [
+            ['Generated on:', data['export_date']],
+            ['Total Items:', str(data['total_items'])],
+            ['Total Clusters:', str(data['total_clusters'])],
+            ['Summary:', data['summary']]
+        ]
+        
+        summary_table = Table(summary_data, colWidths=[2*inch, 4*inch])
+        summary_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+            ('BACKGROUND', (1, 0), (1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        
+        story.append(summary_table)
+        story.append(Spacer(1, 30))
+        
+        # Clusters section
+        clusters_heading = Paragraph("Clusters", heading_style)
+        story.append(clusters_heading)
+        story.append(Spacer(1, 12))
+        
+        for cluster in data['clusters']:
+            # Cluster header
+            cluster_title = Paragraph(
+                f"Cluster {cluster['id']}: {cluster['label']}", 
+                styles['Heading3']
+            )
+            story.append(cluster_title)
+            
+            # Cluster info
+            cluster_info = [
+                ['Size:', f"{cluster['size']} items"],
+                ['Coherence Score:', f"{cluster['coherence_score']:.3f}"]
+            ]
+            
+            cluster_table = Table(cluster_info, colWidths=[1.5*inch, 2*inch])
+            cluster_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.lightblue),
+                ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            
+            story.append(cluster_table)
+            story.append(Spacer(1, 12))
+            
+            # Items in cluster
+            items_heading = Paragraph("Items in this cluster:", styles['Heading4'])
+            story.append(items_heading)
+            
+            # Create items table
+            items_data = [['Title', 'Domain', 'URL']]
+            for item in cluster['items'][:10]:  # Limit to first 10 items for PDF
+                title = item['title'][:50] + '...' if len(item['title']) > 50 else item['title']
+                domain = item['domain']
+                url = item['url'][:60] + '...' if len(item['url']) > 60 else item['url']
+                items_data.append([title, domain, url])
+            
+            if len(cluster['items']) > 10:
+                items_data.append([f"... and {len(cluster['items']) - 10} more items", "", ""])
+            
+            items_table = Table(items_data, colWidths=[2.5*inch, 1.5*inch, 2.5*inch])
+            items_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP')
+            ]))
+            
+            story.append(items_table)
+            story.append(Spacer(1, 20))
+        
+        # Build PDF
+        doc.build(story)
+        pdf_io.seek(0)
+        return pdf_io
+
 # Initialize export engine
 export_engine = ExportEngine()
 
@@ -701,10 +842,28 @@ async def process_export_job(job_id: str, request: ExportRequest):
             output_path = output_path.with_suffix('.docx')
             output_path.write_bytes(doc_io.getvalue())
             
+        elif request.format == ExportFormat.PDF:
+            pdf_io = await export_engine.export_to_pdf(data)
+            output_path = output_path.with_suffix('.pdf')
+            output_path.write_bytes(pdf_io.getvalue())
+            
         elif request.format == ExportFormat.NOTION:
             # For Notion, we need additional parameters
-            # This would typically come from the request
-            raise HTTPException(status_code=400, detail="Notion export requires additional configuration")
+            if not request.notion_token or not request.notion_database_id:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Notion export requires notion_token and notion_database_id parameters"
+                )
+            
+            result = await export_engine.export_to_notion(
+                data, 
+                request.notion_token, 
+                request.notion_database_id
+            )
+            
+            # For Notion, we create a JSON summary file instead of the actual export
+            output_path = output_path.with_suffix('.json')
+            output_path.write_text(json.dumps(result, indent=2))
             
         else:
             raise ValueError(f"Unsupported export format: {request.format}")
@@ -761,6 +920,12 @@ async def get_supported_formats():
             "format": ExportFormat.NOTION.value,
             "description": "Export to Notion database",
             "file_extension": None,
+            "supports_templates": False
+        },
+        {
+            "format": ExportFormat.PDF.value,
+            "description": "Portable Document Format - professional document format",
+            "file_extension": "pdf",
             "supports_templates": False
         }
     ]
