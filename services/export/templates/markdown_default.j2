@@ -1,0 +1,23 @@
+# {{ session_name }} - Export Report
+
+Generated on: {{ export_date }}
+Total Items: {{ total_items }}
+Total Clusters: {{ total_clusters }}
+
+## Summary
+{{ summary }}
+
+{% for cluster in clusters %}
+## Cluster {{ cluster.id }}: {{ cluster.label }}
+
+**Size:** {{ cluster.size }} items
+**Coherence Score:** {{ cluster.coherence_score }}
+
+### Items in this cluster:
+{% for item in cluster['items'] %}
+- **{{ item.title }}** ({{ item.domain }})
+  - URL: {{ item.url }}
+  - Content Preview: {{ item.content[:200] }}...
+  
+{% endfor %}
+{% endfor %}
