@@ -37,6 +37,45 @@ services:
     networks:
       - test_network
 
+  # Export service tests
+  export-test:
+    build:
+      context: ./services/export
+      dockerfile: Dockerfile
+    container_name: export-test
+    environment:
+      - TESTING=true
+      - LOG_LEVEL=DEBUG
+      - PYTHONPATH=/app
+      - QDRANT_HOST=mock-qdrant
+      - QDRANT_PORT=6333
+    volumes:
+      - ./services/export:/app/test_src
+      - export_test_data:/app/exports
+      - export_test_templates:/app/templates
+    command: python -m pytest test_export_integration.py -v --tb=short
+    depends_on:
+      - mock-qdrant
+    networks:
+      - test_network
+
+  # API Gateway tests
+  api-gateway-test:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway-test
+    environment:
+      - TESTING=true
+      - LOG_LEVEL=DEBUG
+      - PYTHONPATH=/app
+    command: sh -c "find /app -name '*.pyc' -delete && find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true && python -m pytest test_simple_integration.py -v --tb=short"
+    depends_on:
+      - mock-qdrant
+      - mock-ollama
+    networks:
+      - test_network
+
   # Lightweight mock services for testing
   mock-qdrant:
     image: alpine:latest
@@ -51,6 +90,10 @@ services:
     command: sleep 3600
     networks:
       - test_network
+
+volumes:
+  export_test_data:
+  export_test_templates:
 
 networks:
   test_network:
