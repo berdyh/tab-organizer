@@ -11,9 +11,83 @@ import {
   Clock,
   AlertCircle,
   Search,
-  Filter
+  Filter,
+  X
 } from 'lucide-react';
 import { urlAPI, scrapingAPI } from '../services/api';
+
+// Helper function to extract user-friendly error messages
+const getErrorMessage = (error, defaultMessage) => {
+  if (!error) return defaultMessage;
+  
+  // Network error - no response received
+  if (error.request && !error.response) {
+    return 'Cannot connect to server. Please ensure all services are running and try again.';
+  }
+  
+  // Server responded with error
+  if (error.response) {
+    const { status, data } = error.response;
+    
+    // Extract error message from response
+    const serverMessage = data?.detail || data?.message || data?.error;
+    
+    if (status === 400) {
+      return serverMessage || 'Invalid request. Please check your input and try again.';
+    } else if (status === 401) {
+      return 'Authentication required. Please log in and try again.';
+    } else if (status === 403) {
+      return 'You do not have permission to perform this action.';
+    } else if (status === 404) {
+      return serverMessage || 'The requested resource was not found.';
+    } else if (status === 422) {
+      return serverMessage || 'Validation failed. Please check your input.';
+    } else if (status === 500) {
+      return 'Server error occurred. Please try again later.';
+    } else if (status === 503) {
+      return 'Service temporarily unavailable. Please try again later.';
+    }
+    
+    return serverMessage || defaultMessage;
+  }
+  
+  // Request setup error
+  if (error.message) {
+    return `Error: ${error.message}`;
+  }
+  
+  return defaultMessage;
+};
+
+// Error Alert Component
+const ErrorAlert = ({ message, onClose }) => {
+  if (!message) return null;
+  
+  return (
+    <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
+      <div className="flex items-start">
+        <div className="flex-shrink-0">
+          <XCircle className="h-5 w-5 text-red-400" />
+        </div>
+        <div className="ml-3 flex-1">
+          <h3 className="text-sm font-medium text-red-800">Error</h3>
+          <div className="mt-2 text-sm text-red-700">
+            {message}
+          </div>
+        </div>
+        <div className="ml-auto pl-3">
+          <button
+            onClick={onClose}
+            className="inline-flex rounded-md bg-red-50 p-1.5 text-red-500 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-600 focus:ring-offset-2 focus:ring-offset-red-50"
+          >
+            <span className="sr-only">Dismiss</span>
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const URLManager = () => {
   const [selectedUrls, setSelectedUrls] = useState([]);
@@ -21,21 +95,35 @@ const URLManager = () => {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [error, setError] = useState(null);
   
   const queryClient = useQueryClient();
 
-  const { data: urls, isLoading } = useQuery('urls', () => urlAPI.list());
+  const { data: urls, isLoading } = useQuery('urls', () => urlAPI.list(), {
+    onError: (err) => {
+      setError(getErrorMessage(err, 'Failed to load URLs'));
+    },
+    retry: 1,
+  });
   
   const deleteUrlMutation = useMutation(urlAPI.delete, {
     onSuccess: () => {
       queryClient.invalidateQueries('urls');
       setSelectedUrls([]);
+      setError(null);
+    },
+    onError: (err) => {
+      setError(getErrorMessage(err, 'Failed to delete URL'));
     },
   });
 
   const scrapeMutation = useMutation(scrapingAPI.batchScrape, {
     onSuccess: () => {
       queryClient.invalidateQueries('scraping-jobs');
+      setError(null);
+    },
+    onError: (err) => {
+      setError(getErrorMessage(err, 'Failed to start scraping'));
     },
   });
 
@@ -86,6 +174,9 @@ const URLManager = () => {
 
   return (
     <div className="space-y-6">
+      {/* Error Alert */}
+      <ErrorAlert message={error} onClose={() => setError(null)} />
+      
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
@@ -310,18 +401,27 @@ const URLRow = ({ url, isSelected, onSelect }) => {
 const AddURLModal = ({ onClose, onSuccess }) => {
   const [url, setUrl] = useState('');
   const [isValidating, setIsValidating] = useState(false);
+  const [error, setError] = useState(null);
 
   const validateMutation = useMutation(urlAPI.validate, {
     onSuccess: () => {
+      setError(null);
       onSuccess();
+    },
+    onError: (err) => {
+      setError(getErrorMessage(err, 'Failed to validate URL'));
     },
   });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!url.trim()) return;
+    if (!url.trim()) {
+      setError('Please enter a valid URL');
+      return;
+    }
 
     setIsValidating(true);
+    setError(null);
     try {
       await validateMutation.mutateAsync(url.trim());
     } finally {
@@ -334,6 +434,21 @@ const AddURLModal = ({ onClose, onSuccess }) => {
       <div className="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
         <div className="mt-3">
           <h3 className="text-lg font-medium text-gray-900 mb-4">Add New URL</h3>
+          
+          {/* Error Display */}
+          {error && (
+            <div className="mb-4 bg-red-50 border border-red-200 rounded-md p-3">
+              <div className="flex">
+                <div className="flex-shrink-0">
+                  <XCircle className="h-5 w-5 text-red-400" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm text-red-700">{error}</p>
+                </div>
+              </div>
+            </div>
+          )}
+          
           <form onSubmit={handleSubmit}>
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -374,18 +489,47 @@ const AddURLModal = ({ onClose, onSuccess }) => {
 const UploadModal = ({ onClose, onSuccess }) => {
   const [file, setFile] = useState(null);
   const [format, setFormat] = useState('text');
+  const [error, setError] = useState(null);
 
-  const uploadMutation = useMutation(urlAPI.batch, {
-    onSuccess: () => {
-      onSuccess();
-    },
-  });
+  const uploadMutation = useMutation(
+    ({ file, format }) => urlAPI.batch(file, format),
+    {
+      onSuccess: (data) => {
+        setError(null);
+        onSuccess(data);
+      },
+      onError: (err) => {
+        setError(getErrorMessage(err, 'Failed to upload file'));
+      },
+    }
+  );
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!file) return;
+    
+    if (!file) {
+      setError('Please select a file to upload');
+      return;
+    }
 
-    await uploadMutation.mutateAsync(file, format);
+    // Validate file type based on format
+    const validExtensions = {
+      text: ['.txt'],
+      json: ['.json'],
+      csv: ['.csv'],
+      excel: ['.xlsx', '.xls'],
+    };
+
+    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+    const allowedExtensions = validExtensions[format] || [];
+
+    if (!allowedExtensions.includes(fileExtension)) {
+      setError(`Invalid file type. Expected ${allowedExtensions.join(' or ')} for ${format} format.`);
+      return;
+    }
+
+    setError(null);
+    await uploadMutation.mutateAsync({ file, format });
   };
 
   return (
@@ -393,6 +537,21 @@ const UploadModal = ({ onClose, onSuccess }) => {
       <div className="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
         <div className="mt-3">
           <h3 className="text-lg font-medium text-gray-900 mb-4">Upload URL File</h3>
+          
+          {/* Error Display */}
+          {error && (
+            <div className="mb-4 bg-red-50 border border-red-200 rounded-md p-3">
+              <div className="flex">
+                <div className="flex-shrink-0">
+                  <XCircle className="h-5 w-5 text-red-400" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm text-red-700">{error}</p>
+                </div>
+              </div>
+            </div>
+          )}
+          
           <form onSubmit={handleSubmit}>
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">
