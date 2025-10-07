@@ -254,11 +254,12 @@ services:
     build:
       context: ./services/web-ui
       dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_URL=http://localhost:8080
     container_name: web-ui
     ports:
       - "8089:8089"
     environment:
-      - REACT_APP_API_URL=http://localhost:8080
       - NODE_ENV=production
     depends_on:
       api-gateway:
@@ -272,6 +273,32 @@ services:
     networks:
       - scraping_network
     restart: unless-stopped
+
+  # Visualization Service
+  visualization-service:
+    build:
+      context: ./services/visualization
+      dockerfile: Dockerfile
+    container_name: visualization-service
+    ports:
+      - "8090:8090"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./docs:/app/docs
 
 networks:
   scraping_network:

@@ -76,6 +76,23 @@ services:
     networks:
       - test_network
 
+  # Visualization service tests
+  visualization-test:
+    build:
+      context: ./services/visualization
+      dockerfile: Dockerfile
+    container_name: visualization-test
+    environment:
+      - TESTING=true
+      - LOG_LEVEL=DEBUG
+      - PYTHONPATH=/app
+    volumes:
+      - ./services/visualization:/app/test_src
+      - ./docs:/app/docs
+    command: python -m pytest test_visualization.py test_doc_generator.py -v --tb=short
+    networks:
+      - test_network
+
   # Lightweight mock services for testing
   mock-qdrant:
     image: alpine:latest
