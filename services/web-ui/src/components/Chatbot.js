@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useMutation, useQuery } from 'react-query';
+import { useMutation } from 'react-query';
 import { 
   Send, 
   Bot, 
@@ -8,8 +8,7 @@ import {
   ExternalLink,
   Copy,
   ThumbsUp,
-  ThumbsDown,
-  RefreshCw
+  ThumbsDown
 } from 'lucide-react';
 import { chatbotAPI } from '../services/api';
 
@@ -44,6 +43,7 @@ const Chatbot = ({ sessionId, onClose }) => {
         return response.data;
       } catch (error) {
         // Fallback to mock responses for development
+        // eslint-disable-next-line no-console
         console.log('Using mock chatbot response');
         await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
         
@@ -147,7 +147,7 @@ const Chatbot = ({ sessionId, onClose }) => {
         setMessages(prev => [...prev, botMessage]);
         setIsTyping(false);
       },
-      onError: (error) => {
+      onError: () => {
         const errorMessage = {
           id: Date.now().toString(),
           type: 'bot',
@@ -197,6 +197,7 @@ const Chatbot = ({ sessionId, onClose }) => {
 
   const handleFeedback = (messageId, feedback) => {
     // Handle feedback (thumbs up/down)
+    // eslint-disable-next-line no-console
     console.log('Feedback:', messageId, feedback);
   };
 

@@ -11,8 +11,9 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-    echo "❌ Docker Compose is not installed. Please install Docker Compose first."
+if ! docker compose version &> /dev/null; then
+    echo "❌ Docker Compose is not available. Please install Docker Compose V2 or update Docker."
+    echo "💡 Try: 'docker --version' and 'docker compose version'"
     exit 1
 fi
 
@@ -29,24 +30,28 @@ fi
 
 # Pull required Docker images
 echo "📦 Pulling Docker images..."
-docker-compose pull qdrant ollama-cpu
+docker compose pull qdrant ollama
 
 # Build services
 echo "🔨 Building services..."
-docker-compose build
+docker compose build
 
 echo "✅ Setup complete!"
 echo ""
-echo "Next steps:"
-echo "1. Edit .env file with your configuration"
-echo "2. Choose your AI models:"
-echo "   - './scripts/setup-models.sh auto' for automatic setup (recommended)"
-echo "   - './scripts/setup-models.sh' for interactive setup with manual choice"
-echo "3. Run: ./scripts/start.sh"
-echo "4. Access the API Gateway at http://localhost:8080"
+echo "🚀 Quick Start:"
+echo "1. Run: ./scripts/start.sh"
+echo "2. Access the Web UI at http://localhost:8089"
+echo "3. Access the API Gateway at http://localhost:8080"
 echo ""
-echo "💡 Model setup options:"
-echo "  - './scripts/setup-models.sh auto' - Fully automatic based on hardware"
-echo "  - './scripts/setup-models.sh' - Interactive with automatic/manual choice"
-echo "  - './scripts/setup-models.sh list' - See all available models"
-echo "  - 'python3 scripts/model-manager.py auto' - Advanced automatic setup"
+echo "📝 Optional Configuration:"
+echo "1. Edit .env file with your configuration (already has good defaults)"
+echo "2. For advanced model selection (after starting services):"
+echo "   - 'python3 scripts/model-manager.py auto' - Hardware-optimized model selection"
+echo "   - './scripts/setup-models.sh' - Interactive model setup"
+echo ""
+echo "💡 The .env file already contains recommended models for your system:"
+echo "  - LLM: phi4:3.8b (Microsoft's latest, GPU optimized)"
+echo "  - Embedding: mxbai-embed-large (highest quality)"
+echo ""
+echo "⚠️  Note: Model setup tools require services to be running first!"
+echo "   Start with './scripts/start.sh' then use model management tools."

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import psutil
 import platform
+import requests
 
 class ModelManager:
     def __init__(self, config_path: str = "config/models.json"):
@@ -445,7 +446,7 @@ class ModelManager:
         try:
             # List installed models
             print("📦 Installed Models:")
-            result = subprocess.run(['docker-compose', 'exec', '-T', 'ollama', 'ollama', 'ls'], 
+            result = subprocess.run(['docker', 'compose', 'exec', '-T', 'ollama', 'ollama', 'ls'], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 if result.stdout.strip():
@@ -454,14 +455,14 @@ class ModelManager:
                     print("No models installed")
             else:
                 print("❌ Could not list installed models")
-                print("Make sure Ollama service is running: docker-compose up -d ollama")
+                print("Make sure Ollama service is running: docker compose up -d ollama")
                 return
             
             print()
             
             # List running models
             print("🏃 Running Models:")
-            result = subprocess.run(['docker-compose', 'exec', '-T', 'ollama', 'ollama', 'ps'], 
+            result = subprocess.run(['docker', 'compose', 'exec', '-T', 'ollama', 'ollama', 'ps'], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 if result.stdout.strip():
@@ -507,13 +508,46 @@ class ModelManager:
             print(f"📊 Expected performance: ~{perf['estimated_tokens_per_sec']} tokens/sec")
         
         try:
-            result = subprocess.run(['docker-compose', 'exec', '-T', 'ollama', 'ollama', 'pull', model_id], 
-                                  timeout=600)  # 10 minute timeout for large models
+            # Check if we should use local Ollama or Docker
+            use_local_ollama = self._check_local_ollama()
+            
+            if use_local_ollama:
+                print(f"🔗 Using local Ollama installation")
+                print(f"⏳ Downloading {model_id}... (this may take several minutes)")
+                
+                # Use local Ollama installation with minimal output
+                result = subprocess.run(['ollama', 'pull', model_id], 
+                                      capture_output=True, text=True, timeout=600)
+            else:
+                print(f"🐳 Using Docker Ollama container")
+                print(f"⏳ Downloading {model_id}... (this may take several minutes)")
+                
+                # Use Docker Ollama with minimal output
+                result = subprocess.run(['docker', 'compose', 'exec', '-T', 'ollama', 'ollama', 'pull', model_id], 
+                                      capture_output=True, text=True, timeout=600)
+            
             if result.returncode == 0:
-                print(f"✅ Successfully pulled {model_id}")
+                ollama_type = "local" if use_local_ollama else "Docker"
+                print(f"✅ Successfully pulled {model_id} ({ollama_type} Ollama)")
                 return True
             else:
-                print(f"❌ Failed to pull {model_id}")
+                if use_local_ollama:
+                    print(f"❌ Failed to pull {model_id} from local Ollama")
+                    if "command not found" in result.stderr:
+                        print("💡 Ollama CLI not found. Install with: curl -fsSL https://ollama.ai/install.sh | sh")
+                    elif result.stderr:
+                        print(f"   Error: {result.stderr.strip()}")
+                else:
+                    # Check if it's a Docker service not running error
+                    if "not running" in result.stderr or "No such service" in result.stderr:
+                        print(f"❌ Docker Ollama service is not running!")
+                        print("💡 Please start services first with: ./scripts/start.sh")
+                        print("   Or use local Ollama: ollama serve")
+                        return False
+                    else:
+                        print(f"❌ Failed to pull {model_id} from Docker Ollama")
+                        if result.stderr:
+                            print(f"   Error: {result.stderr.strip()}")
                 return False
         except subprocess.TimeoutExpired:
             print(f"❌ Timeout pulling {model_id} (10 minutes)")
@@ -821,7 +855,7 @@ class ModelManager:
             self.save_config()
             print(f"✅ Removed model from configuration: {model_id}")
             print("Note: This only removes from config. To uninstall from Ollama, run:")
-            print(f"docker-compose exec ollama ollama rm {model_id}")
+            print(f"docker compose exec ollama ollama rm {model_id}")
         else:
             print(f"❌ Model not found in configuration: {model_id}")
     
@@ -829,7 +863,7 @@ class ModelManager:
         """Uninstall a model from Ollama."""
         print(f"🗑️  Uninstalling model: {model_id}")
         try:
-            result = subprocess.run(['docker-compose', 'exec', '-T', 'ollama', 'ollama', 'rm', model_id], 
+            result = subprocess.run(['docker', 'compose', 'exec', '-T', 'ollama', 'ollama', 'rm', model_id], 
                                   timeout=30)
             if result.returncode == 0:
                 print(f"✅ Successfully uninstalled {model_id}")
@@ -858,12 +892,92 @@ class ModelManager:
         print()
 
 
+    def _check_local_ollama(self):
+        """Check if local Ollama is running."""
+        try:
+            import requests
+            response = requests.get("http://localhost:11434/api/tags", timeout=5)
+            return response.status_code == 200
+        except:
+            return False
+
+    def check_services_running(self):
+        """Check if required services are running."""
+        # First check for local Ollama
+        if self._check_local_ollama():
+            print("✅ Local Ollama detected and running")
+            return True
+            
+        # If no local Ollama, check Docker services
+        try:
+            result = subprocess.run(['docker', 'compose', 'ps', '--services', '--filter', 'status=running'], 
+                                  capture_output=True, text=True, timeout=10)
+            running_services = result.stdout.strip().split('\n') if result.stdout.strip() else []
+            
+            if 'ollama' not in running_services:
+                print("❌ No Ollama service found!")
+                print("💡 Options:")
+                print("   1. Start local Ollama: ollama serve")
+                print("   2. Start Docker services: ./scripts/start.sh")
+                return False
+            return True
+        except Exception as e:
+            print(f"⚠️  Could not check service status: {e}")
+            print("💡 Make sure either local Ollama is running or start Docker services with: ./scripts/start.sh")
+            return False
+
     def automatic_setup(self):
         """Automatic model setup based on hardware detection."""
         print("🤖 Automatic Model Setup")
         print("=" * 25)
         
+        # Check if services are running first
+        if not self.check_services_running():
+            return
+        
+        # Show which Ollama instance we're using
+        self._show_ollama_info()
+        
         self.show_hardware_info()
+
+    def _show_ollama_info(self):
+        """Show information about the Ollama instance being used."""
+        if self._check_local_ollama():
+            print("🔗 Ollama Instance: Local installation")
+            try:
+                # Get Ollama version
+                result = subprocess.run(['ollama', '--version'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    version = result.stdout.strip()
+                    print(f"📋 Version: {version}")
+                
+                # Get running models
+                result = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and result.stdout.strip():
+                    lines = result.stdout.strip().split('\n')
+                    if len(lines) > 1:  # Header + models
+                        model_count = len(lines) - 1
+                        print(f"🏃 Currently running: {model_count} model(s)")
+                    else:
+                        print("💤 No models currently loaded")
+                else:
+                    print("💤 No models currently loaded")
+                    
+            except Exception as e:
+                print(f"⚠️  Could not get Ollama info: {e}")
+        else:
+            print("🐳 Ollama Instance: Docker container")
+            try:
+                # Check Docker Ollama status
+                result = subprocess.run(['docker', 'compose', 'exec', '-T', 'ollama', 'ollama', '--version'], 
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    version = result.stdout.strip()
+                    print(f"📋 Version: {version}")
+            except Exception as e:
+                print(f"⚠️  Could not get Docker Ollama info: {e}")
+        
+        print()  # Add spacing
         
         llm_rec, embed_rec = self.get_recommended_models()
         
@@ -882,18 +996,59 @@ class ModelManager:
         
         # Pull models automatically
         print("📥 Installing recommended models...")
+        print(f"🎯 Plan: Download {llm_rec} + {embed_rec}")
+        print()
+        
         success = True
+        
+        print("📥 [1/2] Installing LLM model...")
         success &= self.pull_model(llm_rec)
-        success &= self.pull_model(embed_rec)
+        
+        if success:
+            print()
+            print("📥 [2/2] Installing embedding model...")
+            success &= self.pull_model(embed_rec)
+        else:
+            print("❌ Skipping embedding model due to LLM failure")
         
         if success:
             self.update_env_file(llm_rec, embed_rec)
             print("\n✅ Automatic setup complete!")
             print(f"✅ LLM Model: {llm_rec}")
             print(f"✅ Embedding Model: {embed_rec}")
+            
+            # Show final status
+            print("\n📊 Final Status:")
+            self._show_installed_models()
         else:
             print("\n❌ Automatic setup failed")
             print("You can try manual setup with: python3 scripts/model-manager.py interactive")
+
+    def _show_installed_models(self):
+        """Show currently installed models."""
+        try:
+            if self._check_local_ollama():
+                result = subprocess.run(['ollama', 'list'], capture_output=True, text=True, timeout=10)
+            else:
+                result = subprocess.run(['docker', 'compose', 'exec', '-T', 'ollama', 'ollama', 'list'], 
+                                      capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                lines = result.stdout.strip().split('\n')
+                if len(lines) > 1:  # Header + models
+                    print(f"📦 Installed models: {len(lines) - 1}")
+                    for line in lines[1:]:  # Skip header
+                        if line.strip():
+                            parts = line.split()
+                            if parts:
+                                model_name = parts[0]
+                                print(f"   • {model_name}")
+                else:
+                    print("📦 No models installed")
+            else:
+                print("⚠️  Could not list installed models")
+        except Exception as e:
+            print(f"⚠️  Error checking installed models: {e}")
 
 
 def main():
@@ -929,7 +1084,7 @@ def main():
         print("🏃 Currently Running Models")
         print("=" * 30)
         try:
-            result = subprocess.run(['docker-compose', 'exec', '-T', 'ollama', 'ollama', 'ps'], 
+            result = subprocess.run(['docker', 'compose', 'exec', '-T', 'ollama', 'ollama', 'ps'], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 if result.stdout.strip():

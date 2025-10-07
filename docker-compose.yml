@@ -21,26 +21,8 @@ services:
       - scraping_network
     restart: unless-stopped
 
-  # Ollama LLM Service (CPU-only for compatibility)
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_models:/root/.ollama
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_ORIGINS=*
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    networks:
-      - scraping_network
-    restart: unless-stopped
+  # Note: Using local Ollama instance on host machine
+  # Ollama should be running on host at localhost:11434
 
   # API Gateway
   api-gateway:
@@ -52,14 +34,12 @@ services:
       - "8080:8080"
     environment:
       - QDRANT_URL=http://qdrant:6333
-      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_URL=http://host.docker.internal:11434
       - LOG_LEVEL=INFO
       - ENVIRONMENT=development
     depends_on:
       qdrant:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -154,12 +134,10 @@ services:
       - LOG_LEVEL=INFO
       - ENVIRONMENT=development
       - QDRANT_URL=http://qdrant:6333
-      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_URL=http://host.docker.internal:11434
     depends_on:
       qdrant:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
       interval: 30s
@@ -211,7 +189,7 @@ services:
       - QDRANT_URL=http://qdrant:6333
     depends_on:
       qdrant:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
       interval: 30s
@@ -237,7 +215,7 @@ services:
       - QDRANT_URL=http://qdrant:6333
     depends_on:
       qdrant:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8087/health"]
       interval: 30s
@@ -299,6 +277,68 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./docs:/app/docs
+
+  # Chatbot Service
+  chatbot-service:
+    build:
+      context: ./services/chatbot
+      dockerfile: Dockerfile
+    container_name: chatbot-service
+    ports:
+      - "8092:8092"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - DEFAULT_LLM_MODEL=phi4
+      - DEFAULT_EMBEDDING_MODEL=mxbai-embed-large
+    depends_on:
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+  # Monitoring Service
+  monitoring-service:
+    build:
+      context: ./services/monitoring
+      dockerfile: Dockerfile
+    container_name: monitoring-service
+    ports:
+      - "8091:8091"
+    environment:
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+      - METRICS_COLLECTION_INTERVAL=30
+      - HEALTH_CHECK_INTERVAL=30
+      - PERFORMANCE_TRACKING_ENABLED=true
+      - DISTRIBUTED_TRACING_ENABLED=true
+      - DOCKER_SOCKET=unix://var/run/docker.sock
+    volumes:
+      - ./logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./monitoring-data:/app/data
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - scraping_network
+    restart: unless-stopped
 
 networks:
   scraping_network:

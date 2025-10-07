@@ -34,44 +34,46 @@ api.interceptors.response.use(
 
 // URL Management API
 export const urlAPI = {
-  validate: (url) => api.post('/urls/validate', { url }),
+  validate: (url) => api.post('/api/url-input-service/api/input/urls', [url]),
   batch: (file, format) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('format', format);
-    return api.post('/urls/batch', formData);
+    const endpoint = format === 'text' ? 'text' : 
+                    format === 'json' ? 'json' : 
+                    format === 'csv' ? 'csv' : 'excel';
+    return api.post(`/api/url-input-service/api/input/upload/${endpoint}`, formData);
   },
-  getMetadata: (id) => api.get(`/urls/${id}/metadata`),
-  list: (params) => api.get('/urls', { params }),
-  delete: (id) => api.delete(`/urls/${id}`),
-  update: (id, data) => api.put(`/urls/${id}`, data),
+  getMetadata: (id) => api.get(`/api/url-input-service/api/input/${id}`),
+  list: (params) => api.get('/api/url-input-service/api/input/list', { params }),
+  delete: (id) => api.delete(`/api/url-input-service/api/input/${id}`),
+  update: (id, data) => api.put(`/api/url-input-service/api/input/${id}`, data),
 };
 
 // Scraping API
 export const scrapingAPI = {
   scrapeUrl: (url, sessionId, options) => 
-    api.post('/scrape/url', { url, session_id: sessionId, options }),
+    api.post('/api/scraper-service/scrape/url', { url, session_id: sessionId, options }),
   batchScrape: (urls, sessionId, parallelAuth = true) =>
-    api.post('/scrape/batch', { urls, session_id: sessionId, parallel_auth: parallelAuth }),
-  getStatus: (jobId) => api.get(`/scrape/status/${jobId}`),
-  getJobs: () => api.get('/scrape/jobs'),
+    api.post('/api/scraper-service/scrape/batch', { urls, session_id: sessionId, parallel_auth: parallelAuth }),
+  getStatus: (jobId) => api.get(`/api/scraper-service/scrape/status/${jobId}`),
+  getJobs: () => api.get('/api/scraper-service/scrape/jobs'),
 };
 
 // Search API
 export const searchAPI = {
   search: (query, searchType = 'semantic', filters = {}) =>
-    api.get('/search', { params: { query, search_type: searchType, ...filters } }),
-  getSuggestions: (query) => api.get('/search/suggestions', { params: { query } }),
+    api.get('/api/analyzer-service/search', { params: { query, search_type: searchType, ...filters } }),
+  getSuggestions: (query) => api.get('/api/analyzer-service/search/suggestions', { params: { query } }),
 };
 
 // Session API
 export const sessionAPI = {
-  list: () => api.get('/sessions'),
-  create: (name, description) => api.post('/sessions', { name, description }),
-  get: (id) => api.get(`/sessions/${id}`),
-  update: (id, data) => api.put(`/sessions/${id}`, data),
-  delete: (id) => api.delete(`/sessions/${id}`),
-  compare: (sessionIds) => api.post('/sessions/compare', { session_ids: sessionIds }),
+  list: () => api.get('/api/session-service/sessions'),
+  create: (name, description) => api.post('/api/session-service/sessions', { name, description }),
+  get: (id) => api.get(`/api/session-service/sessions/${id}`),
+  update: (id, data) => api.put(`/api/session-service/sessions/${id}`, data),
+  delete: (id) => api.delete(`/api/session-service/sessions/${id}`),
+  compare: (sessionIds) => api.post('/api/session-service/sessions/compare', { session_ids: sessionIds }),
 };
 
 // Export API
@@ -84,19 +86,19 @@ export const exportAPI = {
 
 // Clustering API
 export const clusteringAPI = {
-  getClusters: (sessionId) => api.get(`/clusters/${sessionId}`),
-  getClusterDetails: (clusterId) => api.get(`/clusters/details/${clusterId}`),
-  visualize: (sessionId, type = '2d') => api.get(`/clusters/${sessionId}/visualize`, { params: { type } }),
+  getClusters: (sessionId) => api.get(`/api/clustering-service/clusters/${sessionId}`),
+  getClusterDetails: (clusterId) => api.get(`/api/clustering-service/clusters/details/${clusterId}`),
+  visualize: (sessionId, type = '2d') => api.get(`/api/clustering-service/clusters/${sessionId}/visualize`, { params: { type } }),
 };
 
 // Chatbot API
 export const chatbotAPI = {
   sendMessage: (sessionId, message, context) =>
-    api.post('/chat/message', { session_id: sessionId, message, context }),
-  getConversationHistory: (sessionId) => api.get(`/chat/history/${sessionId}`),
-  clearHistory: (sessionId) => api.delete(`/chat/history/${sessionId}`),
+    api.post('/api/chatbot/chat/message', { session_id: sessionId, message, context }),
+  getConversationHistory: (sessionId) => api.get(`/api/chatbot/chat/history/${sessionId}`),
+  clearHistory: (sessionId) => api.delete(`/api/chatbot/chat/history/${sessionId}`),
   provideFeedback: (messageId, feedback) =>
-    api.post('/chat/feedback', { message_id: messageId, feedback }),
+    api.post('/api/chatbot/chat/feedback', { message_id: messageId, feedback }),
 };
 
 export default api;

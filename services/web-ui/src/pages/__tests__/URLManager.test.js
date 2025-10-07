@@ -32,6 +32,7 @@ const createTestQueryClient = () => new QueryClient({
   defaultOptions: {
     queries: {
       retry: false,
+      cacheTime: 0,
     },
   },
 });
@@ -40,7 +41,7 @@ const renderWithQueryClient = (ui) => {
   const queryClient = createTestQueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         {ui}
       </MemoryRouter>
     </QueryClientProvider>
@@ -50,25 +51,22 @@ const renderWithQueryClient = (ui) => {
 test('renders URL manager page', async () => {
   renderWithQueryClient(<URLManager />);
   
-  expect(screen.getByText('URL Manager')).toBeInTheDocument();
-  expect(screen.getByText('Manage your URLs and organize them into collections')).toBeInTheDocument();
-  
-  await waitFor(() => {
-    expect(screen.getByText('https://example.com')).toBeInTheDocument();
-  });
+  expect(await screen.findByText('URL Manager', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(await screen.findByText('Manage your URLs and organize them into collections', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(await screen.findByText('https://example.com', {}, { timeout: 5000 })).toBeInTheDocument();
 });
 
-test('shows add URL button', () => {
+test('shows add URL button', async () => {
   renderWithQueryClient(<URLManager />);
   
-  expect(screen.getByText('Add URL')).toBeInTheDocument();
-  expect(screen.getByText('Upload File')).toBeInTheDocument();
+  expect(await screen.findByText('Add URL', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(await screen.findByText('Upload File', {}, { timeout: 5000 })).toBeInTheDocument();
 });
 
 test('search functionality works', async () => {
   renderWithQueryClient(<URLManager />);
   
-  const searchInput = screen.getByPlaceholderText('Search URLs...');
+  const searchInput = await screen.findByPlaceholderText('Search URLs...', {}, { timeout: 5000 });
   expect(searchInput).toBeInTheDocument();
   
   fireEvent.change(searchInput, { target: { value: 'example' } });
@@ -78,7 +76,7 @@ test('search functionality works', async () => {
 test('status filter works', async () => {
   renderWithQueryClient(<URLManager />);
   
-  const statusFilter = screen.getByDisplayValue('All Status');
+  const statusFilter = await screen.findByRole('combobox', { name: /status/i }, { timeout: 5000 });
   expect(statusFilter).toBeInTheDocument();
   
   fireEvent.change(statusFilter, { target: { value: 'completed' } });
@@ -88,26 +86,28 @@ test('status filter works', async () => {
 test('URL selection works', async () => {
   renderWithQueryClient(<URLManager />);
   
-  await waitFor(() => {
-    const checkboxes = screen.getAllByRole('checkbox');
-    expect(checkboxes.length).toBeGreaterThan(0);
-  });
+  const checkboxes = await screen.findAllByRole('checkbox', {}, { timeout: 5000 });
+  expect(checkboxes.length).toBeGreaterThan(0);
 });
 
-test('opens add URL modal', () => {
+test('opens add URL modal', async () => {
   renderWithQueryClient(<URLManager />);
   
-  const addButton = screen.getByText('Add URL');
+  const addButton = await screen.findByText('Add URL', {}, { timeout: 5000 });
+  expect(addButton).toBeInTheDocument();
+  
   fireEvent.click(addButton);
   
-  expect(screen.getByText('Add New URL')).toBeInTheDocument();
+  expect(await screen.findByText('Add New URL', {}, { timeout: 5000 })).toBeInTheDocument();
 });
 
-test('opens upload modal', () => {
+test('opens upload modal', async () => {
   renderWithQueryClient(<URLManager />);
   
-  const uploadButton = screen.getByText('Upload File');
+  const uploadButton = await screen.findByText('Upload File', {}, { timeout: 5000 });
+  expect(uploadButton).toBeInTheDocument();
+  
   fireEvent.click(uploadButton);
   
-  expect(screen.getByText('Upload URL File')).toBeInTheDocument();
+  expect(await screen.findByText('Upload URL File', {}, { timeout: 5000 })).toBeInTheDocument();
 });

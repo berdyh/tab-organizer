@@ -33,6 +33,7 @@ const ExportPage = () => {
   const exportMutation = useMutation(exportAPI.export, {
     onSuccess: (data) => {
       // Handle successful export
+      // eslint-disable-next-line no-console
       console.log('Export started:', data);
     },
   });
@@ -354,7 +355,7 @@ const ExportHistory = () => {
   );
 };
 
-const PreviewModal = ({ sessionId, format, options, onClose }) => {
+const PreviewModal = ({ sessionId, format, onClose }) => {
   return (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
       <div className="relative top-10 mx-auto p-5 border w-4/5 max-w-4xl shadow-lg rounded-md bg-white">

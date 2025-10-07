@@ -54,7 +54,7 @@ RUN apk add --no-cache curl
 COPY package*.json ./
 
 # Install dependencies including dev dependencies
-RUN npm install
+RUN npm install --silent
 
 # Copy source code
 COPY . .
@@ -67,7 +67,7 @@ CMD ["npm", "run", "test:ci"]
     with open('Dockerfile.test', 'w') as f:
         f.write(dockerfile_content)
     
-    return run_command(['docker', 'build', '-f', 'Dockerfile.test', '-t', 'web-ui-test', '.'])
+    return run_command(['docker', 'build', '--no-cache', '-f', 'Dockerfile.test', '-t', 'web-ui-test', '.'])
 
 def run_unit_tests():
     """Run unit tests in Docker container."""

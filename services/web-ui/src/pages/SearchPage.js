@@ -9,7 +9,6 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronUp,
-  MessageSquare,
   Bot
 } from 'lucide-react';
 import { searchAPI, clusteringAPI } from '../services/api';
@@ -40,6 +39,7 @@ const SearchPage = () => {
       const response = await searchAPI.search(query, searchType, filters);
       setSearchResults(response.data);
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error('Search failed:', error);
     } finally {
       setIsSearching(false);
@@ -91,6 +91,7 @@ const SearchPage = () => {
                 value={searchType}
                 onChange={(e) => setSearchType(e.target.value)}
                 className="px-4 py-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                aria-label="Search type"
               >
                 <option value="semantic">Semantic Search</option>
                 <option value="keyword">Keyword Search</option>

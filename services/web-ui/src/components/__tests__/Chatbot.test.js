@@ -31,41 +31,39 @@ test('renders chatbot interface', () => {
 test('sends message when form is submitted', async () => {
   renderWithQueryClient(<Chatbot sessionId="test-session" />);
   
-  const input = screen.getByPlaceholderText('Ask me about your scraped content...');
+  const input = await screen.findByPlaceholderText('Ask me about your scraped content...', {}, { timeout: 5000 });
   
   fireEvent.change(input, { target: { value: 'test message' } });
   fireEvent.submit(input.closest('form'));
   
-  await waitFor(() => {
-    expect(screen.getByText('test message')).toBeInTheDocument();
-  });
+  expect(await screen.findByText('test message', {}, { timeout: 5000 })).toBeInTheDocument();
 });
 
 test('shows typing indicator when processing', async () => {
   renderWithQueryClient(<Chatbot sessionId="test-session" />);
   
-  const input = screen.getByPlaceholderText('Ask me about your scraped content...');
+  const input = await screen.findByPlaceholderText('Ask me about your scraped content...', {}, { timeout: 5000 });
   
   fireEvent.change(input, { target: { value: 'test message' } });
   fireEvent.submit(input.closest('form'));
   
   // Check that the input is cleared after submission
-  expect(input.value).toBe('');
+  await waitFor(() => expect(input.value).toBe(''), { timeout: 5000 });
 });
 
-test('input field works correctly', () => {
+test('input field works correctly', async () => {
   renderWithQueryClient(<Chatbot sessionId="test-session" />);
   
-  const input = screen.getByPlaceholderText('Ask me about your scraped content...');
+  const input = await screen.findByPlaceholderText('Ask me about your scraped content...', {}, { timeout: 5000 });
   
   fireEvent.change(input, { target: { value: 'test input' } });
   expect(input.value).toBe('test input');
 });
 
-test('handles suggestion clicks', () => {
+test('handles suggestion clicks', async () => {
   renderWithQueryClient(<Chatbot sessionId="test-session" />);
   
-  const input = screen.getByPlaceholderText('Ask me about your scraped content...');
+  const input = await screen.findByPlaceholderText('Ask me about your scraped content...', {}, { timeout: 5000 });
   
   // This would need to be updated based on the actual suggestion rendering
   // For now, just test that the input can be focused
@@ -73,11 +71,11 @@ test('handles suggestion clicks', () => {
   expect(input).toHaveFocus();
 });
 
-test('closes chatbot when close button is clicked', () => {
+test('closes chatbot when close button is clicked', async () => {
   const onClose = jest.fn();
   renderWithQueryClient(<Chatbot sessionId="test-session" onClose={onClose} />);
   
-  const closeButton = screen.getByText('×');
+  const closeButton = await screen.findByText('×', {}, { timeout: 5000 });
   fireEvent.click(closeButton);
   
   expect(onClose).toHaveBeenCalled();

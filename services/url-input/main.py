@@ -605,6 +605,109 @@ async def root():
         "status": "running"
     }
 
+@app.get("/api/input/list")
+async def list_url_inputs(skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000)):
+    """List all URL inputs with pagination."""
+    logger.info("Listing URL inputs", skip=skip, limit=limit)
+    
+    # Convert to list and sort by creation time
+    inputs_list = list(url_inputs.values())
+    inputs_list.sort(key=lambda x: x.created_at, reverse=True)
+    
+    # Apply pagination
+    paginated_inputs = inputs_list[skip:skip + limit]
+    
+    # Convert to response format
+    response_data = []
+    for url_input in paginated_inputs:
+        # Get summary stats
+        stats = BatchProcessor.get_processing_stats(url_input.urls)
+        
+        response_data.append({
+            "id": url_input.input_id,
+            "source_type": url_input.source_type,
+            "created_at": url_input.created_at.isoformat(),
+            "filename": url_input.source_metadata.get("filename", "Direct input"),
+            "total_urls": stats["total_urls"],
+            "valid_urls": stats["valid_urls"],
+            "unique_urls": stats["unique_urls"],
+            "categories": stats["categories"]
+        })
+    
+    return {
+        "data": response_data,
+        "total": len(inputs_list),
+        "skip": skip,
+        "limit": limit,
+        "has_more": skip + limit < len(inputs_list)
+    }
+
+@app.get("/api/input/{input_id}")
+async def get_url_input(input_id: str):
+    """Get detailed information about a specific URL input."""
+    logger.info("Getting URL input details", input_id=input_id)
+    
+    if input_id not in url_inputs:
+        raise HTTPException(status_code=404, detail="URL input not found")
+    
+    url_input = url_inputs[input_id]
+    stats = BatchProcessor.get_processing_stats(url_input.urls)
+    
+    # Convert URLs to response format
+    urls_data = []
+    for url_entry in url_input.urls:
+        url_data = {
+            "url": url_entry.url,
+            "validated": url_entry.validated,
+            "category": url_entry.category,
+            "priority": url_entry.priority,
+            "notes": url_entry.notes,
+            "duplicate_of": url_entry.duplicate_of,
+            "validation_error": url_entry.validation_error
+        }
+        
+        if url_entry.metadata:
+            url_data["metadata"] = asdict(url_entry.metadata)
+        
+        urls_data.append(url_data)
+    
+    return {
+        "input_id": url_input.input_id,
+        "source_type": url_input.source_type,
+        "source_metadata": url_input.source_metadata,
+        "created_at": url_input.created_at.isoformat(),
+        "urls": urls_data,
+        "stats": stats
+    }
+
+@app.delete("/api/input/{input_id}")
+async def delete_url_input(input_id: str):
+    """Delete a URL input."""
+    logger.info("Deleting URL input", input_id=input_id)
+    
+    if input_id not in url_inputs:
+        raise HTTPException(status_code=404, detail="URL input not found")
+    
+    del url_inputs[input_id]
+    
+    return {"message": "URL input deleted successfully", "input_id": input_id}
+
+@app.put("/api/input/{input_id}")
+async def update_url_input(input_id: str, update_data: Dict[str, Any]):
+    """Update URL input metadata."""
+    logger.info("Updating URL input", input_id=input_id)
+    
+    if input_id not in url_inputs:
+        raise HTTPException(status_code=404, detail="URL input not found")
+    
+    url_input = url_inputs[input_id]
+    
+    # Update allowed fields
+    if "source_metadata" in update_data:
+        url_input.source_metadata.update(update_data["source_metadata"])
+    
+    return {"message": "URL input updated successfully", "input_id": input_id}
+
 # File Upload Endpoints
 
 @app.post("/api/input/upload/text")

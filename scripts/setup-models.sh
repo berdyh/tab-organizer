@@ -81,7 +81,7 @@ except Exception as e:
 pull_model() {
     local model=$1
     echo "📥 Pulling model: $model"
-    if docker-compose exec -T ollama ollama pull "$model"; then
+    if docker compose exec -T ollama ollama pull "$model"; then
         echo "✅ Successfully pulled $model"
     else
         echo "❌ Failed to pull $model"
@@ -92,13 +92,13 @@ pull_model() {
 # Function to list installed models
 list_installed() {
     echo "📋 Currently installed models:"
-    if docker-compose exec -T ollama ollama ls 2>/dev/null; then
+    if docker compose exec -T ollama ollama ls 2>/dev/null; then
         echo ""
         echo "🏃 Currently running models:"
-        docker-compose exec -T ollama ollama ps 2>/dev/null || echo "No models currently running"
+        docker compose exec -T ollama ollama ps 2>/dev/null || echo "No models currently running"
     else
         echo "❌ Could not list models (is Ollama service running?)"
-        echo "💡 Try: docker-compose up -d ollama"
+        echo "💡 Try: docker compose up -d ollama"
     fi
 }
 

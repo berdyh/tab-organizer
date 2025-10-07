@@ -9,8 +9,22 @@
       "min_vram_gb": 0,
       "description": "Fast, good quality - recommended for most users",
       "provider": "Meta",
-      "use_cases": ["general", "summarization", "clustering"],
-      "languages": ["en", "es", "fr", "de", "it", "pt", "ru", "zh", "ja"],
+      "use_cases": [
+        "general",
+        "summarization",
+        "clustering"
+      ],
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "it",
+        "pt",
+        "ru",
+        "zh",
+        "ja"
+      ],
       "context_length": 131072,
       "recommended": true,
       "efficiency_metrics": {
@@ -27,8 +41,17 @@
       "min_vram_gb": 0,
       "description": "Fastest, basic quality - for low-resource systems",
       "provider": "Meta",
-      "use_cases": ["low-resource", "basic-summarization"],
-      "languages": ["en", "es", "fr", "de", "it"],
+      "use_cases": [
+        "low-resource",
+        "basic-summarization"
+      ],
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "it"
+      ],
       "context_length": 131072,
       "recommended": false
     },
@@ -41,8 +64,23 @@
       "min_vram_gb": 0,
       "description": "Ultra-lightweight model with thinking mode support",
       "provider": "Alibaba",
-      "use_cases": ["low-resource", "edge-computing", "mobile"],
-      "languages": ["en", "zh", "ja", "ko", "es", "fr", "de", "ru", "ar", "100+ languages"],
+      "use_cases": [
+        "low-resource",
+        "edge-computing",
+        "mobile"
+      ],
+      "languages": [
+        "en",
+        "zh",
+        "ja",
+        "ko",
+        "es",
+        "fr",
+        "de",
+        "ru",
+        "ar",
+        "100+ languages"
+      ],
       "context_length": 32768,
       "recommended": false
     },
@@ -55,8 +93,24 @@
       "min_vram_gb": 0,
       "description": "Efficient model with dual thinking/non-thinking modes",
       "provider": "Alibaba",
-      "use_cases": ["reasoning", "code", "multilingual", "low-resource"],
-      "languages": ["en", "zh", "ja", "ko", "es", "fr", "de", "ru", "ar", "100+ languages"],
+      "use_cases": [
+        "reasoning",
+        "code",
+        "multilingual",
+        "low-resource"
+      ],
+      "languages": [
+        "en",
+        "zh",
+        "ja",
+        "ko",
+        "es",
+        "fr",
+        "de",
+        "ru",
+        "ar",
+        "100+ languages"
+      ],
       "context_length": 32768,
       "recommended": true
     },
@@ -69,8 +123,24 @@
       "min_vram_gb": 0,
       "description": "Strong reasoning and coding, outperforms larger legacy models",
       "provider": "Alibaba",
-      "use_cases": ["reasoning", "code", "agents", "tool-use"],
-      "languages": ["en", "zh", "ja", "ko", "es", "fr", "de", "ru", "ar", "100+ languages"],
+      "use_cases": [
+        "reasoning",
+        "code",
+        "agents",
+        "tool-use"
+      ],
+      "languages": [
+        "en",
+        "zh",
+        "ja",
+        "ko",
+        "es",
+        "fr",
+        "de",
+        "ru",
+        "ar",
+        "100+ languages"
+      ],
       "context_length": 32768,
       "recommended": false
     },
@@ -83,12 +153,29 @@
       "min_vram_gb": 0,
       "description": "Balanced performance with excellent multilingual and reasoning",
       "provider": "Alibaba",
-      "use_cases": ["balanced", "multilingual", "reasoning", "code", "agents"],
-      "languages": ["en", "zh", "ja", "ko", "es", "fr", "de", "ru", "ar", "100+ languages"],
+      "use_cases": [
+        "balanced",
+        "multilingual",
+        "reasoning",
+        "code",
+        "agents"
+      ],
+      "languages": [
+        "en",
+        "zh",
+        "ja",
+        "ko",
+        "es",
+        "fr",
+        "de",
+        "ru",
+        "ar",
+        "100+ languages"
+      ],
       "context_length": 131072,
       "recommended": false
     },
-    "phi4:3.8b": {
+    "phi4": {
       "name": "Phi-4 Mini 3.8B",
       "size": "2.3GB",
       "speed": "fast",
@@ -97,8 +184,24 @@
       "min_vram_gb": 0,
       "description": "Microsoft's latest SLM with enhanced reasoning, 128K context",
       "provider": "Microsoft",
-      "use_cases": ["reasoning", "math", "code", "analysis"],
-      "languages": ["en", "es", "fr", "de", "zh", "ja", "ko", "ar", "ru", "20+ languages"],
+      "use_cases": [
+        "reasoning",
+        "math",
+        "code",
+        "analysis"
+      ],
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "zh",
+        "ja",
+        "ko",
+        "ar",
+        "ru",
+        "20+ languages"
+      ],
       "context_length": 128000,
       "recommended": true
     },
@@ -111,8 +214,18 @@
       "min_vram_gb": 0,
       "description": "Good balance of speed and quality",
       "provider": "Mistral AI",
-      "use_cases": ["balanced", "multilingual", "reasoning"],
-      "languages": ["en", "fr", "de", "es", "it"],
+      "use_cases": [
+        "balanced",
+        "multilingual",
+        "reasoning"
+      ],
+      "languages": [
+        "en",
+        "fr",
+        "de",
+        "es",
+        "it"
+      ],
       "context_length": 32768,
       "recommended": false
     },
@@ -125,8 +238,24 @@
       "min_vram_gb": 0,
       "description": "Google's edge-optimized multimodal model (text, image, audio)",
       "provider": "Google",
-      "use_cases": ["multimodal", "edge-computing", "mobile", "speech", "vision"],
-      "languages": ["en", "es", "fr", "de", "it", "pt", "zh", "ja", "140+ languages"],
+      "use_cases": [
+        "multimodal",
+        "edge-computing",
+        "mobile",
+        "speech",
+        "vision"
+      ],
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "it",
+        "pt",
+        "zh",
+        "ja",
+        "140+ languages"
+      ],
       "context_length": 32768,
       "recommended": false
     },
@@ -139,8 +268,24 @@
       "min_vram_gb": 0,
       "description": "Multimodal model with MatFormer architecture (text, image, audio, video)",
       "provider": "Google",
-      "use_cases": ["multimodal", "efficient", "edge-computing", "vision", "audio"],
-      "languages": ["en", "es", "fr", "de", "it", "pt", "zh", "ja", "140+ languages"],
+      "use_cases": [
+        "multimodal",
+        "efficient",
+        "edge-computing",
+        "vision",
+        "audio"
+      ],
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "it",
+        "pt",
+        "zh",
+        "ja",
+        "140+ languages"
+      ],
       "context_length": 32768,
       "recommended": true
     },
@@ -153,8 +298,15 @@
       "min_vram_gb": 0,
       "description": "Meta model, optimized for code understanding",
       "provider": "Meta",
-      "use_cases": ["code", "programming", "technical-content", "documentation"],
-      "languages": ["en"],
+      "use_cases": [
+        "code",
+        "programming",
+        "technical-content",
+        "documentation"
+      ],
+      "languages": [
+        "en"
+      ],
       "context_length": 16384,
       "recommended": false
     }
@@ -168,7 +320,11 @@
       "min_ram_gb": 1,
       "description": "Best general purpose embedding model",
       "provider": "Nomic AI",
-      "use_cases": ["general", "semantic-search", "clustering"],
+      "use_cases": [
+        "general",
+        "semantic-search",
+        "clustering"
+      ],
       "max_sequence_length": 8192,
       "recommended": true
     },
@@ -180,7 +336,11 @@
       "min_ram_gb": 0.5,
       "description": "SentenceTransformers compatible, lightweight",
       "provider": "Microsoft",
-      "use_cases": ["lightweight", "fast", "compatible"],
+      "use_cases": [
+        "lightweight",
+        "fast",
+        "compatible"
+      ],
       "max_sequence_length": 512,
       "recommended": false
     },
@@ -192,7 +352,11 @@
       "min_ram_gb": 2,
       "description": "Highest quality embeddings, larger size",
       "provider": "MixedBread AI",
-      "use_cases": ["high-quality", "research", "precision"],
+      "use_cases": [
+        "high-quality",
+        "research",
+        "precision"
+      ],
       "max_sequence_length": 512,
       "recommended": false
     }
@@ -218,20 +382,59 @@
     },
     "gpu_optimized": {
       "min_vram_gb": 4,
-      "recommended_llm": "phi4:3.8b",
+      "recommended_llm": "phi4",
       "recommended_embedding": "mxbai-embed-large",
       "description": "For systems with dedicated GPU"
     }
   },
   "model_categories": {
-    "speed_optimized": ["qwen3:0.6b", "qwen3:1.7b", "gemma3n:e2b", "llama3.2:1b"],
-    "quality_optimized": ["qwen3:8b", "phi4:3.8b", "mistral:7b"],
-    "balanced": ["llama3.2:3b", "qwen3:4b", "gemma3n:e4b"],
-    "multilingual": ["qwen3:1.7b", "qwen3:4b", "qwen3:8b", "gemma3n:e4b", "mistral:7b"],
-    "code_focused": ["qwen3:4b", "phi4:3.8b", "codellama:7b"],
-    "resource_efficient": ["qwen3:0.6b", "qwen3:1.7b", "gemma3n:e2b", "llama3.2:1b", "all-minilm"],
-    "multimodal": ["gemma3n:e2b", "gemma3n:e4b"],
-    "reasoning_focused": ["qwen3:1.7b", "qwen3:4b", "phi4:3.8b"],
-    "agent_capable": ["qwen3:4b", "qwen3:8b"]
+    "speed_optimized": [
+      "qwen3:0.6b",
+      "qwen3:1.7b",
+      "gemma3n:e2b",
+      "llama3.2:1b"
+    ],
+    "quality_optimized": [
+      "qwen3:8b",
+      "phi4",
+      "mistral:7b"
+    ],
+    "balanced": [
+      "llama3.2:3b",
+      "qwen3:4b",
+      "gemma3n:e4b"
+    ],
+    "multilingual": [
+      "qwen3:1.7b",
+      "qwen3:4b",
+      "qwen3:8b",
+      "gemma3n:e4b",
+      "mistral:7b"
+    ],
+    "code_focused": [
+      "qwen3:4b",
+      "phi4",
+      "codellama:7b"
+    ],
+    "resource_efficient": [
+      "qwen3:0.6b",
+      "qwen3:1.7b",
+      "gemma3n:e2b",
+      "llama3.2:1b",
+      "all-minilm"
+    ],
+    "multimodal": [
+      "gemma3n:e2b",
+      "gemma3n:e4b"
+    ],
+    "reasoning_focused": [
+      "qwen3:1.7b",
+      "qwen3:4b",
+      "phi4"
+    ],
+    "agent_capable": [
+      "qwen3:4b",
+      "qwen3:8b"
+    ]
   }
 }

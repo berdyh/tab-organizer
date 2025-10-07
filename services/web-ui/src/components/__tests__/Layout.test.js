@@ -3,9 +3,9 @@ import { MemoryRouter } from 'react-router-dom';
 import '@testing-library/jest-dom';
 import Layout from '../Layout';
 
-const renderWithRouter = (ui) => {
+const renderWithRouter = (ui, initialEntries = ['/']) => {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={initialEntries} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       {ui}
     </MemoryRouter>
   );
@@ -46,9 +46,18 @@ test('navigation links have correct hrefs', () => {
     </Layout>
   );
 
-  expect(screen.getByRole('link', { name: /dashboard/i })).toHaveAttribute('href', '/');
-  expect(screen.getByRole('link', { name: /url manager/i })).toHaveAttribute('href', '/urls');
-  expect(screen.getByRole('link', { name: /search/i })).toHaveAttribute('href', '/search');
-  expect(screen.getByRole('link', { name: /sessions/i })).toHaveAttribute('href', '/sessions');
-  expect(screen.getByRole('link', { name: /export/i })).toHaveAttribute('href', '/export');
+  const dashboardLinks = screen.getAllByRole('link', { name: /dashboard/i });
+  expect(dashboardLinks[0]).toHaveAttribute('href', '/');
+  
+  const urlManagerLinks = screen.getAllByRole('link', { name: /url manager/i });
+  expect(urlManagerLinks[0]).toHaveAttribute('href', '/urls');
+  
+  const searchLinks = screen.getAllByRole('link', { name: /search/i });
+  expect(searchLinks[0]).toHaveAttribute('href', '/search');
+  
+  const sessionLinks = screen.getAllByRole('link', { name: /sessions/i });
+  expect(sessionLinks[0]).toHaveAttribute('href', '/sessions');
+  
+  const exportLinks = screen.getAllByRole('link', { name: /export/i });
+  expect(exportLinks[0]).toHaveAttribute('href', '/export');
 });

@@ -32,6 +32,7 @@ const SessionManager = () => {
   const compareSessionsMutation = useMutation(sessionAPI.compare, {
     onSuccess: (data) => {
       // Handle comparison results
+      // eslint-disable-next-line no-console
       console.log('Comparison results:', data);
     },
   });

@@ -52,6 +52,7 @@ const createTestQueryClient = () => new QueryClient({
   defaultOptions: {
     queries: {
       retry: false,
+      cacheTime: 0,
     },
   },
 });
@@ -60,25 +61,25 @@ const renderWithQueryClient = (ui) => {
   const queryClient = createTestQueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         {ui}
       </MemoryRouter>
     </QueryClientProvider>
   );
 };
 
-test('renders search page', () => {
+test('renders search page', async () => {
   renderWithQueryClient(<SearchPage />);
   
-  expect(screen.getByText('Search Content')).toBeInTheDocument();
-  expect(screen.getByPlaceholderText(/Search for content, topics/)).toBeInTheDocument();
+  expect(await screen.findByText('Search Content', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(await screen.findByPlaceholderText(/Search for content, topics/, {}, { timeout: 5000 })).toBeInTheDocument();
 });
 
 test('search form works', async () => {
   renderWithQueryClient(<SearchPage />);
   
-  const searchInput = screen.getByPlaceholderText(/Search for content, topics/);
-  const searchButton = screen.getByText('Search');
+  const searchInput = await screen.findByPlaceholderText(/Search for content, topics/, {}, { timeout: 5000 });
+  const searchButton = await screen.findByText('Search', {}, { timeout: 5000 });
   
   fireEvent.change(searchInput, { target: { value: 'test query' } });
   fireEvent.click(searchButton);
@@ -86,47 +87,50 @@ test('search form works', async () => {
   expect(searchInput.value).toBe('test query');
 });
 
-test('search type selector works', () => {
+test('search type selector works', async () => {
   renderWithQueryClient(<SearchPage />);
   
-  const searchTypeSelect = screen.getByDisplayValue('Semantic Search');
+  const searchTypeSelect = await screen.findByRole('combobox', { name: /search type/i }, { timeout: 5000 });
   expect(searchTypeSelect).toBeInTheDocument();
   
   fireEvent.change(searchTypeSelect, { target: { value: 'keyword' } });
   expect(searchTypeSelect.value).toBe('keyword');
 });
 
-test('advanced filters toggle works', () => {
+test('advanced filters toggle works', async () => {
   renderWithQueryClient(<SearchPage />);
   
-  const advancedFiltersButton = screen.getByText('Advanced Filters');
+  const advancedFiltersButton = await screen.findByText('Advanced Filters', {}, { timeout: 5000 });
   fireEvent.click(advancedFiltersButton);
   
-  expect(screen.getByText('Date Range')).toBeInTheDocument();
-  expect(screen.getByText('Domain')).toBeInTheDocument();
-  expect(screen.getByText('Cluster')).toBeInTheDocument();
+  expect(await screen.findByText('Date Range', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(await screen.findByText('Domain', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(await screen.findByText('Cluster', {}, { timeout: 5000 })).toBeInTheDocument();
 });
 
-test('displays search tips when no results', () => {
+test('displays search tips when no results', async () => {
   renderWithQueryClient(<SearchPage />);
   
-  expect(screen.getByText('Search Tips')).toBeInTheDocument();
-  expect(screen.getByText('Semantic Search')).toBeInTheDocument();
-  expect(screen.getByText('Keyword Search')).toBeInTheDocument();
+  expect(await screen.findByText('Search Tips', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(await screen.findByText('Semantic Search', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(await screen.findByText('Keyword Search', {}, { timeout: 5000 })).toBeInTheDocument();
 });
 
 test('filter controls work', async () => {
   renderWithQueryClient(<SearchPage />);
   
   // Open advanced filters
-  const advancedFiltersButton = screen.getByText('Advanced Filters');
+  const advancedFiltersButton = await screen.findByText('Advanced Filters', {}, { timeout: 5000 });
+  
   fireEvent.click(advancedFiltersButton);
   
-  await waitFor(() => {
-    const dateRangeSelect = screen.getByDisplayValue('All Time');
-    expect(dateRangeSelect).toBeInTheDocument();
-    
-    fireEvent.change(dateRangeSelect, { target: { value: 'week' } });
-    expect(dateRangeSelect.value).toBe('week');
-  });
+  // Wait for filters to appear
+  await screen.findByText('Date Range', {}, { timeout: 5000 });
+  
+  const dateRangeSelects = screen.getAllByRole('combobox');
+  const dateRangeSelect = dateRangeSelects.find(select => select.value === 'all');
+  expect(dateRangeSelect).toBeInTheDocument();
+  
+  fireEvent.change(dateRangeSelect, { target: { value: 'week' } });
+  expect(dateRangeSelect.value).toBe('week');
 });
