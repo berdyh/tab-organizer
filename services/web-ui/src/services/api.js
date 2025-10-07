@@ -34,19 +34,19 @@ api.interceptors.response.use(
 
 // URL Management API
 export const urlAPI = {
-  validate: (url) => api.post('/api/url-input-service/api/input/urls', [url]),
+  validate: (url) => api.post('/api/url-input-service/input/urls', [url]),
   batch: (file, format) => {
     const formData = new FormData();
     formData.append('file', file);
     const endpoint = format === 'text' ? 'text' : 
                     format === 'json' ? 'json' : 
                     format === 'csv' ? 'csv' : 'excel';
-    return api.post(`/api/url-input-service/api/input/upload/${endpoint}`, formData);
+    return api.post(`/api/url-input-service/input/upload/${endpoint}`, formData);
   },
-  getMetadata: (id) => api.get(`/api/url-input-service/api/input/${id}`),
-  list: (params) => api.get('/api/url-input-service/api/input/list', { params }),
-  delete: (id) => api.delete(`/api/url-input-service/api/input/${id}`),
-  update: (id, data) => api.put(`/api/url-input-service/api/input/${id}`, data),
+  getMetadata: (id) => api.get(`/api/url-input-service/input/${id}`),
+  list: (params) => api.get('/api/url-input-service/input/list', { params }),
+  delete: (id) => api.delete(`/api/url-input-service/input/${id}`),
+  update: (id, data) => api.put(`/api/url-input-service/input/${id}`, data),
 };
 
 // Scraping API
@@ -79,9 +79,9 @@ export const sessionAPI = {
 // Export API
 export const exportAPI = {
   export: (sessionId, format, options) =>
-    api.post('/export', { session_id: sessionId, format, options }),
-  getTemplates: (format) => api.get(`/export/templates/${format}`),
-  getStatus: (jobId) => api.get(`/export/status/${jobId}`),
+    api.post('/api/export-service/export', { session_id: sessionId, format, options }),
+  getTemplates: (format) => api.get(`/api/export-service/export/templates/${format}`),
+  getStatus: (jobId) => api.get(`/api/export-service/export/status/${jobId}`),
 };
 
 // Clustering API
@@ -94,11 +94,11 @@ export const clusteringAPI = {
 // Chatbot API
 export const chatbotAPI = {
   sendMessage: (sessionId, message, context) =>
-    api.post('/api/chatbot/chat/message', { session_id: sessionId, message, context }),
-  getConversationHistory: (sessionId) => api.get(`/api/chatbot/chat/history/${sessionId}`),
-  clearHistory: (sessionId) => api.delete(`/api/chatbot/chat/history/${sessionId}`),
+    api.post('/api/chatbot-service/chat/message', { session_id: sessionId, message, context }),
+  getConversationHistory: (sessionId) => api.get(`/api/chatbot-service/chat/history/${sessionId}`),
+  clearHistory: (sessionId) => api.delete(`/api/chatbot-service/chat/history/${sessionId}`),
   provideFeedback: (messageId, feedback) =>
-    api.post('/api/chatbot/chat/feedback', { message_id: messageId, feedback }),
+    api.post('/api/chatbot-service/chat/feedback', { message_id: messageId, feedback }),
 };
 
 export default api;
