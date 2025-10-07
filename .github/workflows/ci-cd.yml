@@ -1,0 +1,474 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  DOCKER_BUILDKIT: 1
+  COMPOSE_DOCKER_CLI_BUILD: 1
+
+jobs:
+  # ==================== UNIT TESTS ====================
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - url-input
+          - auth
+          - scraper
+          - analyzer
+          - clustering
+          - export
+          - session
+          - visualization
+          - api-gateway
+      fail-fast: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ matrix.service }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-${{ matrix.service }}-
+            ${{ runner.os }}-buildx-
+
+      - name: Run ${{ matrix.service }} unit tests
+        run: |
+          docker compose -f docker compose.test.yml up --build --abort-on-container-exit ${{ matrix.service }}-unit-test
+
+      - name: Copy test results
+        if: always()
+        run: |
+          mkdir -p test-results coverage
+          docker cp ${{ matrix.service }}-unit-test:/app/test-results/. ./test-results/ || true
+          docker cp ${{ matrix.service }}-unit-test:/app/coverage/. ./coverage/ || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.service }}-unit-test-results
+          path: test-results/
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.service }}-coverage
+          path: coverage/
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker compose.test.yml down -v
+
+  # ==================== WEB UI TESTS ====================
+  web-ui-tests:
+    name: Web UI Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Run Web UI tests
+        run: |
+          docker compose -f docker compose.test.yml up --build --abort-on-container-exit web-ui-unit-test
+
+      - name: Copy test results
+        if: always()
+        run: |
+          mkdir -p test-results coverage
+          docker cp web-ui-unit-test:/app/test-results/. ./test-results/ || true
+          docker cp web-ui-unit-test:/app/coverage/. ./coverage/ || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: web-ui-test-results
+          path: test-results/
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: web-ui-coverage
+          path: coverage/
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker compose.test.yml down -v
+
+  # ==================== INTEGRATION TESTS ====================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    strategy:
+      matrix:
+        service:
+          - url-input
+          - auth
+          - scraper
+          - analyzer
+          - clustering
+          - export
+          - session
+          - api-gateway
+      fail-fast: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Start test infrastructure
+        run: |
+          docker compose -f docker compose.test.yml up -d test-qdrant test-ollama
+          sleep 10
+
+      - name: Run ${{ matrix.service }} integration tests
+        run: |
+          docker compose -f docker compose.test.yml up --build --abort-on-container-exit ${{ matrix.service }}-integration-test
+
+      - name: Copy test results
+        if: always()
+        run: |
+          mkdir -p test-results
+          docker cp ${{ matrix.service }}-integration-test:/app/test-results/. ./test-results/ || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.service }}-integration-test-results
+          path: test-results/
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker compose.test.yml down -v
+
+  # ==================== END-TO-END TESTS ====================
+  e2e-tests:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Start test infrastructure
+        run: |
+          docker compose -f docker compose.test.yml up -d test-qdrant test-ollama test-api-gateway test-web-ui
+          sleep 20
+
+      - name: Run E2E tests
+        run: |
+          docker compose -f docker compose.test.yml up --build --abort-on-container-exit e2e-test-runner
+
+      - name: Copy test results
+        if: always()
+        run: |
+          mkdir -p test-results
+          docker cp e2e-test-runner:/app/test-results/. ./test-results/ || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-test-results
+          path: test-results/
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker compose.test.yml down -v
+
+  # ==================== PERFORMANCE TESTS ====================
+  performance-tests:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Start test infrastructure
+        run: |
+          docker compose -f docker compose.test.yml up -d test-qdrant test-ollama test-api-gateway
+          sleep 20
+
+      - name: Run load tests
+        run: |
+          docker compose -f docker compose.test.yml up --abort-on-container-exit load-test-runner
+
+      - name: Copy load test results
+        if: always()
+        run: |
+          mkdir -p load-test-results
+          docker cp load-test-runner:/mnt/locust/. ./load-test-results/ || true
+
+      - name: Upload load test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: load-test-results
+          path: load-test-results/
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker compose.test.yml down -v
+
+  # ==================== CODE QUALITY ====================
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install flake8 pylint black isort mypy bandit safety
+
+      - name: Run flake8
+        run: |
+          flake8 services/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 services/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Run pylint
+        run: |
+          find services/ -name "*.py" | xargs pylint --exit-zero
+
+      - name: Check code formatting with black
+        run: |
+          black --check services/
+
+      - name: Check import sorting with isort
+        run: |
+          isort --check-only services/
+
+      - name: Run mypy type checking
+        run: |
+          mypy services/ --ignore-missing-imports || true
+
+      - name: Run bandit security checks
+        run: |
+          bandit -r services/ -f json -o bandit-report.json || true
+
+      - name: Upload security report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-report
+          path: bandit-report.json
+
+  # ==================== TEST COVERAGE REPORT ====================
+  coverage-report:
+    name: Generate Coverage Report
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests]
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: coverage-artifacts
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install coverage tools
+        run: |
+          pip install coverage pytest-cov
+
+      - name: Combine coverage reports
+        run: |
+          mkdir -p combined-coverage
+          find coverage-artifacts -name "*.xml" -exec cp {} combined-coverage/ \;
+          
+      - name: Generate combined report
+        run: |
+          echo "# Test Coverage Summary" > coverage-summary.md
+          echo "" >> coverage-summary.md
+          echo "## Service Coverage" >> coverage-summary.md
+          for file in combined-coverage/*.xml; do
+            service=$(basename $file .xml)
+            echo "- $service" >> coverage-summary.md
+          done
+
+      - name: Upload combined coverage
+        uses: actions/upload-artifact@v3
+        with:
+          name: combined-coverage-report
+          path: |
+            combined-coverage/
+            coverage-summary.md
+
+      - name: Comment PR with coverage
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('coverage-summary.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+  # ==================== BUILD AND PUSH IMAGES ====================
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, code-quality]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    strategy:
+      matrix:
+        service:
+          - api-gateway
+          - url-input
+          - auth
+          - scraper
+          - analyzer
+          - clustering
+          - export
+          - session
+          - web-ui
+          - visualization
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/web-scraping-${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=semver,pattern={{version}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: ./services/${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ==================== DEPLOYMENT ====================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.example.com
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment..."
+          # Add deployment commands here
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-images, e2e-tests, performance-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://production.example.com
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production environment..."
+          # Add deployment commands here
+
+  # ==================== NOTIFICATION ====================
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, e2e-tests, code-quality]
+    if: always()
+    
+    steps:
+      - name: Check job status
+        id: check
+        run: |
+          if [ "${{ needs.unit-tests.result }}" == "failure" ] || \
+             [ "${{ needs.integration-tests.result }}" == "failure" ] || \
+             [ "${{ needs.e2e-tests.result }}" == "failure" ] || \
+             [ "${{ needs.code-quality.result }}" == "failure" ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send notification
+        run: |
+          echo "Pipeline status: ${{ steps.check.outputs.status }}"
+          # Add notification logic here (Slack, email, etc.)

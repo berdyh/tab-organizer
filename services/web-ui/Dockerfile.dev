@@ -14,5 +14,9 @@ COPY . .
 # Expose port
 EXPOSE 3000
 
+# Set environment for development
+ENV NODE_ENV=development
+ENV CHOKIDAR_USEPOLLING=true
+
 # Start development server
 CMD ["npm", "start"]

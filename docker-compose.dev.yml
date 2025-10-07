@@ -1,0 +1,283 @@
+# Development environment with hot-reloading and debugging capabilities
+services:
+  # Qdrant Vector Database (Development)
+  qdrant-dev:
+    image: qdrant/qdrant:v1.7.4
+    container_name: qdrant-dev
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_dev_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=DEBUG
+    networks:
+      - dev_network
+
+  # Ollama LLM Service (Development)
+  ollama-dev:
+    image: ollama/ollama:latest
+    container_name: ollama-dev
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_dev_models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+      - OLLAMA_DEBUG=1
+    networks:
+      - dev_network
+
+  # API Gateway (Development with hot-reload)
+  api-gateway-dev:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+      target: development
+    container_name: api-gateway-dev
+    ports:
+      - "8080:8080"
+      - "5678:5678"  # Debugger port
+    environment:
+      - QDRANT_URL=http://qdrant-dev:6333
+      - OLLAMA_URL=http://ollama-dev:11434
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - PYTHONUNBUFFERED=1
+      - WATCHDOG_ENABLED=true
+    volumes:
+      - ./services/api-gateway:/app
+      - ./logs:/app/logs
+    depends_on:
+      - qdrant-dev
+      - ollama-dev
+    networks:
+      - dev_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+
+  # URL Input Service (Development)
+  url-input-dev:
+    build:
+      context: ./services/url-input
+      dockerfile: Dockerfile
+      target: development
+    container_name: url-input-dev
+    ports:
+      - "8081:8081"
+      - "5679:5678"
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/url-input:/app
+      - ./logs:/app/logs
+    networks:
+      - dev_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8081 --reload
+
+  # Authentication Service (Development)
+  auth-dev:
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile
+      target: development
+    container_name: auth-dev
+    ports:
+      - "8082:8082"
+      - "5680:5678"
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/auth:/app
+      - ./logs:/app/logs
+      - auth_dev_credentials:/app/credentials
+    networks:
+      - dev_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8082 --reload
+
+  # Web Scraper Service (Development)
+  scraper-dev:
+    build:
+      context: ./services/scraper
+      dockerfile: Dockerfile
+      target: development
+    container_name: scraper-dev
+    ports:
+      - "8083:8083"
+      - "5681:5678"
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - AUTH_SERVICE_URL=http://auth-dev:8082
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/scraper:/app
+      - ./logs:/app/logs
+    depends_on:
+      - auth-dev
+    networks:
+      - dev_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8083 --reload
+
+  # Content Analyzer Service (Development)
+  analyzer-dev:
+    build:
+      context: ./services/analyzer
+      dockerfile: Dockerfile
+      target: development
+    container_name: analyzer-dev
+    ports:
+      - "8084:8084"
+      - "5682:5678"
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - QDRANT_URL=http://qdrant-dev:6333
+      - OLLAMA_URL=http://ollama-dev:11434
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/analyzer:/app
+      - ./logs:/app/logs
+    depends_on:
+      - qdrant-dev
+      - ollama-dev
+    networks:
+      - dev_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8084 --reload
+
+  # Clustering Service (Development)
+  clustering-dev:
+    build:
+      context: ./services/clustering
+      dockerfile: Dockerfile
+      target: development
+    container_name: clustering-dev
+    ports:
+      - "8085:8085"
+      - "5683:5678"
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - QDRANT_HOST=qdrant-dev
+      - QDRANT_PORT=6333
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/clustering:/app
+      - ./logs:/app/logs
+    depends_on:
+      - qdrant-dev
+    networks:
+      - dev_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8085 --reload
+
+  # Export Service (Development)
+  export-dev:
+    build:
+      context: ./services/export
+      dockerfile: Dockerfile
+      target: development
+    container_name: export-dev
+    ports:
+      - "8086:8086"
+      - "5684:5678"
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - QDRANT_URL=http://qdrant-dev:6333
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/export:/app
+      - ./logs:/app/logs
+    depends_on:
+      - qdrant-dev
+    networks:
+      - dev_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8086 --reload
+
+  # Session Management Service (Development)
+  session-dev:
+    build:
+      context: ./services/session
+      dockerfile: Dockerfile
+      target: development
+    container_name: session-dev
+    ports:
+      - "8087:8087"
+      - "5685:5678"
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - QDRANT_URL=http://qdrant-dev:6333
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/session:/app
+      - ./logs:/app/logs
+    depends_on:
+      - qdrant-dev
+    networks:
+      - dev_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8087 --reload
+
+  # Web UI Service (Development)
+  web-ui-dev:
+    build:
+      context: ./services/web-ui
+      dockerfile: Dockerfile.dev
+    container_name: web-ui-dev
+    ports:
+      - "8089:3000"
+    environment:
+      - NODE_ENV=development
+      - REACT_APP_API_URL=http://localhost:8080
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./services/web-ui/src:/app/src
+      - ./services/web-ui/public:/app/public
+      - /app/node_modules
+    depends_on:
+      - api-gateway-dev
+    networks:
+      - dev_network
+
+  # Visualization Service (Development)
+  visualization-dev:
+    build:
+      context: ./services/visualization
+      dockerfile: Dockerfile
+      target: development
+    container_name: visualization-dev
+    ports:
+      - "8090:8090"
+      - "5686:5678"
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/visualization:/app
+      - ./logs:/app/logs
+      - ./docs:/app/docs
+    depends_on:
+      - api-gateway-dev
+    networks:
+      - dev_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8090 --reload
+
+networks:
+  dev_network:
+    driver: bridge
+    name: dev_network
+
+volumes:
+  qdrant_dev_storage:
+    driver: local
+  ollama_dev_models:
+    driver: local
+  auth_dev_credentials:
+    driver: local
