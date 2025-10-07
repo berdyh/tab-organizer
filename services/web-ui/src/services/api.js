@@ -35,13 +35,18 @@ api.interceptors.response.use(
 // URL Management API
 export const urlAPI = {
   validate: (url) => api.post('/api/url-input-service/input/urls', [url]),
-  batch: (file, format) => {
+  batch: (file, format, enrich = true) => {
     const formData = new FormData();
     formData.append('file', file);
     const endpoint = format === 'text' ? 'text' : 
                     format === 'json' ? 'json' : 
                     format === 'csv' ? 'csv' : 'excel';
-    return api.post(`/api/url-input-service/input/upload/${endpoint}`, formData);
+    return api.post(`/api/url-input-service/input/upload/${endpoint}`, formData, {
+      params: { enrich },
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
   },
   getMetadata: (id) => api.get(`/api/url-input-service/input/${id}`),
   list: (params) => api.get('/api/url-input-service/input/list', { params }),
