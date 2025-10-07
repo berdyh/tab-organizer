@@ -13,13 +13,13 @@ services:
       - OLLAMA_URL=http://host.docker.internal:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
-  
+
   analyzer-service:
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
-  
+
   clustering-service:
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434

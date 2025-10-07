@@ -14,47 +14,53 @@ class Settings(BaseSettings):
     
     # Service URLs
     qdrant_url: str = "http://qdrant:6333"
-    ollama_url: str = "http://host.docker.internal:11434"
+    ollama_url: str = "http://ollama:11434"
     
     # Service registry configuration
     services: Dict[str, Dict[str, Any]] = {
-        "url-input": {
+        "url-input-service": {
             "url": "http://url-input-service:8081",
             "health_endpoint": "/health",
-            "timeout": 10.0
+            "timeout": 10.0,
+            "base_path": "api"
         },
-        "auth": {
+        "auth-service": {
             "url": "http://auth-service:8082",
             "health_endpoint": "/health",
             "timeout": 10.0
         },
-        "scraper": {
+        "scraper-service": {
             "url": "http://scraper-service:8083",
             "health_endpoint": "/health",
             "timeout": 10.0
         },
-        "analyzer": {
+        "analyzer-service": {
             "url": "http://analyzer-service:8084",
             "health_endpoint": "/health",
             "timeout": 10.0
         },
-        "clustering": {
+        "clustering-service": {
             "url": "http://clustering-service:8085",
             "health_endpoint": "/health",
             "timeout": 10.0
         },
-        "export": {
+        "export-service": {
             "url": "http://export-service:8086",
             "health_endpoint": "/health",
             "timeout": 10.0
         },
-        "session": {
+        "session-service": {
             "url": "http://session-service:8087",
             "health_endpoint": "/health",
             "timeout": 10.0
         },
-        "chatbot": {
+        "chatbot-service": {
             "url": "http://chatbot-service:8092",
+            "health_endpoint": "/health",
+            "timeout": 10.0
+        },
+        "visualization-service": {
+            "url": "http://visualization-service:8090",
             "health_endpoint": "/health",
             "timeout": 10.0
         }

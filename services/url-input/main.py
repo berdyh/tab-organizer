@@ -80,6 +80,33 @@ class URLInput:
 # In-memory storage for demo (in production, use database)
 url_inputs: Dict[str, URLInput] = {}
 
+
+def ensure_entry_ids(entries: List[URLEntry]) -> List[URLEntry]:
+    """Ensure each URL entry has a stable entry_id for client operations."""
+    for entry in entries:
+        if entry.source_metadata is None:
+            entry.source_metadata = {}
+        if "entry_id" not in entry.source_metadata:
+            entry.source_metadata["entry_id"] = str(uuid.uuid4())
+    return entries
+
+
+def parse_input_identifier(identifier: str) -> tuple[str, Optional[str]]:
+    """Split identifiers of the form '<input_id>:<entry_id>'."""
+    if ":" in identifier:
+        input_id, entry_id = identifier.split(":", 1)
+        entry_id = entry_id or None
+        return input_id, entry_id
+    return identifier, None
+
+
+def find_entry_by_id(url_input: URLInput, entry_id: str) -> Optional[URLEntry]:
+    """Locate a URL entry by its entry_id within a URLInput."""
+    for entry in url_input.urls:
+        if entry.source_metadata.get("entry_id") == entry_id:
+            return entry
+    return None
+
 class URLValidator:
     """URL validation utilities."""
     
@@ -607,63 +634,145 @@ async def root():
 
 @app.get("/api/input/list")
 async def list_url_inputs(skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000)):
-    """List all URL inputs with pagination."""
+    """List all URL entries with pagination."""
     logger.info("Listing URL inputs", skip=skip, limit=limit)
     
-    # Convert to list and sort by creation time
-    inputs_list = list(url_inputs.values())
-    inputs_list.sort(key=lambda x: x.created_at, reverse=True)
+    entries: List[tuple[datetime, Dict[str, Any]]] = []
     
-    # Apply pagination
-    paginated_inputs = inputs_list[skip:skip + limit]
+    for url_input in url_inputs.values():
+        created_at = url_input.created_at
+        for url_entry in url_input.urls:
+            entry_id = url_entry.source_metadata.get("entry_id")
+            if not entry_id:
+                entry_id = str(uuid.uuid4())
+                url_entry.source_metadata["entry_id"] = entry_id
+            
+            domain = None
+            if url_entry.metadata and url_entry.metadata.domain:
+                domain = url_entry.metadata.domain
+            else:
+                try:
+                    domain = urlparse(url_entry.url).netloc
+                except Exception:
+                    domain = None
+            
+            if url_entry.validation_error:
+                status = "failed"
+            elif url_input.validated or url_entry.validated:
+                status = "completed"
+            elif url_entry.enriched and url_entry.similarity_group:
+                status = "auth_required"
+            else:
+                status = "pending"
+            
+            entries.append((
+                created_at,
+                {
+                    "id": f"{url_input.input_id}:{entry_id}",
+                    "input_id": url_input.input_id,
+                    "url": url_entry.url,
+                    "status": status,
+                    "title": url_entry.source_metadata.get("title") or "",
+                    "created_at": created_at,
+                    "domain": domain,
+                    "source_type": url_input.source_type,
+                    "validated": url_entry.validated,
+                    "validation_error": url_entry.validation_error,
+                    "category": url_entry.category,
+                    "priority": url_entry.priority,
+                }
+            ))
     
-    # Convert to response format
+    # Sort newest first
+    entries.sort(key=lambda item: item[0], reverse=True)
+    
+    total_entries = len(entries)
+    paginated_entries = entries[skip:skip + limit]
+    
     response_data = []
-    for url_input in paginated_inputs:
-        # Get summary stats
-        stats = BatchProcessor.get_processing_stats(url_input.urls)
-        
-        response_data.append({
-            "id": url_input.input_id,
-            "source_type": url_input.source_type,
-            "created_at": url_input.created_at.isoformat(),
-            "filename": url_input.source_metadata.get("filename", "Direct input"),
-            "total_urls": stats["total_urls"],
-            "valid_urls": stats["valid_urls"],
-            "unique_urls": stats["unique_urls"],
-            "categories": stats["categories"]
-        })
+    for created_at, entry in paginated_entries:
+        entry["created_at"] = created_at.isoformat()
+        response_data.append(entry)
     
     return {
         "data": response_data,
-        "total": len(inputs_list),
+        "total": total_entries,
         "skip": skip,
         "limit": limit,
-        "has_more": skip + limit < len(inputs_list)
+        "has_more": skip + limit < total_entries
     }
 
-@app.get("/api/input/{input_id}")
-async def get_url_input(input_id: str):
-    """Get detailed information about a specific URL input."""
-    logger.info("Getting URL input details", input_id=input_id)
+@app.get("/api/input/{input_identifier}")
+async def get_url_input(input_identifier: str):
+    """Get detailed information about a specific URL input or entry."""
+    logger.info("Getting URL input details", input_id=input_identifier)
+    
+    input_id, entry_id = parse_input_identifier(input_identifier)
     
     if input_id not in url_inputs:
         raise HTTPException(status_code=404, detail="URL input not found")
     
     url_input = url_inputs[input_id]
+    
+    if entry_id:
+        entry = find_entry_by_id(url_input, entry_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="URL entry not found")
+        
+        domain = None
+        if entry.metadata and entry.metadata.domain:
+            domain = entry.metadata.domain
+        else:
+            try:
+                domain = urlparse(entry.url).netloc
+            except Exception:
+                domain = None
+        
+        if entry.validation_error:
+            status = "failed"
+        elif url_input.validated or entry.validated:
+            status = "completed"
+        elif entry.enriched and entry.similarity_group:
+            status = "auth_required"
+        else:
+            status = "pending"
+        
+        return {
+            "id": f"{input_id}:{entry_id}",
+            "input_id": input_id,
+            "url": entry.url,
+            "status": status,
+            "title": entry.source_metadata.get("title") or "",
+            "domain": domain,
+            "created_at": url_input.created_at.isoformat(),
+            "validated": entry.validated,
+            "validation_error": entry.validation_error,
+            "category": entry.category,
+            "priority": entry.priority,
+            "notes": entry.notes,
+            "metadata": asdict(entry.metadata) if entry.metadata else None,
+            "source_metadata": entry.source_metadata,
+        }
+    
     stats = BatchProcessor.get_processing_stats(url_input.urls)
     
-    # Convert URLs to response format
     urls_data = []
     for url_entry in url_input.urls:
+        entry_id = url_entry.source_metadata.get("entry_id")
+        if not entry_id:
+            entry_id = str(uuid.uuid4())
+            url_entry.source_metadata["entry_id"] = entry_id
+        
         url_data = {
+            "id": f"{input_id}:{entry_id}",
             "url": url_entry.url,
             "validated": url_entry.validated,
             "category": url_entry.category,
             "priority": url_entry.priority,
             "notes": url_entry.notes,
             "duplicate_of": url_entry.duplicate_of,
-            "validation_error": url_entry.validation_error
+            "validation_error": url_entry.validation_error,
+            "source_metadata": url_entry.source_metadata
         }
         
         if url_entry.metadata:
@@ -680,33 +789,80 @@ async def get_url_input(input_id: str):
         "stats": stats
     }
 
-@app.delete("/api/input/{input_id}")
-async def delete_url_input(input_id: str):
-    """Delete a URL input."""
-    logger.info("Deleting URL input", input_id=input_id)
+@app.delete("/api/input/{input_identifier}")
+async def delete_url_input(input_identifier: str):
+    """Delete a URL input or a specific URL entry."""
+    logger.info("Deleting URL input", input_id=input_identifier)
+    
+    input_id, entry_id = parse_input_identifier(input_identifier)
     
     if input_id not in url_inputs:
         raise HTTPException(status_code=404, detail="URL input not found")
     
-    del url_inputs[input_id]
+    if entry_id is None:
+        del url_inputs[input_id]
+        return {"message": "URL input deleted successfully", "input_id": input_id}
     
-    return {"message": "URL input deleted successfully", "input_id": input_id}
+    url_input = url_inputs[input_id]
+    entry = find_entry_by_id(url_input, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="URL entry not found")
+    
+    url_input.urls = [e for e in url_input.urls if e.source_metadata.get("entry_id") != entry_id]
+    
+    if not url_input.urls:
+        del url_inputs[input_id]
+    
+    return {
+        "message": "URL entry deleted successfully",
+        "input_id": input_id,
+        "entry_id": entry_id
+    }
 
-@app.put("/api/input/{input_id}")
-async def update_url_input(input_id: str, update_data: Dict[str, Any]):
-    """Update URL input metadata."""
-    logger.info("Updating URL input", input_id=input_id)
+@app.put("/api/input/{input_identifier}")
+async def update_url_input(input_identifier: str, update_data: Dict[str, Any]):
+    """Update URL input metadata or a specific URL entry."""
+    logger.info("Updating URL input", input_id=input_identifier)
+    
+    input_id, entry_id = parse_input_identifier(input_identifier)
     
     if input_id not in url_inputs:
         raise HTTPException(status_code=404, detail="URL input not found")
     
     url_input = url_inputs[input_id]
     
-    # Update allowed fields
-    if "source_metadata" in update_data:
-        url_input.source_metadata.update(update_data["source_metadata"])
+    if entry_id is None:
+        if "source_metadata" in update_data:
+            url_input.source_metadata.update(update_data["source_metadata"])
+        if "validated" in update_data:
+            url_input.validated = bool(update_data["validated"])
+        return {"message": "URL input updated successfully", "input_id": input_id}
     
-    return {"message": "URL input updated successfully", "input_id": input_id}
+    entry = find_entry_by_id(url_input, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="URL entry not found")
+    
+    # Update entry fields if provided
+    if "category" in update_data:
+        entry.category = update_data["category"]
+    if "priority" in update_data:
+        entry.priority = update_data["priority"]
+    if "notes" in update_data:
+        entry.notes = update_data["notes"]
+    if "title" in update_data:
+        entry.source_metadata["title"] = update_data["title"]
+    if "validated" in update_data:
+        entry.validated = bool(update_data["validated"])
+        if entry.validated:
+            entry.validation_error = None
+    if "validation_error" in update_data:
+        entry.validation_error = update_data["validation_error"]
+    
+    return {
+        "message": "URL entry updated successfully",
+        "input_id": input_id,
+        "entry_id": entry_id
+    }
 
 # File Upload Endpoints
 
@@ -729,7 +885,7 @@ async def upload_text_file(file: UploadFile = File(...), enrich: bool = Query(Tr
         input_id = str(uuid.uuid4())
         url_input = URLInput(
             input_id=input_id,
-            urls=urls,
+            urls=ensure_entry_ids(urls),
             source_type="text",
             source_metadata={
                 "filename": file.filename,
@@ -779,7 +935,7 @@ async def upload_json_file(file: UploadFile = File(...), enrich: bool = Query(Tr
         input_id = str(uuid.uuid4())
         url_input = URLInput(
             input_id=input_id,
-            urls=urls,
+            urls=ensure_entry_ids(urls),
             source_type="json",
             source_metadata={
                 "filename": file.filename,
@@ -828,7 +984,7 @@ async def upload_csv_file(file: UploadFile = File(...), enrich: bool = Query(Tru
         input_id = str(uuid.uuid4())
         url_input = URLInput(
             input_id=input_id,
-            urls=urls,
+            urls=ensure_entry_ids(urls),
             source_type="csv",
             source_metadata={
                 "filename": file.filename,
@@ -882,7 +1038,7 @@ async def upload_excel_file(file: UploadFile = File(...), enrich: bool = Query(T
         input_id = str(uuid.uuid4())
         url_input = URLInput(
             input_id=input_id,
-            urls=urls,
+            urls=ensure_entry_ids(urls),
             source_type="excel",
             source_metadata={
                 "filename": file.filename,
@@ -949,7 +1105,7 @@ async def input_urls_direct(urls: List[str], enrich: bool = Query(True, descript
         input_id = str(uuid.uuid4())
         url_input = URLInput(
             input_id=input_id,
-            urls=url_entries,
+            urls=ensure_entry_ids(url_entries),
             source_type="direct",
             source_metadata={
                 "input_method": "api_direct",
@@ -993,7 +1149,7 @@ async def input_urls_form(urls_text: str = Form(...), enrich: bool = Form(True, 
         input_id = str(uuid.uuid4())
         url_input = URLInput(
             input_id=input_id,
-            urls=urls,
+            urls=ensure_entry_ids(urls),
             source_type="form",
             source_metadata={
                 "input_method": "web_form",
@@ -1153,7 +1309,7 @@ async def batch_process_urls(urls: List[str], batch_size: int = Query(100, descr
         input_id = str(uuid.uuid4())
         url_input = URLInput(
             input_id=input_id,
-            urls=processed_urls,
+            urls=ensure_entry_ids(processed_urls),
             source_type="batch",
             source_metadata={
                 "input_method": "batch_processing",

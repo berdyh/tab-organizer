@@ -47,3 +47,5 @@ ollama_models/
 # Credentials
 credentials/
 *.key
+
+environment-verification-summary.md

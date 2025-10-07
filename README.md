@@ -104,12 +104,21 @@ chmod +x scripts/*.sh
 ./scripts/setup.sh
 ```
 
-2. **Start services**:
+2. **Configure frontend environment**:
+```bash
+# Create frontend environment file
+cp services/web-ui/.env.example services/web-ui/.env
+
+# Verify the configuration (should show REACT_APP_API_URL=http://localhost:8080)
+cat services/web-ui/.env
+```
+
+3. **Start services**:
 ```bash
 ./scripts/start.sh
 ```
 
-3. **Setup optimal AI models** (after services are running):
+4. **Setup optimal AI models** (after services are running):
 ```bash
 # Automatic hardware-optimized setup (recommended)
 python3 scripts/model-manager.py auto
@@ -118,11 +127,91 @@ python3 scripts/model-manager.py auto
 python3 scripts/model-manager.py interactive
 ```
 
-4. **Access the system**:
+5. **Verify services are running**:
+```bash
+# Check all containers are running
+docker compose ps
+
+# Verify health endpoints
+curl http://localhost:8080/health
+
+# Check individual service health
+curl http://localhost:8080/services
+```
+
+6. **Access the system**:
 - **🌐 Web UI with Chatbot**: http://localhost:8089
 - **🔗 API Gateway**: http://localhost:8080
 - **📊 Qdrant Dashboard**: http://localhost:6333/dashboard
 - **❤️ Health Check**: http://localhost:8080/health
+
+### 🌐 Service URLs and Ports
+
+| Service | Port | URL | Purpose |
+|---------|------|-----|---------|
+| **Web UI** | 8089 | http://localhost:8089 | React frontend interface |
+| **API Gateway** | 8080 | http://localhost:8080 | Central API routing |
+| **URL Input Service** | 8081 | http://localhost:8081 | URL validation and processing |
+| **Scraper Service** | 8082 | http://localhost:8082 | Web content extraction |
+| **Analyzer Service** | 8083 | http://localhost:8083 | AI analysis and embeddings |
+| **Clustering Service** | 8084 | http://localhost:8084 | Content clustering |
+| **Export Service** | 8085 | http://localhost:8085 | Multi-format export |
+| **Session Service** | 8086 | http://localhost:8086 | Session management |
+| **Auth Service** | 8087 | http://localhost:8087 | Authentication handling |
+| **Monitoring Service** | 8088 | http://localhost:8088 | System monitoring |
+| **Qdrant Vector DB** | 6333 | http://localhost:6333 | Vector database |
+| **Ollama LLM** | 11434 | http://localhost:11434 | Local AI models |
+
+**Important**: The frontend communicates with backend services through the API Gateway at port 8080. Direct access to individual service ports (8081-8088) is primarily for debugging and health checks.
+
+### ✅ Verification Steps
+
+After starting the services, verify everything is working correctly:
+
+1. **Check Docker containers**:
+```bash
+# All services should show "Up" status
+docker compose ps
+
+# Expected services:
+# - api-gateway (port 8080)
+# - web-ui (port 8089)
+# - ollama (port 11434)
+# - qdrant (port 6333)
+# - url-input-service (port 8081)
+# - scraper-service (port 8082)
+# - analyzer-service (port 8083)
+# - clustering-service (port 8084)
+# - export-service (port 8085)
+# - session-service (port 8086)
+# - auth-service (port 8087)
+# - monitoring-service (port 8088)
+```
+
+2. **Test API Gateway connectivity**:
+```bash
+# Health check should return status "healthy"
+curl http://localhost:8080/health | python3 -m json.tool
+
+# Service registry should list all backend services
+curl http://localhost:8080/services | python3 -m json.tool
+```
+
+3. **Test frontend connectivity**:
+```bash
+# Frontend should be accessible
+curl -I http://localhost:8089
+
+# Check if frontend can reach API gateway
+# Open browser developer tools and check Network tab when using the UI
+```
+
+4. **Test end-to-end functionality**:
+- Open http://localhost:8089 in your browser
+- Create a new session
+- Try uploading a URL or file
+- Check browser console for any errors
+- Verify API calls in browser Network tab show successful responses (200 status)
 
 ### 🎯 Using the System
 
@@ -458,6 +547,89 @@ services/
 
 ## 🐛 Troubleshooting
 
+### Frontend-Backend Connectivity Issues
+
+**❌ Frontend cannot connect to backend services**:
+```bash
+# 1. Verify .env file exists in web-ui directory
+ls -la services/web-ui/.env
+
+# If missing, create it:
+cp services/web-ui/.env.example services/web-ui/.env
+
+# 2. Check API URL configuration
+cat services/web-ui/.env
+# Should show: REACT_APP_API_URL=http://localhost:8080
+
+# 3. Verify API Gateway is running and accessible
+curl http://localhost:8080/health
+
+# 4. Check if all services are registered with API Gateway
+curl http://localhost:8080/services | python3 -m json.tool
+
+# 5. Test direct service connectivity
+curl http://localhost:8081/health  # URL Input Service
+curl http://localhost:8082/health  # Scraper Service
+curl http://localhost:8083/health  # Analyzer Service
+```
+
+**❌ "Network Error" or "Failed to fetch" in browser**:
+```bash
+# 1. Check browser console for specific error messages
+# Open Developer Tools > Console tab
+
+# 2. Check browser Network tab for failed requests
+# Look for 404, 500, or CORS errors
+
+# 3. Verify CORS configuration
+curl -H "Origin: http://localhost:8089" \
+     -H "Access-Control-Request-Method: POST" \
+     -H "Access-Control-Request-Headers: Content-Type" \
+     -X OPTIONS \
+     http://localhost:8080/api/url-input-service/input/urls
+
+# 4. Check if API Gateway proxy is working
+curl -X POST http://localhost:8080/api/url-input-service/input/urls \
+     -H "Content-Type: application/json" \
+     -d '["https://example.com"]'
+```
+
+**❌ File upload fails with "400 Bad Request"**:
+```bash
+# 1. Check if the upload endpoint is accessible
+curl -X POST http://localhost:8080/api/url-input-service/input/upload/text \
+     -F "file=@test.txt"
+
+# 2. Verify file format is supported
+# Supported formats: text, json, csv, excel
+
+# 3. Check service logs for detailed error
+docker compose logs url-input-service
+
+# 4. Test with a simple text file
+echo -e "https://example.com\nhttps://google.com" > test_urls.txt
+curl -X POST http://localhost:8080/api/url-input-service/input/upload/text \
+     -F "file=@test_urls.txt"
+```
+
+**❌ Services show as "unhealthy" in health check**:
+```bash
+# 1. Check individual service status
+docker compose ps
+
+# 2. Check service logs for errors
+docker compose logs api-gateway
+docker compose logs url-input-service
+docker compose logs web-ui
+
+# 3. Restart unhealthy services
+docker compose restart api-gateway
+docker compose restart url-input-service
+
+# 4. Check if services can communicate internally
+docker compose exec api-gateway curl http://url-input-service:8081/health
+```
+
 ### Common Issues & Solutions
 
 **❌ "docker-compose: command not found"**:
@@ -551,8 +723,15 @@ python3 scripts/model-manager.py hardware
 # Check what's using ports
 sudo netstat -tulpn | grep :8080
 sudo netstat -tulpn | grep :6333
+sudo netstat -tulpn | grep :8089
 
 # Stop conflicting services or change ports in docker-compose.yml
+# Key ports used:
+# - 8080: API Gateway
+# - 8089: Web UI
+# - 6333: Qdrant Vector DB
+# - 11434: Ollama LLM
+# - 8081-8088: Backend services
 ```
 
 **❌ Permission errors**:
@@ -566,13 +745,53 @@ sudo chown -R $USER:$USER .
 chmod +x scripts/*.sh
 ```
 
+**❌ API endpoints returning 404 errors**:
+```bash
+# 1. Verify API Gateway routing configuration
+docker compose logs api-gateway | grep -i "routing\|proxy\|404"
+
+# 2. Check if services are properly registered
+curl http://localhost:8080/services | python3 -m json.tool
+
+# 3. Test direct service endpoints (bypass API Gateway)
+curl http://localhost:8081/api/input/urls  # Direct to URL Input Service
+
+# 4. Verify correct API paths in frontend
+# Frontend should call: /api/url-input-service/input/urls
+# NOT: /api/url-input-service/api/input/urls (double /api/ prefix)
+```
+
+**❌ Environment variables not loading in frontend**:
+```bash
+# 1. Verify .env file exists and has correct content
+cat services/web-ui/.env
+# Should contain: REACT_APP_API_URL=http://localhost:8080
+
+# 2. Rebuild frontend container to pick up new environment variables
+docker compose build web-ui
+docker compose up -d web-ui
+
+# 3. Check if environment variables are available in browser
+# Open browser console and type: console.log(process.env.REACT_APP_API_URL)
+```
+
 ### Getting Help
 
+**For Frontend-Backend Connectivity Issues**:
+1. **Verify frontend environment**: `cat services/web-ui/.env`
+2. **Check API Gateway health**: `curl http://localhost:8080/health`
+3. **Test service registration**: `curl http://localhost:8080/services`
+4. **Check browser console**: Open Developer Tools > Console for errors
+5. **Verify API calls**: Check Network tab in browser Developer Tools
+6. **Test direct API calls**: Use curl to test endpoints directly
+
+**For General Issues**:
 1. **Check logs first**: `docker compose logs -f`
 2. **Verify prerequisites**: Docker Compose V2, sufficient RAM/disk
 3. **Check service health**: `curl http://localhost:8080/health`
 4. **Review configuration**: Ensure `.env` has required keys
 5. **Test models**: `python3 scripts/model-manager.py status`
+6. **Verify all containers running**: `docker compose ps`
 
 ## 📚 Documentation
 

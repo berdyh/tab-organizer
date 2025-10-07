@@ -4,7 +4,8 @@ Configuration settings for the monitoring service.
 
 import os
 from typing import Dict, Any, List
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
 class MonitoringSettings(BaseSettings):

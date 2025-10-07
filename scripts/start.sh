@@ -20,24 +20,43 @@ if ! docker compose version &> /dev/null; then
     exit 1
 fi
 
-# Check if local Ollama is already running
-echo "🔍 Checking for existing Ollama installation..."
-if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-    echo "✅ Local Ollama detected and running on port 11434"
-    echo "🔗 Will use existing Ollama installation instead of Docker container"
-    USE_LOCAL_OLLAMA=true
-    PROFILE=""
-    
-    # Update .env to point to local Ollama
-    if [ -f .env ]; then
-        sed -i 's|OLLAMA_URL=http://ollama:11434|OLLAMA_URL=http://localhost:11434|g' .env
-        echo "📝 Updated .env to use local Ollama"
+# Helper to upsert values in .env
+update_env_var() {
+    local key="$1"
+    local value="$2"
+
+    if [ ! -f .env ]; then
+        return
     fi
-else
-    echo "🐳 No local Ollama found, will use Docker container"
-    USE_LOCAL_OLLAMA=false
-    
-    # Determine which profile to use (GPU or CPU)
+
+    python3 - <<PY
+from pathlib import Path
+
+env_path = Path(".env")
+key = "${key}"
+value = "${value}"
+
+if not env_path.exists():
+    raise SystemExit(0)
+
+lines = env_path.read_text().splitlines()
+updated = False
+
+for idx, line in enumerate(lines):
+    if line.startswith(f"{key}="):
+        lines[idx] = f"{key}={value}"
+        updated = True
+        break
+
+if not updated:
+    lines.append(f"{key}={value}")
+
+env_path.write_text("\n".join(lines) + "\n")
+PY
+}
+
+# Determine appropriate Docker profile based on GPU availability
+select_docker_profile() {
     if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
         echo "🎮 GPU detected, using GPU profile for Ollama..."
         PROFILE="--profile gpu"
@@ -45,22 +64,54 @@ else
         echo "💻 No GPU detected, using CPU profile for Ollama..."
         PROFILE="--profile cpu"
     fi
-    
-    # Update .env to point to Docker Ollama
+}
+
+# Verify that Docker containers can reach the host-side Ollama instance
+check_local_ollama_from_docker() {
+    docker run --rm --add-host host.docker.internal:host-gateway \
+        curlimages/curl:8.5.0 -s --max-time 5 http://host.docker.internal:11434/api/tags >/dev/null 2>&1
+}
+
+# Check if local Ollama is already running
+echo "🔍 Checking for existing Ollama installation..."
+USE_LOCAL_OLLAMA=false
+PROFILE=""
+
+if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo "✅ Local Ollama detected and running on port 11434"
+    echo "🔗 Will use existing Ollama installation instead of Docker container"
+    USE_LOCAL_OLLAMA=true
+
     if [ -f .env ]; then
-        sed -i 's|OLLAMA_URL=http://localhost:11434|OLLAMA_URL=http://ollama:11434|g' .env
-        echo "📝 Updated .env to use Docker Ollama"
+        update_env_var "OLLAMA_URL" "http://localhost:11434"
     fi
+    echo "📝 Updated .env to use local Ollama"
+
+    echo "🧪 Verifying Docker network access to local Ollama..."
+    if ! check_local_ollama_from_docker; then
+        echo "⚠️  Docker containers cannot reach the local Ollama instance."
+        echo "   Falling back to the Dockerized Ollama service."
+        USE_LOCAL_OLLAMA=false
+    fi
+fi
+
+if [ "$USE_LOCAL_OLLAMA" = false ]; then
+    echo "🐳 Using Dockerized Ollama container"
+    select_docker_profile
+    if [ -f .env ]; then
+        update_env_var "OLLAMA_URL" "http://ollama:11434"
+    fi
+    echo "📝 Updated .env to use Docker Ollama"
 fi
 
 # Start services
 echo "🔄 Starting services..."
 if [ "$USE_LOCAL_OLLAMA" = true ]; then
     echo "🔗 Using local Ollama installation"
-    docker compose -f docker-compose.yml -f docker-compose.local-ollama.yml up -d --quiet-pull 2>/dev/null
+    docker compose -f docker-compose.yml -f docker-compose.local-ollama.yml up -d --quiet-pull
 else
     echo "🐳 Using Docker Ollama container"
-    docker compose $PROFILE up -d --quiet-pull 2>/dev/null
+    docker compose $PROFILE up -d --quiet-pull
 fi
 
 # Show a clean summary
@@ -121,11 +172,21 @@ else
     OLLAMA_EMBEDDING_MODEL="nomic-embed-text"
 fi
 
-echo "  Pulling LLM model: $OLLAMA_MODEL"
-docker compose exec -T ollama ollama pull "$OLLAMA_MODEL" || echo "⚠️  Failed to pull $OLLAMA_MODEL model"
-
-echo "  Pulling embedding model: $OLLAMA_EMBEDDING_MODEL"
-docker compose exec -T ollama ollama pull "$OLLAMA_EMBEDDING_MODEL" || echo "⚠️  Failed to pull $OLLAMA_EMBEDDING_MODEL model"
+if [ "$USE_LOCAL_OLLAMA" = true ]; then
+    if command -v ollama &> /dev/null; then
+        echo "  Pulling LLM model (local): $OLLAMA_MODEL"
+        ollama pull "$OLLAMA_MODEL" || echo "⚠️  Failed to pull $OLLAMA_MODEL model locally"
+        echo "  Pulling embedding model (local): $OLLAMA_EMBEDDING_MODEL"
+        ollama pull "$OLLAMA_EMBEDDING_MODEL" || echo "⚠️  Failed to pull $OLLAMA_EMBEDDING_MODEL model locally"
+    else
+        echo "ℹ️  Ollama CLI not found locally – skipping automatic model pulls"
+    fi
+else
+    echo "  Pulling LLM model: $OLLAMA_MODEL"
+    docker compose exec -T ollama ollama pull "$OLLAMA_MODEL" || echo "⚠️  Failed to pull $OLLAMA_MODEL model"
+    echo "  Pulling embedding model: $OLLAMA_EMBEDDING_MODEL"
+    docker compose exec -T ollama ollama pull "$OLLAMA_EMBEDDING_MODEL" || echo "⚠️  Failed to pull $OLLAMA_EMBEDDING_MODEL model"
+fi
 
 echo ""
 echo "💡 To change models or add more, run: ./scripts/setup-models.sh"
