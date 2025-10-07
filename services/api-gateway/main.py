@@ -347,8 +347,8 @@ async def proxy_to_service(service_name: str, path: str, request: Request):
     if not service.get("healthy", False):
         raise HTTPException(status_code=503, detail=f"Service '{service_name}' is unhealthy")
     
-    # Build target URL
-    target_url = f"{service['url']}/{path}"
+    # Build target URL with /api/ prefix for backend services
+    target_url = f"{service['url']}/api/{path}"
     
     # Get request data
     body = await request.body()

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     
     # Service URLs
     qdrant_url: str = "http://qdrant:6333"
-    ollama_url: str = "http://ollama:11434"
+    ollama_url: str = "http://host.docker.internal:11434"
     
     # Service registry configuration
     services: Dict[str, Dict[str, Any]] = {
@@ -52,6 +52,11 @@ class Settings(BaseSettings):
             "url": "http://session-service:8087",
             "health_endpoint": "/health",
             "timeout": 10.0
+        },
+        "chatbot": {
+            "url": "http://chatbot-service:8092",
+            "health_endpoint": "/health",
+            "timeout": 10.0
         }
     }
     
@@ -59,19 +64,21 @@ class Settings(BaseSettings):
     ollama_model: str = "llama3.2:3b"
     ollama_embedding_model: str = "nomic-embed-text"
     
-    # External services
-    external_services: Dict[str, Dict[str, Any]] = {
-        "qdrant": {
-            "url": qdrant_url,
-            "health_endpoint": "/health",
-            "timeout": 5.0
-        },
-        "ollama": {
-            "url": ollama_url,
-            "health_endpoint": "/api/tags",
-            "timeout": 10.0
+    @property
+    def external_services(self) -> Dict[str, Dict[str, Any]]:
+        """External services configuration with dynamic URLs."""
+        return {
+            "qdrant": {
+                "url": self.qdrant_url,
+                "health_endpoint": "/",
+                "timeout": 5.0
+            },
+            "ollama": {
+                "url": self.ollama_url,
+                "health_endpoint": "/api/tags",
+                "timeout": 10.0
+            }
         }
-    }
     
     # Health check settings
     health_check_interval: int = 30  # seconds
