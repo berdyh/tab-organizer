@@ -107,6 +107,21 @@ The service will be available at `http://127.0.0.1:8000`. Auto‑reload watches 
 
 See `services/web-ui/src/pages/AuthManager.js` for example client calls.
 
+## Docker
+
+The included Dockerfile builds a minimal Python 3.11 image and runs the service
+under Uvicorn on port **8000**:
+
+```bash
+docker build -t auth services/auth
+docker run --rm -p 8000:8000 auth
+```
+
+A health check hits `GET /health`, mirroring how the API Gateway monitors the
+container in docker-compose. No changes were required after the refactor—the
+entrypoint still uses `uvicorn main:app`, and `main.py` re-exports all public
+symbols so imports in tests or other services continue to work.
+
 ## Testing
 
 From the repository root (with the virtualenv activated):
