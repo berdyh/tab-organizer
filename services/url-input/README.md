@@ -86,6 +86,7 @@ following endpoints, all still available under the API Gateway prefix `/api`:
 
 - `POST /api/input/urls` – validate a single URL or small list.
 - `POST /api/input/upload/{text|json|csv|excel}` – upload URL collections.
+- `POST /api/input/upload` – upload a file with automatic format detection (txt/json/csv/tsv/excel).
 - `GET /api/input` – list stored URL batches.
 - `GET /api/input/{input_id}` – fetch metadata and URL rows for a batch.
 - `DELETE /api/input/{input_id}` / `DELETE /api/input/{input_id}:{entry_id}` –

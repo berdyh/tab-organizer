@@ -10,6 +10,7 @@ import pandas as pd
 
 from .deduplication import URLDeduplicator
 from .enrichment import URLEnricher
+from .detector import InputFormatDetector
 from .models import URLEntry
 from .validators import URLValidator
 
@@ -127,6 +128,21 @@ class URLParser:
                     entry = URLEnricher.enrich_url_entry(entry)
                 urls.append(entry)
 
+        if not urls:
+            fallback_text = json.dumps(data, ensure_ascii=False)
+            extracted_urls = InputFormatDetector.extract_url_patterns(fallback_text)
+            for index, candidate in enumerate(extracted_urls):
+                is_valid, error = URLValidator.validate_url(candidate)
+                entry = URLEntry(
+                    url=candidate,
+                    source_metadata={"index": index, "extracted_from": "json_fallback"},
+                    validated=is_valid,
+                    validation_error=error,
+                )
+                if enrich and is_valid:
+                    entry = URLEnricher.enrich_url_entry(entry)
+                urls.append(entry)
+
         if enrich:
             urls = URLDeduplicator.mark_duplicates(urls)
 
@@ -136,7 +152,7 @@ class URLParser:
     def parse_csv_file(cls, content: str, enrich: bool = True) -> List[URLEntry]:
         """Extract URLs from CSV/TSV content."""
         try:
-            df = pd.read_csv(StringIO(content))
+            df = pd.read_csv(StringIO(content), sep=None, engine="python")
         except Exception as exc:
             raise ValueError(f"Invalid CSV format: {exc}") from exc
 
