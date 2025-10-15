@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter
+import os
 from typing import Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 from ..api.dependencies import get_url_input_or_404
@@ -20,6 +22,27 @@ from ..validators import URLValidator
 
 router = APIRouter(prefix="/api/input")
 logger = get_logger(__name__)
+
+async def _update_session_stats(session_id: str, urls_processed: int, source_type: str) -> None:
+    if not session_id or urls_processed <= 0 or not SESSION_SERVICE_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            await client.put(
+                f"{SESSION_SERVICE_URL}/sessions/{session_id}/stats",
+                json={
+                    "urls_processed": urls_processed,
+                    "metadata": {"last_ingest_source": source_type},
+                },
+            )
+    except Exception as exc:  # pragma: no cover - non-critical coupling
+        logger.warning(
+            "Failed to update session statistics from processing module",
+            session_id=session_id,
+            error=str(exc),
+        )
+
+SESSION_SERVICE_URL = os.getenv("SESSION_SERVICE_URL", "http://session-service:8087")
 
 
 @router.post("/enrich/{input_id}")
@@ -107,6 +130,7 @@ async def get_categories(input_id: str):
 async def batch_process_urls(
     urls: List[str],
     batch_size: int = Query(100, description="Batch size for processing"),
+    session_id: str = Query(..., description="Session to associate the processed URLs with"),
 ):
     """Process large URL lists in batches."""
     logger.info("Processing batch URL input", url_count=len(urls), batch_size=batch_size)
@@ -133,7 +157,10 @@ async def batch_process_urls(
                 "batch_size": batch_size,
                 "enriched": True,
             },
+            session_id=session_id,
         )
+
+        await _update_session_stats(session_id, stats.get("total_urls", 0), "batch")
 
         logger.info("Batch URLs processed", input_id=url_input.input_id, batch_size=batch_size, **stats)
 
@@ -142,6 +169,7 @@ async def batch_process_urls(
             "source_type": "batch",
             "batch_size": batch_size,
             "enriched": True,
+            "session_id": session_id,
             **stats,
         }
 

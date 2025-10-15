@@ -16,15 +16,18 @@ def create_url_input(
     urls: List[URLEntry],
     source_type: str,
     source_metadata: Dict[str, Any],
+    session_id: str,
 ) -> Tuple[URLInput, Dict[str, Any]]:
     """Create a URLInput object, persist it, and return the instance with processing stats."""
     stats = BatchProcessor.get_processing_stats(urls)
     metadata = dict(source_metadata)
+    metadata.setdefault("session_id", session_id)
     metadata.setdefault("processing_stats", stats)
 
     url_input = URLInput(
         input_id=str(uuid.uuid4()),
         urls=ensure_entry_ids(urls),
+        session_id=session_id,
         source_type=source_type,
         source_metadata=metadata,
         created_at=datetime.now(),

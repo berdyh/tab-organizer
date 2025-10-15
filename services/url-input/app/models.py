@@ -48,6 +48,7 @@ class URLInput:
 
     input_id: str
     urls: List[URLEntry]
+    session_id: str
     source_type: str  # text, json, csv, excel, form, direct
     source_metadata: Dict[str, Any]
     created_at: datetime

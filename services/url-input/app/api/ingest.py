@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from io import BytesIO
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
@@ -21,14 +23,17 @@ from ..validators import URLValidator
 router = APIRouter(prefix="/api/input")
 logger = get_logger(__name__)
 
+SESSION_SERVICE_URL = os.getenv("SESSION_SERVICE_URL", "http://session-service:8087")
 
-def _store_input(
+
+async def _store_input(
     urls: List[URLEntry],
     source_type: str,
     source_metadata: Dict[str, Any],
+    session_id: str,
 ) -> tuple[str, Dict[str, Any]]:
     source_metadata = dict(source_metadata)
-    url_input, stats = create_url_input(urls, source_type, source_metadata)
+    url_input, stats = create_url_input(urls, source_type, source_metadata, session_id=session_id)
 
     logger.info(
         "URL input stored",
@@ -44,12 +49,43 @@ def _store_input(
         "source_type": source_type,
         "enriched": source_metadata.get("enriched", True),
         **stats,
+        "session_id": session_id,
     }
 
     if "filename" in source_metadata:
         response["filename"] = source_metadata["filename"]
 
+    await _notify_session_service(session_id, stats, source_type)
+
     return url_input.input_id, response
+
+
+async def _notify_session_service(session_id: str, stats: Dict[str, Any], source_type: str) -> None:
+    if not session_id or not SESSION_SERVICE_URL:
+        return
+
+    payload = {
+        "urls_processed": stats.get("total_urls", 0),
+        "metadata": {
+            "last_ingest_source": source_type,
+        },
+    }
+
+    if not payload["urls_processed"]:
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            await client.put(
+                f"{SESSION_SERVICE_URL}/sessions/{session_id}/stats",
+                json=payload,
+            )
+    except Exception as exc:  # pragma: no cover - non-critical failure
+        logger.warning(
+            "Failed to update session statistics",
+            session_id=session_id,
+            error=str(exc),
+        )
 
 
 def _decode_text(content_bytes: bytes) -> str:
@@ -129,6 +165,7 @@ def _parse_uploaded_content(
 async def upload_text_file(
     file: UploadFile = File(...),
     enrich: bool = Query(True, description="Enable URL enrichment and deduplication"),
+    session_id: str = Form(..., description="Session to associate the uploaded URLs with"),
 ):
     """Upload and parse plain text file with URLs."""
     logger.info("Processing text file upload", filename=file.filename, enrich=enrich)
@@ -136,7 +173,7 @@ async def upload_text_file(
     try:
         content_bytes = await file.read()
         urls, extra_metadata = _parse_uploaded_content("text", content_bytes, enrich=enrich)
-        _, response = _store_input(
+        _, response = await _store_input(
             urls,
             "text",
             {
@@ -145,6 +182,7 @@ async def upload_text_file(
                 **extra_metadata,
                 "enriched": enrich,
             },
+            session_id,
         )
         return response
 
@@ -157,6 +195,7 @@ async def upload_text_file(
 async def upload_json_file(
     file: UploadFile = File(...),
     enrich: bool = Query(True, description="Enable URL enrichment and deduplication"),
+    session_id: str = Form(..., description="Session to associate the uploaded URLs with"),
 ):
     """Upload and parse JSON file with URLs."""
     logger.info("Processing JSON file upload", filename=file.filename, enrich=enrich)
@@ -164,7 +203,7 @@ async def upload_json_file(
     try:
         content_bytes = await file.read()
         urls, extra_metadata = _parse_uploaded_content("json", content_bytes, enrich=enrich)
-        _, response = _store_input(
+        _, response = await _store_input(
             urls,
             "json",
             {
@@ -173,6 +212,7 @@ async def upload_json_file(
                 **extra_metadata,
                 "enriched": enrich,
             },
+            session_id,
         )
         return response
 
@@ -185,6 +225,7 @@ async def upload_json_file(
 async def upload_csv_file(
     file: UploadFile = File(...),
     enrich: bool = Query(True, description="Enable URL enrichment and deduplication"),
+    session_id: str = Form(..., description="Session to associate the uploaded URLs with"),
 ):
     """Upload and parse CSV file with URLs."""
     logger.info("Processing CSV file upload", filename=file.filename, enrich=enrich)
@@ -192,7 +233,7 @@ async def upload_csv_file(
     try:
         content_bytes = await file.read()
         urls, extra_metadata = _parse_uploaded_content("csv", content_bytes, enrich=enrich)
-        _, response = _store_input(
+        _, response = await _store_input(
             urls,
             "csv",
             {
@@ -201,6 +242,7 @@ async def upload_csv_file(
                 **extra_metadata,
                 "enriched": enrich,
             },
+            session_id,
         )
         return response
 
@@ -213,6 +255,7 @@ async def upload_csv_file(
 async def upload_excel_file(
     file: UploadFile = File(...),
     enrich: bool = Query(True, description="Enable URL enrichment and deduplication"),
+    session_id: str = Form(..., description="Session to associate the uploaded URLs with"),
 ):
     """Upload and parse Excel file with URLs."""
     logger.info("Processing Excel file upload", filename=file.filename, enrich=enrich)
@@ -220,7 +263,7 @@ async def upload_excel_file(
     try:
         content_bytes = await file.read()
         urls, extra_metadata = _parse_uploaded_content("excel", content_bytes, enrich=enrich)
-        _, response = _store_input(
+        _, response = await _store_input(
             urls,
             "excel",
             {
@@ -229,6 +272,7 @@ async def upload_excel_file(
                 **extra_metadata,
                 "enriched": enrich,
             },
+            session_id,
         )
         return response
 
@@ -242,6 +286,7 @@ async def upload_file_auto(
     file: UploadFile = File(...),
     enrich: bool = Query(True, description="Enable URL enrichment and deduplication"),
     format_hint: Optional[str] = Query(None, description="Optional format hint (text, json, csv, excel)"),
+    session_id: str = Form(..., description="Session to associate the uploaded URLs with"),
 ):
     """Upload a file and automatically detect its format."""
     logger.info(
@@ -298,7 +343,7 @@ async def upload_file_auto(
     if source_type == "tsv":
         source_type = "csv"
 
-    _, response = _store_input(urls, source_type, extra_metadata)
+    _, response = await _store_input(urls, source_type, extra_metadata, session_id)
     return response
 
 
@@ -306,6 +351,7 @@ async def upload_file_auto(
 async def input_urls_direct(
     urls: List[str],
     enrich: bool = Query(True, description="Enable URL enrichment and deduplication"),
+    session_id: str = Query(..., description="Session to associate the URLs with"),
 ):
     """Direct URL list input."""
     logger.info("Processing direct URL input", url_count=len(urls), enrich=enrich)
@@ -327,10 +373,11 @@ async def input_urls_direct(
         if enrich:
             entries = URLDeduplicator.mark_duplicates(entries)
 
-        _, response = _store_input(
+        _, response = await _store_input(
             entries,
             "direct",
             {"input_method": "api_direct", "enriched": enrich},
+            session_id,
         )
         return response
 
@@ -343,13 +390,14 @@ async def input_urls_direct(
 async def input_urls_form(
     urls_text: str = Form(...),
     enrich: bool = Form(True, description="Enable URL enrichment and deduplication"),
+    session_id: str = Form(..., description="Session to associate the URLs with"),
 ):
     """Web form URL input."""
     logger.info("Processing form URL input", enrich=enrich)
 
     try:
         urls = URLParser.parse_text_file(urls_text, enrich=enrich)
-        _, response = _store_input(
+        _, response = await _store_input(
             urls,
             "form",
             {
@@ -357,6 +405,7 @@ async def input_urls_form(
                 "text_length": len(urls_text),
                 "enriched": enrich,
             },
+            session_id,
         )
         return response
 

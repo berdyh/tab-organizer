@@ -26,6 +26,7 @@ def mock_qdrant_operations():
         mock_client.get_collections.return_value.collections = []
         mock_client.create_collection.return_value = None
         mock_client.delete_collection.return_value = None
+        mock_client.delete.return_value = None
         mock_client.get_collection.return_value = Mock(
             points_count=100,
             vectors_count=100,
@@ -417,6 +418,84 @@ class TestSessionStatistics:
         data = response.json()
         assert data["comparison_summary"]["total_sessions"] == 2
         assert len(data["sessions"]) == 2
+
+
+class TestSessionMergeSplit:
+    """Test session merge and split operations."""
+
+    def test_merge_sessions(self, mock_qdrant_operations):
+        session1 = client.post("/sessions", json={"name": "Session A"}).json()
+        session2 = client.post("/sessions", json={"name": "Session B"}).json()
+
+        # Provide mocked point exports for each session
+        point_batches = [
+            ([Mock(id="point-a", vector=[0.1, 0.2, 0.3], payload={"text": "A"})], None),
+            ([Mock(id="point-b", vector=[0.4, 0.5, 0.6], payload={"text": "B"})], None),
+        ]
+
+        def scroll_side_effect(*args, **kwargs):
+            if point_batches:
+                return point_batches.pop(0)
+            return ([], None)
+
+        mock_qdrant_operations.scroll.side_effect = scroll_side_effect
+
+        merge_payload = {
+            "source_session_ids": [session1["id"], session2["id"]],
+            "target_name": "Merged Session",
+            "archive_sources": True,
+        }
+
+        response = client.post("/sessions/merge", json=merge_payload)
+        assert response.status_code == 200
+        merged = response.json()
+        assert merged["name"] == "Merged Session"
+        assert merged["metadata"]["merged_from"] == [session1["id"], session2["id"]]
+
+        # Source sessions should now be archived
+        s1 = client.get(f"/sessions/{session1['id']}").json()
+        s2 = client.get(f"/sessions/{session2['id']}").json()
+        assert s1["status"] == "archived"
+        assert s2["status"] == "archived"
+
+    def test_split_session(self, mock_qdrant_operations):
+        session = client.post("/sessions", json={"name": "Original"}).json()
+
+        split_points = [
+            ([Mock(id="point-1", vector=[0.1, 0.2, 0.3], payload={"text": "X"})], None),
+        ]
+
+        def split_scroll_side_effect(*args, **kwargs):
+            if split_points:
+                return split_points.pop(0)
+            return ([], None)
+
+        mock_qdrant_operations.scroll.side_effect = split_scroll_side_effect
+
+        payload = {
+            "parts": [
+                {
+                    "name": "Subset",
+                    "point_ids": ["point-1"],
+                    "metadata": {"note": "created via split"},
+                }
+            ],
+            "remove_points": True,
+        }
+
+        response = client.post(f"/sessions/{session['id']}/split", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["assigned_points"] == 1
+        assert data["removed_points"] == 1
+        assert len(data["new_sessions"]) == 1
+
+        new_session_id = data["new_sessions"][0]
+        new_session = client.get(f"/sessions/{new_session_id}").json()
+        assert new_session["metadata"]["split_from"] == session["id"]
+
+        original = client.get(f"/sessions/{session['id']}").json()
+        assert original["status"] == "active"
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

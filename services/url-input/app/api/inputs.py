@@ -48,13 +48,19 @@ def _entry_domain(url_entry: URLEntry) -> str | None:
 
 
 @router.get("/list")
-async def list_url_inputs(skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000)):
+async def list_url_inputs(
+    session_id: str = Query(..., description="Filter by session identifier"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+):
     """List all URL entries with pagination."""
     logger.info("Listing URL inputs", skip=skip, limit=limit)
 
     entries: List[tuple[datetime, Dict[str, Any]]] = []
 
     for url_input in url_input_storage.values():
+        if url_input.session_id != session_id:
+            continue
         ensure_entry_ids(url_input.urls)
         created_at = url_input.created_at
 
@@ -92,6 +98,7 @@ async def list_url_inputs(skip: int = Query(0, ge=0), limit: int = Query(100, ge
     for created_at, entry_data in paginated_entries:
         entry = dict(entry_data)
         entry["created_at"] = created_at.isoformat()
+        entry["session_id"] = session_id
         response_data.append(entry)
 
     return {
@@ -107,12 +114,15 @@ async def list_url_inputs(skip: int = Query(0, ge=0), limit: int = Query(100, ge
 async def get_url_input(
     input_identifier: str,
     include_metadata: bool = Query(True, description="Include URL metadata in the response"),
+    session_id: str = Query(..., description="Session identifier for access control"),
 ):
     """Get detailed information about a specific URL input or entry."""
     logger.info("Getting URL input details", input_identifier=input_identifier)
 
     input_id, entry_id = parse_input_identifier(input_identifier)
     url_input = get_url_input_or_404(input_id)
+    if url_input.session_id != session_id:
+        raise HTTPException(status_code=404, detail="URL input not found for session")
     ensure_entry_ids(url_input.urls)
 
     if entry_id:
@@ -169,6 +179,7 @@ async def get_url_input(
         "source_metadata": url_input.source_metadata,
         "created_at": url_input.created_at.isoformat(),
         "validated": url_input.validated,
+        "session_id": session_id,
         "stats": stats_copy,
         "processing_stats": stats_copy,
         "urls": urls_data,
@@ -176,16 +187,25 @@ async def get_url_input(
 
 
 @router.delete("/{input_identifier}")
-async def delete_url_input(input_identifier: str):
+async def delete_url_input(
+    input_identifier: str,
+    session_id: str = Query(..., description="Session identifier for access control"),
+):
     """Delete a URL input or a specific URL entry."""
     logger.info("Deleting URL input", input_identifier=input_identifier)
 
     input_id, entry_id = parse_input_identifier(input_identifier)
     url_input = get_url_input_or_404(input_id)
+    if url_input.session_id != session_id:
+        raise HTTPException(status_code=404, detail="URL input not found for session")
 
     if entry_id is None:
         url_input_storage.delete(input_id)
-        return {"message": "URL input deleted successfully", "input_id": input_id}
+        return {
+            "message": "URL input deleted successfully",
+            "input_id": input_id,
+            "session_id": session_id,
+        }
 
     entry = find_entry_by_id(url_input, entry_id)
     if not entry:
@@ -196,23 +216,38 @@ async def delete_url_input(input_identifier: str):
     if not url_input.urls:
         url_input_storage.delete(input_id)
 
-    return {"message": "URL entry deleted successfully", "input_id": input_id, "entry_id": entry_id}
+    return {
+        "message": "URL entry deleted successfully",
+        "input_id": input_id,
+        "entry_id": entry_id,
+        "session_id": session_id,
+    }
 
 
 @router.put("/{input_identifier}")
-async def update_url_input(input_identifier: str, update_data: Dict[str, Any]):
+async def update_url_input(
+    input_identifier: str,
+    update_data: Dict[str, Any],
+    session_id: str = Query(..., description="Session identifier for access control"),
+):
     """Update URL input metadata or a specific URL entry."""
     logger.info("Updating URL input", input_identifier=input_identifier)
 
     input_id, entry_id = parse_input_identifier(input_identifier)
     url_input = get_url_input_or_404(input_id)
+    if url_input.session_id != session_id:
+        raise HTTPException(status_code=404, detail="URL input not found for session")
 
     if entry_id is None:
         if "source_metadata" in update_data and isinstance(update_data["source_metadata"], dict):
             url_input.source_metadata.update(update_data["source_metadata"])
         if "validated" in update_data:
             url_input.validated = bool(update_data["validated"])
-        return {"message": "URL input updated successfully", "input_id": input_id}
+        return {
+            "message": "URL input updated successfully",
+            "input_id": input_id,
+            "session_id": session_id,
+        }
 
     entry = find_entry_by_id(url_input, entry_id)
     if not entry:
@@ -233,11 +268,16 @@ async def update_url_input(input_identifier: str, update_data: Dict[str, Any]):
     if "validation_error" in update_data:
         entry.validation_error = update_data["validation_error"]
 
-    return {"message": "URL entry updated successfully", "input_id": input_id, "entry_id": entry_id}
+    return {
+        "message": "URL entry updated successfully",
+        "input_id": input_id,
+        "entry_id": entry_id,
+        "session_id": session_id,
+    }
 
 
 @router.get("")
-async def list_inputs():
+async def list_inputs(session_id: str = Query(..., description="Filter by session identifier")):
     """List all URL inputs."""
     return {
         "inputs": [
@@ -247,8 +287,10 @@ async def list_inputs():
                 "total_urls": len(url_input.urls),
                 "created_at": url_input.created_at.isoformat(),
                 "validated": url_input.validated,
+                "session_id": url_input.session_id,
             }
             for input_id, url_input in url_input_storage.items()
+            if url_input.session_id == session_id
         ]
     }
 

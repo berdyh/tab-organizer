@@ -40,8 +40,10 @@ flowchart LR
 
 The ingestion flow normalises input into `URLEntry` objects, validates and
 enriches them, deduplicates overlapping URLs, and persists results inside the
-in-memory storage abstraction. FastAPI routers expose upload, management, and
-analytics surfaces that the API Gateway and web UI consume.
+in-memory storage abstraction. Every stored batch is associated with a
+`session_id` sourced from the Session service so downstream scraping, analysis
+and export can isolate workspace data. FastAPI routers expose upload,
+management, and analytics surfaces that the API Gateway and web UI consume.
 
 ## Codebase Architecture
 
@@ -82,7 +84,9 @@ extend or swap out pieces (for example, replacing the in-memory storage layer).
 ## API Surface Used by the Web UI
 
 The React front end (`services/web-ui/src/services/api.js`) consumes the
-following endpoints, all still available under the API Gateway prefix `/api`:
+following endpoints, all still available under the API Gateway prefix `/api`.
+Each call must provide a `session_id` (query parameter for JSON endpoints,
+form field for file uploads) to scope operations to the active workspace:
 
 - `POST /api/input/urls` – validate a single URL or small list.
 - `POST /api/input/upload/{text|json|csv|excel}` – upload URL collections.
@@ -127,6 +131,14 @@ Additional processing routes such as `/api/input/enrich/{input_id}` and
    Make sure `REACT_APP_API_URL` points to the API Gateway (defaults to
    `http://localhost:8080`). Uploading URLs, validating entries, and viewing
    lists should all hit the refactored endpoints transparently.
+
+### Session service integration
+
+- Set the `SESSION_SERVICE_URL` environment variable if the Session service is
+  exposed under a non-default hostname. It defaults to
+  `http://session-service:8087` inside docker-compose. When ingestion stores a
+  new batch, the service automatically increments the session's URL counters via
+  `PUT /sessions/{session_id}/stats`.
 
 ## Docker
 
