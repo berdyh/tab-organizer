@@ -1,11 +1,14 @@
 """Integration tests for Web Scraper Service authentication features."""
 
-import pytest
 import asyncio
-from unittest.mock import Mock, patch, AsyncMock, MagicMock
 from datetime import datetime, timedelta
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
-from main import (
+import pytest
+from pydantic import HttpUrl
+
+from services.scraper.main import (
     AuthenticationServiceClient,
     AuthSession,
     ScrapingEngine,
@@ -14,6 +17,11 @@ from main import (
     active_jobs,
     auth_sessions
 )
+
+
+def _http(url: str) -> HttpUrl:
+    """Helper for type-check friendly HttpUrl literals."""
+    return cast(HttpUrl, url)
 
 
 class TestAuthenticationServiceClient:
@@ -156,9 +164,9 @@ class TestScrapingEngineAuthIntegration:
         """Create sample scrape request."""
         return ScrapeRequest(
             urls=[
-                URLRequest(url="https://example.com/page1"),
-                URLRequest(url="https://test.com/page2"),
-                URLRequest(url="https://example.com/page3")
+                URLRequest(url=_http("https://example.com/page1")),
+                URLRequest(url=_http("https://admin.example.org/secure/dashboard")),
+                URLRequest(url=_http("https://member.example.net/profile")),
             ],
             session_id="test_session",
             rate_limit_delay=0.5,
@@ -256,7 +264,7 @@ class TestAuthenticationWorkflow:
         mock_request.meta = {}
         
         # Test injection (would be called by spider)
-        from main import ContentSpider
+        from services.scraper.main import ContentSpider
         spider = ContentSpider(job_id="test_job")
         spider._inject_auth_session(mock_request, "example.com")
         
@@ -269,7 +277,7 @@ class TestAuthenticationWorkflow:
     
     def test_auth_requirement_detection(self):
         """Test authentication requirement detection logic."""
-        from main import ContentSpider
+        from services.scraper.main import ContentSpider
         spider = ContentSpider()
         
         # Test 401 status code
@@ -314,7 +322,7 @@ class TestAuthenticationWorkflow:
     
     def test_retry_queue_functionality(self):
         """Test retry queue for auth-failed URLs."""
-        from main import ContentSpider
+        from services.scraper.main import ContentSpider
         spider = ContentSpider(job_id="test_job")
         
         # Create mock URL request
@@ -338,7 +346,7 @@ class TestErrorHandlingAndLogging:
     
     def test_correlation_id_generation(self):
         """Test correlation ID generation and usage."""
-        from main import ScrapingEngine
+        from services.scraper.main import ScrapingEngine
         engine = ScrapingEngine()
         
         # Mock the scraping process
@@ -348,7 +356,7 @@ class TestErrorHandlingAndLogging:
                 
                 # Create request
                 request = ScrapeRequest(
-                    urls=[URLRequest(url="https://example.com/test")],
+                    urls=[URLRequest(url=_http("https://example.com/reference"))],
                     session_id="test_session"
                 )
                 
@@ -368,7 +376,7 @@ class TestErrorHandlingAndLogging:
     
     def test_graceful_degradation(self):
         """Test graceful degradation when auth service is unavailable."""
-        from main import AuthenticationServiceClient
+        from services.scraper.main import AuthenticationServiceClient
         
         client = AuthenticationServiceClient()
         

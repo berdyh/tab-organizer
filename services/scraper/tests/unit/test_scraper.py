@@ -5,7 +5,7 @@ import hashlib
 from unittest.mock import Mock, patch, MagicMock
 from bs4 import BeautifulSoup
 
-from main import (
+from services.scraper.main import (
     ContentExtractor, 
     DuplicateDetector, 
     RobotsChecker,

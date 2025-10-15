@@ -1,18 +1,36 @@
 """Integration tests for the comprehensive web scraper service."""
 
-import pytest
 import asyncio
 import json
-from unittest.mock import Mock, patch, AsyncMock
+from typing import cast
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 from fastapi.testclient import TestClient
 from fastapi.websockets import WebSocket
+from pydantic import HttpUrl
 
-from main import (
-    app, URLClassifier, ContentExtractor, DuplicateDetector, 
-    ParallelProcessingEngine, URLRequest, ScrapeRequest,
-    ContentType, QueueType, active_jobs, content_hashes,
-    auth_sessions, processing_queues, websocket_connections
+from services.scraper.main import (
+    ContentExtractor,
+    ContentType,
+    DuplicateDetector,
+    ParallelProcessingEngine,
+    QueueType,
+    ScrapeRequest,
+    URLClassifier,
+    URLRequest,
+    app,
+    active_jobs,
+    auth_sessions,
+    content_hashes,
+    processing_queues,
+    websocket_connections,
 )
+
+
+def _http(url: str) -> HttpUrl:
+    """Helper for type-check friendly HttpUrl literals."""
+    return cast(HttpUrl, url)
 
 
 class TestURLClassifier:
@@ -26,9 +44,9 @@ class TestURLClassifier:
     async def test_classify_public_urls(self, classifier):
         """Test classification of public URLs."""
         urls = [
-            URLRequest(url="https://example.com/blog/post-1"),
-            URLRequest(url="https://news.example.com/article"),
-            URLRequest(url="https://example.com/about-us")
+            URLRequest(url=_http("https://example.com/blog/post-1")),
+            URLRequest(url=_http("https://news.example.com/article")),
+            URLRequest(url=_http("https://example.com/about-us")),
         ]
         
         classifications = await classifier.classify_urls(urls, "test_correlation")
@@ -43,9 +61,9 @@ class TestURLClassifier:
     async def test_classify_auth_required_urls(self, classifier):
         """Test classification of URLs requiring authentication."""
         urls = [
-            URLRequest(url="https://example.com/admin/dashboard"),
-            URLRequest(url="https://secure.example.com/profile"),
-            URLRequest(url="https://example.com/user/settings")
+            URLRequest(url=_http("https://example.com/admin/dashboard")),
+            URLRequest(url=_http("https://secure.example.com/profile")),
+            URLRequest(url=_http("https://example.com/user/settings")),
         ]
         
         classifications = await classifier.classify_urls(urls, "test_correlation")
@@ -61,10 +79,10 @@ class TestURLClassifier:
     async def test_classify_mixed_urls(self, classifier):
         """Test classification of mixed URL types."""
         urls = [
-            URLRequest(url="https://example.com/blog/post"),  # Public
-            URLRequest(url="https://example.com/login/dashboard"),  # Auth
-            URLRequest(url="https://example.com/contact"),  # Public
-            URLRequest(url="https://admin.example.com/panel")  # Auth
+            URLRequest(url=_http("https://example.com/blog/post")),  # Public
+            URLRequest(url=_http("https://example.com/login/dashboard")),  # Auth
+            URLRequest(url=_http("https://example.com/contact")),  # Public
+            URLRequest(url=_http("https://admin.example.com/panel")),  # Auth
         ]
         
         classifications = await classifier.classify_urls(urls, "test_correlation")
@@ -81,7 +99,7 @@ class TestURLClassifier:
     async def test_force_auth_check(self, classifier):
         """Test forced authentication check."""
         urls = [
-            URLRequest(url="https://example.com/public-page", force_auth_check=True)
+            URLRequest(url=_http("https://example.com/public-page"), force_auth_check=True)
         ]
         
         classifications = await classifier.classify_urls(urls, "test_correlation")
@@ -287,8 +305,8 @@ class TestParallelProcessingEngine:
         job_id = "test_job_123"
         
         urls = [
-            URLRequest(url="https://example.com/public"),
-            URLRequest(url="https://example.com/admin/private")
+            URLRequest(url=_http("https://example.com/public")),
+            URLRequest(url=_http("https://example.com/admin/private")),
         ]
         
         scrape_request = ScrapeRequest(
@@ -298,7 +316,7 @@ class TestParallelProcessingEngine:
         )
         
         # Create real URL classifications instead of mocks
-        from main import URLClassification, QueueType
+        from services.scraper.main import URLClassification, QueueType
         url_classifications = [
             URLClassification(
                 url="https://example.com/public",
@@ -340,7 +358,7 @@ class TestParallelProcessingEngine:
         # If the queue wasn't initialized, let's test the initialization directly
         if job_id not in processing_queues:
             print("Queue not found, testing direct initialization...")
-            from main import ProcessingQueues
+            from services.scraper.main import ProcessingQueues
             processing_queues[job_id] = ProcessingQueues()
             queues = processing_queues[job_id]
             
@@ -403,7 +421,7 @@ class TestAPIEndpoints:
         ]
         
         with patch('main.url_classifier.classify_urls') as mock_classify:
-            from main import URLClassification, QueueType
+            from services.scraper.main import URLClassification, QueueType
             mock_classify.return_value = [
                 URLClassification(
                     url="https://example.com/blog/post",
@@ -448,7 +466,7 @@ class TestAPIEndpoints:
         with patch('main.url_classifier.classify_urls') as mock_classify, \
              patch('main.parallel_engine.process_job') as mock_process:
             
-            from main import URLClassification, QueueType
+            from services.scraper.main import URLClassification, QueueType
             mock_classify.return_value = [
                 URLClassification(
                     url="https://example.com/page1",
@@ -483,7 +501,7 @@ class TestAPIEndpoints:
     def test_get_job_status(self, client):
         """Test job status retrieval."""
         # Create a mock job
-        from main import ScrapeJob, ProcessingStats
+        from services.scraper.main import ScrapeJob
         job = ScrapeJob(
             job_id="test_job",
             status="running",
@@ -524,7 +542,7 @@ class TestAPIEndpoints:
     def test_pause_and_resume_job(self, client):
         """Test job pause and resume functionality."""
         # Create a running job
-        from main import ScrapeJob
+        from services.scraper.main import ScrapeJob
         job = ScrapeJob(
             job_id="test_job",
             status="running",
@@ -547,7 +565,7 @@ class TestAPIEndpoints:
     def test_content_quality_analysis(self, client):
         """Test content quality analysis endpoint."""
         # Create a job with results
-        from main import ScrapeJob, ScrapedContent, ContentType
+        from services.scraper.main import ScrapeJob, ScrapedContent, ContentType
         from datetime import datetime
         
         job = ScrapeJob(
@@ -606,7 +624,7 @@ class TestWebSocketIntegration:
         client = TestClient(app)
         
         # Create a mock job
-        from main import ScrapeJob
+        from services.scraper.main import ScrapeJob
         job = ScrapeJob(
             job_id="test_job",
             status="running",
