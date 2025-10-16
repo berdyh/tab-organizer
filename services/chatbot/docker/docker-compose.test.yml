@@ -40,7 +40,7 @@ services:
   # Chatbot service under test
   chatbot-test:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     container_name: chatbot-test
     ports:
@@ -61,14 +61,14 @@ services:
     networks:
       - test-network
     volumes:
-      - ./test_logs:/app/logs
+      - ../reports/test_logs:/app/logs
     command: ["python", "-m", "pytest", "test_chatbot.py", "-v", "--tb=short"]
 
   # Test runner with coverage (mocked dependencies)
   test-runner:
     build:
-      context: .
-      dockerfile: Dockerfile.test
+      context: ..
+      dockerfile: docker/Dockerfile.test
     container_name: chatbot-test-runner
     environment:
       - QDRANT_HOST=test-qdrant
@@ -79,8 +79,8 @@ services:
     networks:
       - test-network
     volumes:
-      - .:/app
-      - ./coverage:/app/coverage
+      - ..:/app
+      - ../reports/coverage:/app/coverage
     working_dir: /app
     command: |
       sh -c "
@@ -93,8 +93,8 @@ services:
   # Integration test runner (with real dependencies)
   integration-test-runner:
     build:
-      context: .
-      dockerfile: Dockerfile.test
+      context: ..
+      dockerfile: docker/Dockerfile.test
     container_name: chatbot-integration-test-runner
     environment:
       - QDRANT_HOST=test-qdrant
@@ -109,8 +109,8 @@ services:
     networks:
       - test-network
     volumes:
-      - .:/app
-      - ./coverage:/app/coverage
+      - ..:/app
+      - ../reports/coverage:/app/coverage
     working_dir: /app
     command: |
       sh -c "
@@ -123,7 +123,3 @@ services:
 networks:
   test-network:
     driver: bridge
-
-volumes:
-  test_logs:
-    driver: local

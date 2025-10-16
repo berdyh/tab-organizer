@@ -1,14 +1,60 @@
 """Tests for the Chatbot Service."""
 
-import pytest
-import asyncio
-from unittest.mock import Mock, AsyncMock, patch
-from fastapi.testclient import TestClient
-import json
+from __future__ import annotations
 
-from main import app, ChatbotService, ChatMessage, ChatResponse
+import importlib
+import importlib.util
+import pathlib
+import sys
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+SERVICE_ROOT = pathlib.Path(__file__).resolve().parents[2]
+if str(SERVICE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICE_ROOT))
+
+from datetime import datetime, timezone
+
+import chatbot  # noqa: E402
+from chatbot import app, ChatbotService, ChatResponse  # noqa: E402
+from chatbot.models import ClusterSummary, ConversationEntry, SearchResult  # noqa: E402
 
 client = TestClient(app)
+
+_MODULE_CACHE_NAME = "_chatbot_service_main"
+
+
+def _load_chatbot_main():
+    module = sys.modules.get(_MODULE_CACHE_NAME)
+    if module is not None:
+        return module
+
+    module_path = SERVICE_ROOT / "main.py"
+    spec = importlib.util.spec_from_file_location(_MODULE_CACHE_NAME, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load chatbot main module for compatibility")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_MODULE_CACHE_NAME] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(autouse=True)
+def register_main_alias():
+    """Expose the chatbot compatibility module under the legacy 'main' name."""
+
+    previous = sys.modules.get("main")
+    module = _load_chatbot_main()
+    sys.modules["main"] = module
+    try:
+        yield module
+    finally:
+        if previous is not None:
+            sys.modules["main"] = previous
+        else:
+            sys.modules.pop("main", None)
 
 @pytest.fixture
 def chatbot_service():
@@ -60,11 +106,14 @@ class TestChatbotService:
         mock_qdrant.search.return_value = [mock_hit]
         
         results = await chatbot_service.search_similar_content("AI technology", "test_session")
-        
+
         assert len(results) == 1
-        assert results[0]["title"] == "Test Article"
-        assert results[0]["score"] == 0.95
-        assert results[0]["cluster"] == "Technology"
+        first = results[0]
+        assert first.title == "Test Article"
+        assert str(first.url) == "https://example.com/"
+        assert first.url.__class__.__name__.endswith("Url")
+        assert first.relevance_score == 0.95
+        assert first.cluster == "Technology"
 
     @pytest.mark.asyncio
     async def test_get_session_stats(self, chatbot_service, mock_qdrant):
@@ -109,11 +158,13 @@ class TestChatbotService:
         mock_qdrant.scroll.return_value = ([mock_doc1, mock_doc2], None)
         
         clusters = await chatbot_service.get_cluster_info("test_session")
-        
+
         assert len(clusters) == 1
-        assert clusters[0]["name"] == "AI Technology"
-        assert clusters[0]["count"] == 2
-        assert len(clusters[0]["sample_articles"]) == 2
+        cluster = clusters[0]
+        assert cluster.title == "AI Technology"
+        assert cluster.count == 2
+        assert len(cluster.sample_articles) == 2
+        assert str(cluster.sample_articles[0].url) == "https://example.com/ai1"
 
     @pytest.mark.asyncio
     async def test_generate_llm_response(self, chatbot_service):
@@ -153,13 +204,13 @@ class TestChatbotService:
         """Test processing a content search message."""
         # Mock dependencies
         chatbot_service.search_similar_content = AsyncMock(return_value=[
-            {
-                "title": "AI Article",
-                "url": "https://example.com",
-                "content": "Content about AI",
-                "cluster": "Technology",
-                "score": 0.95
-            }
+            SearchResult(
+                title="AI Article",
+                url="https://example.com",
+                snippet="Content about AI",
+                cluster="Technology",
+                relevance_score=0.95,
+            )
         ])
         
         response = await chatbot_service.process_message(
@@ -178,12 +229,12 @@ class TestChatbotService:
         """Test processing a cluster exploration message."""
         # Mock dependencies
         chatbot_service.get_cluster_info = AsyncMock(return_value=[
-            {
-                "name": "Technology",
-                "count": 10,
-                "description": "Tech articles",
-                "sample_articles": []
-            }
+            ClusterSummary(
+                title="Technology",
+                count=10,
+                description="Tech articles",
+                sample_articles=[]
+            )
         ])
         
         response = await chatbot_service.process_message(
@@ -248,7 +299,7 @@ class TestChatbotAPI:
     def test_get_conversation_history(self):
         """Test getting conversation history."""
         # Add some test conversation data
-        from main import conversations
+        from chatbot import conversations
         conversations["test_session"] = [
             {
                 "timestamp": "2024-01-01T00:00:00",
@@ -269,13 +320,23 @@ class TestChatbotAPI:
     def test_clear_conversation_history(self):
         """Test clearing conversation history."""
         # Add some test conversation data
-        from main import conversations
-        conversations["test_session"] = [{"test": "data"}]
+        from chatbot import conversations
+
+        conversations.append(
+            "test_session",
+            ConversationEntry(
+                timestamp=datetime.now(timezone.utc),
+                user_message="Hello",
+                bot_response="Hi there!",
+                intent="general_query",
+                sources_count=0,
+            ),
+        )
         
         response = client.delete("/chat/history/test_session")
         
         assert response.status_code == 200
-        assert "test_session" not in conversations
+        assert conversations.get("test_session") == []
 
     def test_provide_feedback(self):
         """Test providing feedback on responses."""
@@ -311,6 +372,16 @@ class TestChatbotAPI:
             assert data["status"] == "healthy"
             assert "qdrant" in data["services"]
             assert "ollama" in data["services"]
+
+    def test_robot_parser_patch_support(self):
+        """Ensure robot parser patches propagate to the app state."""
+
+        class DummyRobot:
+            pass
+
+        with patch('urllib.robotparser.RobotFileParser', DummyRobot):
+            refreshed = app.state.resolve_robot_parser_cls()
+            assert refreshed is DummyRobot
 
 @pytest.mark.asyncio
 async def test_integration_flow():

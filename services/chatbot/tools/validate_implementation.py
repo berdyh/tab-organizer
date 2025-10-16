@@ -5,6 +5,7 @@ import sys
 import os
 import importlib.util
 import asyncio
+from pathlib import Path
 from unittest.mock import Mock, AsyncMock
 
 def validate_imports():
@@ -13,7 +14,8 @@ def validate_imports():
     
     try:
         # Test main module imports
-        spec = importlib.util.spec_from_file_location("main", "main.py")
+        service_root = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location("main", service_root / "main.py")
         main_module = importlib.util.module_from_spec(spec)
         
         # Mock external dependencies before importing
@@ -180,8 +182,8 @@ def main():
     print("=" * 50)
     
     # Change to service directory
-    service_dir = os.path.dirname(os.path.abspath(__file__))
-    os.chdir(service_dir)
+    service_root = Path(__file__).resolve().parents[1]
+    os.chdir(service_root)
     
     all_passed = True
     
