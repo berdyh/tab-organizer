@@ -1,13 +1,23 @@
 """Unit tests for core analyzer components."""
 
 import json
-import numpy as np
-import pytest
+import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
 
-from core_components import HardwareDetector, ModelManager, TextChunker, EmbeddingCache
+import numpy as np
+import pytest
+
+# Mock heavy dependencies before importing analyzer package
+sys.modules.setdefault("sentence_transformers", MagicMock())
+sys.modules.setdefault("torch", MagicMock())
+sys.modules.setdefault("torch.cuda", MagicMock())
+sys.modules.setdefault("qdrant_client", MagicMock())
+sys.modules.setdefault("qdrant_client.models", MagicMock())
+sys.modules.setdefault("tiktoken", MagicMock())
+
+from core_components import EmbeddingCache, HardwareDetector, ModelManager, TextChunker
 
 
 class TestHardwareDetector:

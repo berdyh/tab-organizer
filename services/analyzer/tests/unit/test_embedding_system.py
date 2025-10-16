@@ -11,13 +11,19 @@ import os
 
 # Mock heavy dependencies before importing main
 sys.modules['sentence_transformers'] = MagicMock()
-sys.modules['torch'] = MagicMock()
-sys.modules['torch.cuda'] = MagicMock()
-sys.modules['qdrant_client'] = MagicMock()
+mock_torch = MagicMock()
+mock_torch_cuda = MagicMock()
+mock_torch.cuda = mock_torch_cuda
+sys.modules['torch'] = mock_torch
+sys.modules['torch.cuda'] = mock_torch_cuda
+mock_qdrant = MagicMock()
+mock_qdrant.models = MagicMock()
+sys.modules['qdrant_client'] = mock_qdrant
+sys.modules['qdrant_client.models'] = mock_qdrant.models
 sys.modules['tiktoken'] = MagicMock()
 
 # Now we can safely import our modules
-from main import HardwareDetector, ModelManager, TextChunker, EmbeddingCache
+from analyzer import EmbeddingCache, HardwareDetector, ModelManager, TextChunker
 
 
 class TestHardwareDetectorUnit:
@@ -48,32 +54,37 @@ class TestHardwareDetectorUnit:
             assert hardware_info["cpu_usage_percent"] == 25.0
     
     def test_detect_hardware_with_gpu_mock(self):
-        """Test GPU detection with mocked torch."""
+        """Test hardware detection with GPU mock."""
         detector = HardwareDetector()
         
         with patch('psutil.virtual_memory') as mock_memory, \
-             patch('psutil.cpu_count') as mock_cpu, \
-             patch('psutil.cpu_percent') as mock_cpu_percent, \
-             patch('torch.cuda.is_available') as mock_cuda_available, \
-             patch('torch.cuda.get_device_properties') as mock_gpu_props, \
-             patch('torch.cuda.get_device_name') as mock_gpu_name:
+            patch('psutil.cpu_count') as mock_cpu, \
+            patch('psutil.cpu_percent') as mock_cpu_percent, \
+            patch('main.torch.cuda.is_available') as mock_cuda_available, \
+            patch('main.torch.cuda.get_device_properties') as mock_gpu_props, \
+            patch('main.torch.cuda.get_device_name') as mock_gpu_name:
             
             mock_memory.return_value = Mock(
                 total=16 * 1024**3,
                 available=8 * 1024**3,
                 percent=50.0
             )
-            mock_cpu.return_value = 12
-            mock_cpu_percent.return_value = 20.0
+            mock_cpu.return_value = 8
+            mock_cpu_percent.return_value = 25.0
+            
+            # Mock GPU
             mock_cuda_available.return_value = True
-            mock_gpu_props.return_value = Mock(total_memory=8 * 1024**3)
-            mock_gpu_name.return_value = "NVIDIA RTX 4080"
+            props_mock = Mock()
+            props_mock.total_memory = 8 * 1024**3  # 8 GB in bytes
+            mock_gpu_props.return_value = props_mock
+            mock_gpu_name.return_value = "NVIDIA GeForce RTX 3080"
             
             hardware_info = detector.detect_hardware()
             
             assert hardware_info["has_gpu"] is True
             assert hardware_info["gpu_memory_gb"] == 8.0
-            assert hardware_info["gpu_name"] == "NVIDIA RTX 4080"
+            assert hardware_info["gpu_name"] == "NVIDIA GeForce RTX 3080"
+            
     
     def test_detect_hardware_error_handling(self):
         """Test hardware detection error handling."""

@@ -14,11 +14,22 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import the helper function from conftest
-from conftest import create_mock_httpx_client
+from conftest import create_mock_httpx_client, _http
 
-from main import (
-    app, OllamaClient, QdrantManager, PerformanceMonitor,
-    ContentItem, AnalysisRequest
+sys.modules.setdefault("sentence_transformers", MagicMock())
+sys.modules.setdefault("torch", MagicMock())
+sys.modules.setdefault("torch.cuda", MagicMock())
+sys.modules.setdefault("qdrant_client", MagicMock())
+sys.modules.setdefault("qdrant_client.models", MagicMock())
+sys.modules.setdefault("tiktoken", MagicMock())
+
+from analyzer import (
+    AnalysisRequest,
+    ContentItem,
+    OllamaClient,
+    PerformanceMonitor,
+    QdrantManager,
+    app,
 )
 
 
@@ -30,14 +41,14 @@ def sample_content_items():
             id="test_1",
             content="This is a test article about artificial intelligence and machine learning. It covers various aspects of AI development and applications in modern technology.",
             title="AI and ML Overview",
-            url="https://example.com/ai-article",
+            url=_http("https://example.com/ai-article"),
             metadata={"category": "technology", "author": "Test Author"}
         ),
         ContentItem(
             id="test_2", 
             content="Python is a versatile programming language used for web development, data science, and automation. It has a simple syntax and powerful libraries.",
             title="Python Programming Guide",
-            url="https://example.com/python-guide",
+            url=_http("https://example.com/python-guide"),
             metadata={"category": "programming", "difficulty": "beginner"}
         )
     ]
@@ -561,7 +572,7 @@ class TestModelFallbackStrategies:
     @pytest.mark.asyncio
     async def test_embedding_model_fallback(self):
         """Test embedding model fallback through model manager."""
-        from main import ModelManager
+        from analyzer import ModelManager
         
         # Use extremely low RAM to force fallback to all-minilm
         hardware_info = {

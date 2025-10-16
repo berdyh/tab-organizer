@@ -1,13 +1,21 @@
 """Unit tests for dynamic model switching functionality."""
 
-import pytest
-import numpy as np
-from unittest.mock import Mock, patch, MagicMock
-import torch
+import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
 
-from main import EmbeddingGenerator, ModelManager, EmbeddingCache
+import numpy as np
+import pytest
+import torch
+
+sys.modules.setdefault("sentence_transformers", MagicMock())
+sys.modules.setdefault("torch.cuda", MagicMock())
+sys.modules.setdefault("qdrant_client", MagicMock())
+sys.modules.setdefault("qdrant_client.models", MagicMock())
+sys.modules.setdefault("tiktoken", MagicMock())
+
+from analyzer import EmbeddingCache, EmbeddingGenerator, ModelManager
 
 
 class TestDynamicModelSwitching:

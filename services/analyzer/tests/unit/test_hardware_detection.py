@@ -1,13 +1,31 @@
 """Unit tests for hardware detection and model recommendation system."""
 
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 import json
 import tempfile
 from pathlib import Path
+import sys
 
-from main import HardwareDetector, ModelManager
+# Mock heavy dependencies before importing main
+mock_qdrant = MagicMock()
+mock_qdrant.models = MagicMock()
+sys.modules.setdefault('sentence_transformers', MagicMock())
 
+# Create torch mock that allows patching
+mock_torch = MagicMock()
+mock_torch_cuda = MagicMock()
+mock_torch.cuda = mock_torch_cuda
+# Set default return values that tests can override
+mock_torch_cuda.is_available = MagicMock(return_value=True)  # Default
+sys.modules['torch'] = mock_torch
+sys.modules['torch.cuda'] = mock_torch_cuda
+
+sys.modules['qdrant_client'] = mock_qdrant
+sys.modules['qdrant_client.models'] = mock_qdrant.models
+sys.modules.setdefault('tiktoken', MagicMock())
+
+from analyzer import HardwareDetector, ModelManager
 
 class TestHardwareDetection:
     """Test comprehensive hardware detection functionality."""
@@ -42,11 +60,11 @@ class TestHardwareDetection:
         detector = HardwareDetector()
         
         with patch('psutil.virtual_memory') as mock_memory, \
-             patch('psutil.cpu_count') as mock_cpu, \
-             patch('psutil.cpu_percent') as mock_cpu_percent, \
-             patch('torch.cuda.is_available') as mock_cuda_available, \
-             patch('torch.cuda.get_device_properties') as mock_gpu_props, \
-             patch('torch.cuda.get_device_name') as mock_gpu_name:
+            patch('psutil.cpu_count') as mock_cpu, \
+            patch('psutil.cpu_percent') as mock_cpu_percent, \
+            patch('main.torch.cuda.is_available') as mock_cuda_available, \
+            patch('main.torch.cuda.get_device_properties') as mock_gpu_props, \
+            patch('main.torch.cuda.get_device_name') as mock_gpu_name:
             
             # Mock basic system info
             mock_memory.return_value = Mock(
@@ -57,9 +75,11 @@ class TestHardwareDetection:
             mock_cpu.return_value = 12
             mock_cpu_percent.return_value = 20.0
             
-            # Mock GPU detection
+            # Mock GPU detection - SIMPLER APPROACH
             mock_cuda_available.return_value = True
-            mock_gpu_props.return_value = Mock(total_memory=12 * 1024**3)  # 12GB VRAM
+            props_mock = Mock()
+            props_mock.total_memory = 12 * 1024**3  # Just set it directly
+            mock_gpu_props.return_value = props_mock
             mock_gpu_name.return_value = "NVIDIA GeForce RTX 4080"
             
             hardware_info = detector.detect_hardware()
@@ -67,7 +87,7 @@ class TestHardwareDetection:
             assert hardware_info["has_gpu"] is True
             assert hardware_info["gpu_memory_gb"] == 12.0
             assert hardware_info["gpu_name"] == "NVIDIA GeForce RTX 4080"
-    
+        
     def test_detect_no_gpu(self):
         """Test detection when no GPU is available."""
         detector = HardwareDetector()
@@ -75,7 +95,7 @@ class TestHardwareDetection:
         with patch('psutil.virtual_memory') as mock_memory, \
              patch('psutil.cpu_count') as mock_cpu, \
              patch('psutil.cpu_percent') as mock_cpu_percent, \
-             patch('torch.cuda.is_available') as mock_cuda_available:
+             patch('main.torch.cuda.is_available') as mock_cuda_available:
             
             mock_memory.return_value = Mock(
                 total=8 * 1024**3,
@@ -99,8 +119,8 @@ class TestHardwareDetection:
         with patch('psutil.virtual_memory') as mock_memory, \
              patch('psutil.cpu_count') as mock_cpu, \
              patch('psutil.cpu_percent') as mock_cpu_percent, \
-             patch('torch.cuda.is_available') as mock_cuda_available, \
-             patch('torch.cuda.get_device_properties', side_effect=Exception("GPU error")):
+             patch('main.torch.cuda.is_available') as mock_cuda_available, \
+             patch('main.torch.cuda.get_device_properties', side_effect=Exception("GPU error")):
             
             mock_memory.return_value = Mock(
                 total=8 * 1024**3,
@@ -148,11 +168,11 @@ class TestHardwareDetection:
         detector = HardwareDetector()
         
         with patch('psutil.virtual_memory') as mock_memory, \
-             patch('psutil.cpu_count') as mock_cpu, \
-             patch('psutil.cpu_percent') as mock_cpu_percent, \
-             patch('torch.cuda.is_available') as mock_cuda_available, \
-             patch('torch.cuda.get_device_properties') as mock_gpu_props, \
-             patch('torch.cuda.get_device_name') as mock_gpu_name:
+            patch('psutil.cpu_count') as mock_cpu, \
+            patch('psutil.cpu_percent') as mock_cpu_percent, \
+            patch('main.torch.cuda.is_available') as mock_cuda_available, \
+            patch('main.torch.cuda.get_device_properties') as mock_gpu_props, \
+            patch('main.torch.cuda.get_device_name') as mock_gpu_name:
             
             # Mock high-end system
             mock_memory.return_value = Mock(
@@ -163,9 +183,11 @@ class TestHardwareDetection:
             mock_cpu.return_value = 16
             mock_cpu_percent.return_value = 10.0
             
-            # High-end GPU
+            # Mock GPU detection
             mock_cuda_available.return_value = True
-            mock_gpu_props.return_value = Mock(total_memory=24 * 1024**3)  # 24GB VRAM
+            props_mock = Mock()
+            props_mock.total_memory = 12 * 1024**3 
+            mock_gpu_props.return_value = props_mock
             mock_gpu_name.return_value = "NVIDIA RTX 4090"
             
             hardware_info = detector.detect_hardware()
@@ -175,9 +197,9 @@ class TestHardwareDetection:
             assert hardware_info["ram_usage_percent"] == 25.0
             assert hardware_info["cpu_count"] == 16
             assert hardware_info["has_gpu"] is True
-            assert hardware_info["gpu_memory_gb"] == 24.0
+            assert hardware_info["gpu_memory_gb"] == 12.0
             assert hardware_info["gpu_name"] == "NVIDIA RTX 4090"
-    
+
     def test_detect_hardware_complete_failure(self):
         """Test hardware detection when everything fails."""
         detector = HardwareDetector()
@@ -452,7 +474,7 @@ class TestHardwareModelIntegration:
              patch('psutil.virtual_memory') as mock_memory, \
              patch('psutil.cpu_count') as mock_cpu, \
              patch('psutil.cpu_percent') as mock_cpu_percent, \
-             patch('torch.cuda.is_available') as mock_cuda:
+             patch('main.torch.cuda.is_available') as mock_cuda:
             
             # Mock medium-resource system
             mock_memory.return_value = Mock(

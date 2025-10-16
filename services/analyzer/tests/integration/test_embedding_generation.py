@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch, MagicMock
 import torch
 
 # Import the classes we want to test
-from main import (
+from analyzer import (
     HardwareDetector,
     ModelManager,
     TextChunker,

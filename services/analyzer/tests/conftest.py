@@ -1,9 +1,39 @@
 """Test configuration and fixtures for analyzer service tests."""
 
-import pytest
-from unittest.mock import Mock, MagicMock, AsyncMock
-import numpy as np
+import importlib
+import sys
+from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock, Mock
+
+import numpy as np
+import pytest
+from pydantic import HttpUrl
+
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+if str(SERVICE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICE_ROOT))
+
+mock_sentence_transformers = MagicMock()
+mock_torch = MagicMock()
+mock_torch_cuda = MagicMock()
+mock_torch.cuda = mock_torch_cuda
+setattr(mock_torch, "__analyzer_placeholder__", True)
+mock_qdrant = MagicMock()
+mock_qdrant_models = MagicMock()
+mock_qdrant.models = mock_qdrant_models
+mock_tiktoken = MagicMock()
+
+sys.modules["sentence_transformers"] = mock_sentence_transformers
+sys.modules["torch"] = mock_torch
+sys.modules["torch.cuda"] = mock_torch_cuda
+sys.modules["qdrant_client"] = mock_qdrant
+sys.modules["qdrant_client.models"] = mock_qdrant_models
+sys.modules["tiktoken"] = mock_tiktoken
+
+main_module = importlib.import_module("main")
+sys.modules["main"] = main_module
 
 
 @pytest.fixture
@@ -23,7 +53,7 @@ def mocks():
 def wire_globals(monkeypatch, mocks):
     """Wire global variables in main.py to prevent 503 errors in API tests."""
     import main
-    
+
     # Set up the mocks with proper return values
     mocks.embedding.switch_model.return_value = True
     mocks.embedding.get_current_model_info.return_value = {"dimensions": 768}
@@ -128,24 +158,29 @@ def mock_ollama_responses():
 @pytest.fixture
 def sample_content_items():
     """Sample content items for testing."""
-    from main import ContentItem
-    
+    from analyzer import ContentItem
+
     return [
         ContentItem(
             id="test_1",
             content="This is a test article about artificial intelligence and machine learning. It covers various aspects of AI development and applications in modern technology.",
             title="AI and ML Overview",
-            url="https://example.com/ai-article",
+            url=_http("https://example.com/ai-article"),
             metadata={"category": "technology", "author": "Test Author"}
         ),
         ContentItem(
             id="test_2", 
             content="Python is a versatile programming language used for web development, data science, and automation. It has a simple syntax and powerful libraries.",
             title="Python Programming Guide",
-            url="https://example.com/python-guide",
+            url=_http("https://example.com/python-guide"),
             metadata={"category": "programming", "difficulty": "beginner"}
         )
     ]
+
+
+def _http(url: str) -> HttpUrl:
+    """Helper for type-safe HttpUrl literals."""
+    return cast(HttpUrl, url)
 
 
 def create_mock_httpx_client(responses):

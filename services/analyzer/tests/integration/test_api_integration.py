@@ -1,9 +1,11 @@
 """Integration tests for the FastAPI analyzer service."""
 
-import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import Mock, patch, MagicMock
 import sys
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+from analyzer import app
+from fastapi.testclient import TestClient
 
 # Mock heavy dependencies before importing main
 sys.modules['sentence_transformers'] = MagicMock()
@@ -12,10 +14,6 @@ sys.modules['torch.cuda'] = MagicMock()
 sys.modules['qdrant_client'] = MagicMock()
 sys.modules['qdrant_client.models'] = MagicMock()
 sys.modules['tiktoken'] = MagicMock()
-
-# Now import the main app
-from main import app
-
 
 class TestAnalyzerAPI:
     """Test the FastAPI analyzer service endpoints."""
