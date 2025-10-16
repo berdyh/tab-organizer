@@ -1,9 +1,8 @@
 """Health checking system for monitoring service availability."""
 
-import time
 import asyncio
-from typing import Dict, Any, Optional
-from datetime import datetime, timedelta
+import time
+from typing import Any, Dict, Optional
 
 import httpx
 import structlog
@@ -13,17 +12,19 @@ logger = structlog.get_logger()
 
 class HealthChecker:
     """Monitors health of all services and external dependencies."""
-    
+
     def __init__(self, service_registry):
         self.service_registry = service_registry
         self.start_time = time.time()
         self.health_cache: Dict[str, Dict[str, Any]] = {}
         self.monitoring_task: Optional[asyncio.Task] = None
-        
-    async def start_monitoring(self):
+        self.last_check_time: float = 0.0
+        self.refresh_interval: int = service_registry.settings.health_check_interval
+
+    async def start_monitoring(self) -> None:
         """Start background health monitoring."""
         logger.info("Starting health monitoring")
-        
+
         while True:
             try:
                 await self.check_all_services()
@@ -31,32 +32,34 @@ class HealthChecker:
             except asyncio.CancelledError:
                 logger.info("Health monitoring cancelled")
                 break
-            except Exception as e:
-                logger.error("Health monitoring error", error=str(e))
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error("Health monitoring error", error=str(exc))
                 await asyncio.sleep(5)  # Short delay on error
-    
-    async def check_service_health(self, service_name: str, service_config: Dict[str, Any]) -> Dict[str, Any]:
+
+    async def check_service_health(
+        self, service_name: str, service_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Check health of a single service."""
         start_time = time.time()
-        
+
         try:
             url = service_config["url"]
             health_endpoint = service_config.get("health_endpoint", "/health")
             timeout = service_config.get("timeout", 10.0)
-            
+
             health_url = f"{url}{health_endpoint}"
-            
+
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.get(health_url)
                 response_time = time.time() - start_time
-                
+
                 if response.status_code == 200:
                     status = "healthy"
                     error = None
                 else:
                     status = "unhealthy"
                     error = f"HTTP {response.status_code}"
-                    
+
         except httpx.TimeoutException:
             response_time = time.time() - start_time
             status = "timeout"
@@ -65,83 +68,97 @@ class HealthChecker:
             response_time = time.time() - start_time
             status = "unreachable"
             error = "Connection failed"
-        except Exception as e:
+        except Exception as exc:  # pragma: no cover - defensive logging
             response_time = time.time() - start_time
             status = "error"
-            error = str(e)
-        
+            error = str(exc)
+
         health_info = {
             "status": status,
             "response_time": response_time,
             "last_check": time.time(),
             "error": error,
-            "url": service_config["url"]
+            "url": service_config["url"],
         }
-        
+
         # Update cache
         self.health_cache[service_name] = health_info
-        
+
         # Update service registry
         self.service_registry.update_service_health(service_name, status == "healthy")
-        
+
         logger.debug(
             "Service health check completed",
             service=service_name,
             status=status,
             response_time=response_time,
-            error=error
+            error=error,
         )
-        
+
         return health_info
-    
+
     async def check_all_services(self) -> Dict[str, Dict[str, Any]]:
         """Check health of all registered services."""
         all_services = {
             **self.service_registry.settings.services,
-            **self.service_registry.settings.external_services
+            **self.service_registry.settings.external_services,
         }
-        
+
         # Create tasks for concurrent health checks
         tasks = []
         for service_name, service_config in all_services.items():
             task = asyncio.create_task(
                 self.check_service_health(service_name, service_config),
-                name=f"health_check_{service_name}"
+                name=f"health_check_{service_name}",
             )
             tasks.append((service_name, task))
-        
+
         # Wait for all health checks to complete
         results = {}
         for service_name, task in tasks:
             try:
                 results[service_name] = await task
-            except Exception as e:
-                logger.error("Health check task failed", service=service_name, error=str(e))
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(
+                    "Health check task failed", service=service_name, error=str(exc)
+                )
                 results[service_name] = {
                     "status": "error",
                     "response_time": None,
                     "last_check": time.time(),
-                    "error": str(e),
-                    "url": all_services[service_name]["url"]
+                    "error": str(exc),
+                    "url": all_services[service_name]["url"],
                 }
-        
+
+        self.last_check_time = time.time()
         return results
-    
+
     async def get_comprehensive_health(self) -> Dict[str, Any]:
         """Get comprehensive health status including system metrics."""
-        services_health = await self.check_all_services()
-        
+        current_time = time.time()
+
+        if (
+            not self.health_cache
+            or self.last_check_time == 0
+            or (current_time - self.last_check_time) > self.refresh_interval
+        ):
+            services_health = await self.check_all_services()
+        else:
+            services_health = self.health_cache.copy()
+
         # Calculate overall status
-        healthy_services = sum(1 for s in services_health.values() if s["status"] == "healthy")
+        healthy_services = sum(
+            1 for service in services_health.values() if service["status"] == "healthy"
+        )
         total_services = len(services_health)
-        
+
         if healthy_services == total_services:
             overall_status = "healthy"
         elif healthy_services > total_services // 2:
             overall_status = "degraded"
         else:
             overall_status = "unhealthy"
-        
+
         return {
             "status": overall_status,
             "uptime": time.time() - self.start_time,
@@ -149,11 +166,12 @@ class HealthChecker:
             "summary": {
                 "total_services": total_services,
                 "healthy_services": healthy_services,
-                "unhealthy_services": total_services - healthy_services
+                "unhealthy_services": total_services - healthy_services,
             },
-            "timestamp": time.time()
+            "timestamp": time.time(),
         }
-    
+
     def get_cached_health(self, service_name: str) -> Optional[Dict[str, Any]]:
         """Get cached health information for a service."""
         return self.health_cache.get(service_name)
+
