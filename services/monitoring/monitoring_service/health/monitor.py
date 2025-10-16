@@ -9,10 +9,10 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 
 import httpx
-import docker
 
-from config import MonitoringSettings
-from logging_config import get_logger
+from ..config import MonitoringSettings
+from ..logging import get_logger
+from ..clients.docker import init_docker_client
 
 logger = get_logger("health_monitor")
 
@@ -30,12 +30,17 @@ class HealthMonitor:
         self.health_cache = {}
         self.last_check_time = 0
         self.service_history = {}  # Track health history for trend analysis
+        self._refresh_task: Optional[asyncio.Task] = None
         
         # Initialize Docker client
         try:
-            self.docker_client = docker.from_env()
-            logger.info("Docker client initialized for health monitoring")
+            self.docker_client = init_docker_client(settings.docker_socket)
+            logger.info(
+                "Docker client initialized for health monitoring",
+                base_url=self.docker_client.api.base_url
+            )
         except Exception as e:
+            self.docker_client = None
             logger.error("Failed to initialize Docker client", error=str(e))
     
     async def start_monitoring(self):
@@ -72,11 +77,15 @@ class HealthMonitor:
         container_health = await self._check_container_health()
         
         # Update health cache
+        overall_status = self._calculate_overall_status(service_health, container_health)
         self.health_cache = {
             "timestamp": check_time,
             "services": service_health,
             "containers": container_health,
-            "overall_status": self._calculate_overall_status(service_health, container_health)
+            "overall_status": overall_status,
+            # Keep a dedicated status key so existing consumers that expect
+            # "status" continue to work without additional mapping.
+            "status": overall_status
         }
         
         self.last_check_time = check_time
@@ -99,7 +108,10 @@ class HealthMonitor:
         """Check health of all registered services."""
         service_health = {}
         
-        async with httpx.AsyncClient(timeout=self.check_timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=self.check_timeout,
+            headers={"User-Agent": "internal-service-monitor"}
+        ) as client:
             # Create tasks for concurrent health checks
             tasks = []
             for service_name, service_url in self.settings.services.items():
@@ -129,7 +141,7 @@ class HealthMonitor:
     async def _check_single_service_health(self, client: httpx.AsyncClient, 
                                          service_name: str, service_url: str) -> Dict[str, Any]:
         """Check health of a single service with retries."""
-        health_endpoints = ["/health", "/health/simple", "/"]
+        health_endpoints = ["/health/simple", "/health", "/"]
         
         for attempt in range(self.check_retries):
             for endpoint in health_endpoints:
@@ -237,7 +249,7 @@ class HealthMonitor:
         container_health = {}
         
         try:
-            containers = self.docker_client.containers.list(all=True)
+            containers = await asyncio.to_thread(self.docker_client.containers.list, all=True)
             
             for container in containers:
                 try:
@@ -257,7 +269,7 @@ class HealthMonitor:
                     memory_usage = 0
                     if is_running:
                         try:
-                            stats = container.stats(stream=False)
+                            stats = await asyncio.to_thread(container.stats, stream=False)
                             cpu_percent = self._calculate_cpu_percent(stats)
                             memory_usage = stats['memory_stats'].get('usage', 0)
                         except:
@@ -370,15 +382,22 @@ class HealthMonitor:
     
     async def get_comprehensive_health(self) -> Dict[str, Any]:
         """Get comprehensive health status."""
-        if not self.health_cache or (time.time() - self.last_check_time) > self.check_interval:
+        current_time = time.time()
+        cache_empty = not self.health_cache
+        cache_stale = (current_time - self.last_check_time) > self.check_interval
+
+        if cache_empty:
             await self._perform_health_checks()
+        elif cache_stale and (not self._refresh_task or self._refresh_task.done()):
+            self._refresh_task = asyncio.create_task(self._perform_health_checks())
         
         # Add uptime information
-        uptime = time.time() - self.last_check_time if self.last_check_time > 0 else 0
+        uptime = current_time - self.last_check_time if self.last_check_time > 0 else 0
         
         result = self.health_cache.copy()
         result["uptime"] = uptime
         result["check_interval"] = self.check_interval
+        result.setdefault("status", result.get("overall_status", "unknown"))
         
         return result
     

@@ -5,7 +5,7 @@ Configuration settings for the monitoring service.
 import os
 from typing import Dict, Any, List
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class MonitoringSettings(BaseSettings):
@@ -25,8 +25,9 @@ class MonitoringSettings(BaseSettings):
         "clustering-service": "http://clustering-service:8085",
         "export-service": "http://export-service:8086",
         "session-service": "http://session-service:8087",
+        "chatbot-service": "http://chatbot-service:8092",
+        "monitoring-service": "http://monitoring-service:8091",
         "web-ui": "http://web-ui:8089",
-        "visualization-service": "http://visualization-service:8090",
         "qdrant": "http://qdrant:6333",
         "ollama": "http://ollama:11434"
     })
@@ -37,8 +38,8 @@ class MonitoringSettings(BaseSettings):
     
     # Health monitoring
     health_check_interval: int = Field(default=30, env="HEALTH_CHECK_INTERVAL")
-    health_check_timeout: int = Field(default=10, env="HEALTH_CHECK_TIMEOUT")
-    health_check_retries: int = Field(default=3, env="HEALTH_CHECK_RETRIES")
+    health_check_timeout: int = Field(default=3, env="HEALTH_CHECK_TIMEOUT")
+    health_check_retries: int = Field(default=1, env="HEALTH_CHECK_RETRIES")
     
     # Alert thresholds
     alert_thresholds: Dict[str, Any] = Field(default_factory=lambda: {
@@ -80,6 +81,8 @@ class MonitoringSettings(BaseSettings):
     log_max_size_mb: int = Field(default=100, env="LOG_MAX_SIZE_MB")
     log_backup_count: int = Field(default=5, env="LOG_BACKUP_COUNT")
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )

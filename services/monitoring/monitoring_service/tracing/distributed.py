@@ -11,8 +11,8 @@ from typing import Dict, Any, List, Optional, Set
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
 
-from config import MonitoringSettings
-from logging_config import get_logger
+from ..config import MonitoringSettings
+from ..logging import get_logger
 
 logger = get_logger("distributed_tracer")
 

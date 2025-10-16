@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 import httpx
 import psutil
 
-from config import MonitoringSettings
-from logging_config import get_logger
+from ..config import MonitoringSettings
+from ..logging import get_logger
 
 logger = get_logger("performance_tracker")
 

@@ -11,12 +11,12 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 
 import httpx
-import docker
 import psutil
 from prometheus_client import CollectorRegistry, Gauge, Counter, Histogram
 
-from config import MonitoringSettings
-from logging_config import get_logger
+from ..config import MonitoringSettings
+from ..logging import get_logger
+from ..clients.docker import init_docker_client
 
 logger = get_logger("metrics_collector")
 
@@ -33,9 +33,13 @@ class MetricsCollector:
         
         # Initialize Docker client
         try:
-            self.docker_client = docker.from_env()
-            logger.info("Docker client initialized successfully")
+            self.docker_client = init_docker_client(settings.docker_socket)
+            logger.info(
+                "Docker client initialized successfully",
+                base_url=self.docker_client.api.base_url
+            )
         except Exception as e:
+            self.docker_client = None
             logger.error("Failed to initialize Docker client", error=str(e))
     
     async def start_collection(self):

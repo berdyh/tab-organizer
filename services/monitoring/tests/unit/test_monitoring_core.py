@@ -9,13 +9,13 @@ import time
 from unittest.mock import Mock, patch, AsyncMock
 from fastapi.testclient import TestClient
 
-from main import app
-from config import MonitoringSettings
-from metrics_collector import MetricsCollector
-from health_monitor import HealthMonitor
-from alert_manager import AlertManager, AlertSeverity
-from performance_tracker import PerformanceTracker
-from distributed_tracer import DistributedTracer
+from services.monitoring.main import app
+from services.monitoring.monitoring_service.config import MonitoringSettings
+from services.monitoring.monitoring_service.metrics.collector import MetricsCollector
+from services.monitoring.monitoring_service.health.monitor import HealthMonitor
+from services.monitoring.monitoring_service.alerts.manager import AlertManager, AlertSeverity
+from services.monitoring.monitoring_service.performance.tracker import PerformanceTracker
+from services.monitoring.monitoring_service.tracing.distributed import DistributedTracer
 
 
 @pytest.fixture

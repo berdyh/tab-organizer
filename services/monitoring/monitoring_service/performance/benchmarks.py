@@ -13,8 +13,9 @@ from datetime import datetime
 import httpx
 import psutil
 
-from config import MonitoringSettings
-from logging_config import get_logger
+from ..config import MonitoringSettings
+from ..logging import get_logger
+from ..clients.docker import init_docker_client
 
 logger = get_logger("benchmarks")
 
@@ -243,13 +244,13 @@ class PerformanceBenchmarks:
     
     async def run_container_benchmarks(self) -> Dict[str, Any]:
         """Run Docker container performance benchmarks."""
+        client = None
         try:
-            import docker
-            client = docker.from_env()
+            client = init_docker_client(self.settings.docker_socket)
             containers = client.containers.list()
-            
+
             container_results = {}
-            
+
             for container in containers:
                 try:
                     stats = container.stats(stream=False)
@@ -275,10 +276,16 @@ class PerformanceBenchmarks:
                     }
             
             return container_results
-        
+
         except Exception as e:
             logger.error("Container benchmarks failed", error=str(e))
             return {"error": str(e)}
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
     
     async def run_service_benchmarks(self) -> Dict[str, Any]:
         """Run service performance benchmarks."""

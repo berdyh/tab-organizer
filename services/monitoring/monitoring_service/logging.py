@@ -14,7 +14,7 @@ import structlog
 from pythonjsonlogger import jsonlogger
 import colorlog
 
-from config import MonitoringSettings
+from .config import MonitoringSettings
 
 
 def setup_monitoring_logging():
@@ -22,8 +22,21 @@ def setup_monitoring_logging():
     settings = MonitoringSettings()
     
     # Create logs directory if it doesn't exist
-    log_dir = Path(settings.log_file_path).parent
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = Path(settings.log_file_path)
+    log_dir = log_path.parent
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        fallback_dir = Path("logs")
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        log_path = fallback_dir / log_path.name
+        log_dir = fallback_dir
+        settings = settings.model_copy(update={"log_file_path": str(log_path)})
+        structlog.get_logger("monitoring").warning(
+            "Falling back to local log directory",
+            configured_path=str(Path(settings.log_file_path)),
+            fallback_path=str(log_path),
+        )
     
     # Configure structlog
     structlog.configure(
