@@ -121,6 +121,40 @@ Refer to the router definitions in `app/api/routes.py` for the full set of endpo
 
 ---
 
+## UI Integration Guide
+
+> The UI will be refreshed after the backend refactor. The bullets below capture the surface that the front end should target once it migrates.
+
+### Base Path (via API Gateway)
+
+- `POST /api/session-service/sessions` – create a workspace (returns `SessionModel`).
+- `GET  /api/session-service/sessions` – list sessions with optional filters (`status`, `owner_id`, `tags`).
+- `GET  /api/session-service/sessions/{sessionId}` – fetch full metadata for detail panes.
+- `PUT  /api/session-service/sessions/{sessionId}` – update name, description, tags, retention settings.
+- `DELETE /api/session-service/sessions/{sessionId}` – delete (supports `?permanent=true`).
+- `POST /api/session-service/sessions/{sessionId}/archive` / `/restore` – lifecycle transitions.
+- `POST /api/session-service/sessions/{sessionId}/share` / `DELETE .../share/{userId}` – manage collaborators.
+- `GET  /api/session-service/sessions/{sessionId}/collaborators` – fetch sharing info for UI tables.
+- `POST /api/session-service/sessions/compare` – compare sessions by ID list.
+- `POST /api/session-service/sessions/merge` / `POST /api/session-service/sessions/{sessionId}/split` – advanced operations for bulk management.
+- `PUT  /api/session-service/sessions/{sessionId}/stats` & `PUT /api/session-service/sessions/{sessionId}/model-usage` – downstream services should continue to call these when updating dashboard counters; the UI may display their output.
+
+### Sample UI Flow
+
+1. **List sessions:** call `GET /api/session-service/sessions`; the response is a list of `SessionModel` objects that can feed tables or dropdown selectors.
+2. **Show details:** call `GET /api/session-service/sessions/{sessionId}` when a user selects a session; display metadata, counters, retention policy, and collaborator data.
+3. **Archive/restore:** POST to `/archive` or `/restore` and refresh the list.
+4. **Share management:** use the share endpoints to present add/remove collaborator dialogs.
+
+### Front-end Notes
+
+- Always pass identifiers exactly as returned in `SessionModel.id` (they are used downstream by ingestion, clustering, and export).
+- Extended operations (`merge`, `split`, `export`, `import`) are optional enhancements; the UI can surface them as advanced actions.
+- When deleting sessions, consider prompting for permanent deletion because `DELETE` defaults to soft-delete.
+- The stats/model usage endpoints are designed for automation, but exposing their output in dashboards can help users track activity.
+
+---
+
 ## Integration Notes
 
 - Downstream services should associate work with a `session_id`. The URL ingestion service, clustering engine, analyzer, chatbot, and exporter all call the Session service to fetch metadata, update stats, or confirm Qdrant collection availability.

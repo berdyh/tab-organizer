@@ -4,7 +4,8 @@ import pytest
 import numpy as np
 import asyncio
 from unittest.mock import Mock, patch, AsyncMock
-from main import HDBSCANClusterer, ModelAwareUMAPConfig
+from services.clustering.app.hdbscan_service import HDBSCANClusterer
+from services.clustering.app.umap import ModelAwareUMAPConfig
 import hdbscan
 from sklearn.datasets import make_blobs
 

@@ -107,6 +107,62 @@ The service will be available at `http://127.0.0.1:8000`. Auto‑reload watches 
 
 See `services/web-ui/src/pages/AuthManager.js` for example client calls.
 
+## UI Integration Guide
+
+> The web UI will be updated after the service refactor. The contract below documents how the front end should interact with the authentication service once it migrates.
+
+### Base Path (via API Gateway)
+
+- `POST /api/auth/detect` – score a URL or HTML response for authentication requirements.
+- `POST /api/auth/store-credentials` – persist encrypted credentials for a domain.
+- `GET  /api/auth/credentials/{domain}` – fetch stored credential metadata.
+- `DELETE /api/auth/credentials/{domain}` – remove stored credentials.
+- `POST /api/auth/interactive` – enqueue an interactive login task (Playwright/Selenium automation).
+- `GET  /api/auth/queue/status` – monitor queue depth and active tasks.
+- `POST /api/auth/session/{sessionId}/renew` / `DELETE /api/auth/session/{sessionId}` – manage reusable authenticated sessions.
+
+### Sample Payloads
+
+**Detect authentication**
+```json
+POST /api/auth/detect
+{
+  "url": "https://example.com/protected",
+  "status_code": 401,
+  "headers": {"www-authenticate": "Basic realm=\\"Protected\\""},
+  "response_content": "<html>...</html>"
+}
+```
+
+Response:
+```json
+{
+  "requires_auth": true,
+  "detected_method": "basic",
+  "detection_confidence": 0.92,
+  "auth_indicators": ["HTTP 401 status code", "WWW-Authenticate header"],
+  "domain": "example.com"
+}
+```
+
+**Store credentials**
+```json
+POST /api/auth/store-credentials
+{
+  "domain": "example.com",
+  "credentials": {"username": "demo", "password": "secret"},
+  "auth_method": "form",
+  "login_url": "https://example.com/login"
+}
+```
+
+### Front-end Notes
+
+- Always provide the session or domain context so the mapper can tie credentials to scraping jobs.
+- The interactive queue endpoints (`/interactive`, `/queue/status`) should back any UI features that trigger human-like login flows.
+- The UI can poll `/api/auth/credentials/{domain}` after storing credentials to confirm they were persisted.
+- When credentials are removed, consider also calling the session invalidation endpoints to keep caches in sync.
+
 ## Docker
 
 The included Dockerfile builds a minimal Python 3.11 image and runs the service

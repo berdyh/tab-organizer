@@ -1,18 +1,16 @@
 """Unit tests for UMAP dimensionality reduction with model-aware optimization."""
 
-import pytest
-import numpy as np
 import asyncio
-from unittest.mock import Mock, patch, AsyncMock
+import importlib
 import time
+from unittest.mock import AsyncMock, Mock, patch
 
-from main import (
-    ModelAwareUMAPConfig,
-    DimensionalityReducer,
-    VisualizationGenerator,
-    UMAPRequest,
-    VisualizationRequest
-)
+import numpy as np
+import pytest
+
+from services.clustering.app.models import UMAPRequest, VisualizationRequest
+from services.clustering.app.umap import DimensionalityReducer, ModelAwareUMAPConfig
+from services.clustering.app.visualization import VisualizationGenerator
 
 
 class TestModelAwareUMAPConfig:
@@ -166,7 +164,7 @@ class TestDimensionalityReducer:
             assert "umap_parameters" in metrics
     
     @pytest.mark.asyncio
-    @patch('main.executor')
+    @patch('services.clustering.app.umap.executor')
     async def test_batch_processing_large_dataset(self, mock_executor, reducer):
         """Test batch processing for large datasets."""
         # Create large dataset
@@ -464,6 +462,14 @@ class TestIntegration:
         assert results["nomic-embed-text"]["original_dims"] == 768
         assert results["all-minilm"]["original_dims"] == 384
         assert results["mxbai-embed-large"]["original_dims"] == 1024
+
+
+def test_executor_singleton_exposed():
+    """Ensure the executor singleton is shared across modules."""
+    from services.clustering.app.executor import executor as package_executor
+    from services.clustering.app.state import executor as state_executor
+
+    assert package_executor is state_executor
 
 
 if __name__ == "__main__":

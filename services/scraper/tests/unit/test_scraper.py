@@ -1,16 +1,31 @@
 """Unit tests for Web Scraper Service."""
 
-import pytest
 import hashlib
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 from bs4 import BeautifulSoup
 
-from services.scraper.main import (
-    ContentExtractor, 
-    DuplicateDetector, 
-    RobotsChecker,
-    content_hashes
+from services.scraper.app import app
+from services.scraper.app.classification import URLClassifier
+from services.scraper.app.engine import ScrapingEngine
+from services.scraper.app.extraction import ContentExtractor, trafilatura
+from services.scraper.app.duplicates import DuplicateDetector
+from services.scraper.app.models import (
+    ContentType,
+    QueueType,
+    RealTimeStatus,
+    ScrapeJob,
+    ScrapeRequest,
+    ScrapedContent,
+    URLClassification,
+    URLRequest,
 )
+from services.scraper.app.processing import ParallelProcessingEngine
+from services.scraper.app.robots import RobotsChecker
+from services.scraper.app.state import state
+
+content_hashes = state.content_hashes
 
 
 class TestContentExtractor:
@@ -33,7 +48,7 @@ class TestContentExtractor:
         """
         
         extractor = ContentExtractor()
-        with patch('main.trafilatura.extract') as mock_extract:
+        with patch('services.scraper.app.extraction.trafilatura.extract') as mock_extract:
             mock_extract.return_value = "Main Article This is the main content of the article. Another paragraph with useful information."
             
             result = extractor.extract_content(html.encode('utf-8'), "https://example.com", "text/html")
@@ -61,7 +76,7 @@ class TestContentExtractor:
         """
         
         extractor = ContentExtractor()
-        with patch('main.trafilatura.extract') as mock_extract:
+        with patch('services.scraper.app.extraction.trafilatura.extract') as mock_extract:
             mock_extract.return_value = ""  # Simulate trafilatura failure
             
             result = extractor.extract_content(html.encode('utf-8'), "https://example.com", "text/html")
@@ -92,7 +107,7 @@ class TestContentExtractor:
         """
         
         extractor = ContentExtractor()
-        with patch('main.trafilatura.extract') as mock_extract:
+        with patch('services.scraper.app.extraction.trafilatura.extract') as mock_extract:
             mock_extract.return_value = "Content without title that is long enough to pass the minimum length check"
             
             result = extractor.extract_content(html.encode('utf-8'), "https://example.com", "text/html")
@@ -178,7 +193,7 @@ class TestRobotsChecker:
         """Test fetching allowed URL."""
         checker = RobotsChecker()
         
-        with patch('main.RobotFileParser') as mock_parser_class:
+        with patch('services.scraper.app.robots.RobotFileParser') as mock_parser_class:
             mock_parser = Mock()
             mock_parser.can_fetch.return_value = True
             mock_parser_class.return_value = mock_parser
@@ -193,7 +208,7 @@ class TestRobotsChecker:
         """Test fetching disallowed URL."""
         checker = RobotsChecker()
         
-        with patch('main.RobotFileParser') as mock_parser_class:
+        with patch('services.scraper.app.robots.RobotFileParser') as mock_parser_class:
             mock_parser = Mock()
             mock_parser.can_fetch.return_value = False
             mock_parser_class.return_value = mock_parser
@@ -206,7 +221,7 @@ class TestRobotsChecker:
         """Test handling robots.txt read errors."""
         checker = RobotsChecker()
         
-        with patch('main.RobotFileParser') as mock_parser_class:
+        with patch('services.scraper.app.robots.RobotFileParser') as mock_parser_class:
             mock_parser = Mock()
             mock_parser.read.side_effect = Exception("Network error")
             mock_parser.can_fetch.return_value = True
@@ -220,7 +235,7 @@ class TestRobotsChecker:
         """Test that robots.txt results are cached per domain."""
         checker = RobotsChecker()
         
-        with patch('main.RobotFileParser') as mock_parser_class:
+        with patch('services.scraper.app.robots.RobotFileParser') as mock_parser_class:
             mock_parser = Mock()
             mock_parser.can_fetch.return_value = True
             mock_parser_class.return_value = mock_parser
@@ -260,7 +275,7 @@ class TestIntegration:
         
         # Extract content
         extractor = ContentExtractor()
-        with patch('main.trafilatura.extract') as mock_extract:
+        with patch('services.scraper.app.extraction.trafilatura.extract') as mock_extract:
             mock_extract.return_value = "Test Article This is test content for integration testing. It should be processed correctly through the pipeline."
             
             extracted = extractor.extract_content(html.encode('utf-8'), "https://example.com", "text/html")

@@ -1,11 +1,13 @@
 """Unit tests for similarity search and recommendation engine."""
 
-import pytest
-import numpy as np
 import asyncio
-from unittest.mock import Mock, patch, AsyncMock
-from main import SimilaritySearchEngine
 import time
+from unittest.mock import AsyncMock, Mock, patch
+
+import numpy as np
+import pytest
+
+from services.clustering.app.similarity import SimilaritySearchEngine
 
 
 class TestSimilaritySearchEngine:
@@ -293,7 +295,7 @@ class TestSimilaritySearchIntegration:
             )
         ]
         
-        with patch('main.qdrant_client') as mock_qdrant:
+        with patch('services.clustering.app.similarity.qdrant_client') as mock_qdrant:
             mock_qdrant.scroll.return_value = (mock_points, None)
             
             query_embedding = np.array([1.0, 0.0, 0.0])
@@ -345,7 +347,7 @@ class TestSimilaritySearchIntegration:
             )
         ]
         
-        with patch('main.qdrant_client') as mock_qdrant:
+        with patch('services.clustering.app.similarity.qdrant_client') as mock_qdrant:
             mock_qdrant.retrieve.side_effect = [[mock_points[0]], [mock_points[1]]]
             
             user_profile = await search_engine._build_user_profile(

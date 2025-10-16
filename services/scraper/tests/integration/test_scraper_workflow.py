@@ -10,22 +10,31 @@ from fastapi.testclient import TestClient
 from fastapi.websockets import WebSocket
 from pydantic import HttpUrl
 
-from services.scraper.main import (
-    ContentExtractor,
+from services.scraper.app import app
+from services.scraper.app.classification import URLClassifier
+from services.scraper.app.engine import ScrapingEngine
+from services.scraper.app.extraction import ContentExtractor, trafilatura
+from services.scraper.app.duplicates import DuplicateDetector
+from services.scraper.app.models import (
     ContentType,
-    DuplicateDetector,
-    ParallelProcessingEngine,
     QueueType,
+    RealTimeStatus,
+    ScrapeJob,
     ScrapeRequest,
-    URLClassifier,
+    ScrapedContent,
+    URLClassification,
     URLRequest,
-    app,
-    active_jobs,
-    auth_sessions,
-    content_hashes,
-    processing_queues,
-    websocket_connections,
 )
+from services.scraper.app.processing import ParallelProcessingEngine
+from services.scraper.app.queues import ProcessingQueues
+from services.scraper.app.robots import RobotsChecker
+from services.scraper.app.state import state
+
+active_jobs = state.active_jobs
+auth_sessions = state.auth_sessions
+content_hashes = state.content_hashes
+processing_queues = state.processing_queues
+websocket_connections = state.websocket_connections
 
 
 def _http(url: str) -> HttpUrl:
@@ -147,7 +156,7 @@ class TestContentExtractor:
         </html>
         """
         
-        with patch('main.trafilatura.extract') as mock_extract:
+        with patch('services.scraper.app.extraction.trafilatura.extract') as mock_extract:
             mock_extract.return_value = "Main Heading This is the main content of the article. Another paragraph with useful information."
             
             result = extractor._extract_html_content(html, "https://example.com")
@@ -175,7 +184,7 @@ class TestContentExtractor:
         </html>
         """
         
-        with patch('main.trafilatura.extract') as mock_extract:
+        with patch('services.scraper.app.extraction.trafilatura.extract') as mock_extract:
             mock_extract.return_value = ""  # Simulate failure
             
             result = extractor._extract_html_content(html, "https://example.com")
@@ -316,7 +325,6 @@ class TestParallelProcessingEngine:
         )
         
         # Create real URL classifications instead of mocks
-        from services.scraper.main import URLClassification, QueueType
         url_classifications = [
             URLClassification(
                 url="https://example.com/public",
@@ -356,18 +364,18 @@ class TestParallelProcessingEngine:
         print(f"Processing queues after call: {list(processing_queues.keys())}")
         
         # If the queue wasn't initialized, let's test the initialization directly
-        if job_id not in processing_queues:
+        queues = processing_queues.get(job_id)
+        if queues is None:
             print("Queue not found, testing direct initialization...")
-            from services.scraper.main import ProcessingQueues
-            processing_queues[job_id] = ProcessingQueues()
-            queues = processing_queues[job_id]
-            
-            # Test adding URLs to queues
-            for i, classification in enumerate(url_classifications):
-                url_request = scrape_request.urls[i]
-                queues.add_to_queue(classification, url_request)
-            
-            print(f"Direct initialization successful: {job_id in processing_queues}")
+            queues = ProcessingQueues()
+            processing_queues[job_id] = queues
+
+        # Test adding URLs to queues
+        for i, classification in enumerate(url_classifications):
+            url_request = scrape_request.urls[i]
+            queues.add_to_queue(classification, url_request)
+
+        print(f"Direct initialization successful: {job_id in processing_queues}")
         
         # The test should pass if we can at least initialize the queue
         assert job_id in processing_queues, f"Job {job_id} not found in processing_queues: {list(processing_queues.keys())}"
@@ -420,8 +428,7 @@ class TestAPIEndpoints:
             {"url": "https://example.com/admin/dashboard"}
         ]
         
-        with patch('main.url_classifier.classify_urls') as mock_classify:
-            from services.scraper.main import URLClassification, QueueType
+        with patch('services.scraper.app.dependencies.url_classifier.classify_urls') as mock_classify:
             mock_classify.return_value = [
                 URLClassification(
                     url="https://example.com/blog/post",
@@ -463,10 +470,8 @@ class TestAPIEndpoints:
             "max_concurrent_workers": 3
         }
         
-        with patch('main.url_classifier.classify_urls') as mock_classify, \
-             patch('main.parallel_engine.process_job') as mock_process:
-            
-            from services.scraper.main import URLClassification, QueueType
+        with patch('services.scraper.app.dependencies.url_classifier.classify_urls') as mock_classify, \
+             patch('services.scraper.app.dependencies.parallel_engine.process_job') as mock_process:
             mock_classify.return_value = [
                 URLClassification(
                     url="https://example.com/page1",
@@ -501,7 +506,6 @@ class TestAPIEndpoints:
     def test_get_job_status(self, client):
         """Test job status retrieval."""
         # Create a mock job
-        from services.scraper.main import ScrapeJob
         job = ScrapeJob(
             job_id="test_job",
             status="running",
@@ -542,7 +546,6 @@ class TestAPIEndpoints:
     def test_pause_and_resume_job(self, client):
         """Test job pause and resume functionality."""
         # Create a running job
-        from services.scraper.main import ScrapeJob
         job = ScrapeJob(
             job_id="test_job",
             status="running",
@@ -565,9 +568,8 @@ class TestAPIEndpoints:
     def test_content_quality_analysis(self, client):
         """Test content quality analysis endpoint."""
         # Create a job with results
-        from services.scraper.main import ScrapeJob, ScrapedContent, ContentType
         from datetime import datetime
-        
+
         job = ScrapeJob(
             job_id="test_job",
             status="completed",
@@ -624,7 +626,6 @@ class TestWebSocketIntegration:
         client = TestClient(app)
         
         # Create a mock job
-        from services.scraper.main import ScrapeJob
         job = ScrapeJob(
             job_id="test_job",
             status="running",

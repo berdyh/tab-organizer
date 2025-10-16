@@ -1,4 +1,4 @@
-"""Entry point for the scraper service."""
+"""Entrypoint for the scraper service."""
 
 from __future__ import annotations
 
@@ -77,12 +77,6 @@ __all__ = [
     "scraping_engine",
     "trafilatura",
 ]
-
-# Maintain backward compatibility for modules importing `main`
-import sys as _sys
-
-_sys.modules.setdefault("main", _sys.modules[__name__])
-
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

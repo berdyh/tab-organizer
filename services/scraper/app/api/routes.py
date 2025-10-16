@@ -25,7 +25,6 @@ from ..models import (
     ScrapeJob,
     ScrapeRequest,
     ScrapedContent,
-    URLClassification,
     URLRequest,
 )
 from ..state import state

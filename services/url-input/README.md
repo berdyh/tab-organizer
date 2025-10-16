@@ -81,7 +81,7 @@ instantiates the FastAPI app, and includes the assembled router. This layout
 mirrors how other services in the monorepo are organised, making it easier to
 extend or swap out pieces (for example, replacing the in-memory storage layer).
 
-## API Surface Used by the Web UI
+## UI Integration Guide
 
 The React front end (`services/web-ui/src/services/api.js`) consumes the
 following endpoints, all still available under the API Gateway prefix `/api`.

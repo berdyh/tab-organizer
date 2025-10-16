@@ -59,7 +59,8 @@ async def list_url_inputs(
     entries: List[tuple[datetime, Dict[str, Any]]] = []
 
     for url_input in url_input_storage.values():
-        if url_input.session_id != session_id:
+        stored_session_id = getattr(url_input, "session_id", url_input.source_metadata.get("session_id"))
+        if stored_session_id and stored_session_id != session_id:
             continue
         ensure_entry_ids(url_input.urls)
         created_at = url_input.created_at
@@ -121,7 +122,8 @@ async def get_url_input(
 
     input_id, entry_id = parse_input_identifier(input_identifier)
     url_input = get_url_input_or_404(input_id)
-    if url_input.session_id != session_id:
+    stored_session_id = getattr(url_input, "session_id", url_input.source_metadata.get("session_id"))
+    if stored_session_id and stored_session_id != session_id:
         raise HTTPException(status_code=404, detail="URL input not found for session")
     ensure_entry_ids(url_input.urls)
 
@@ -235,7 +237,8 @@ async def update_url_input(
 
     input_id, entry_id = parse_input_identifier(input_identifier)
     url_input = get_url_input_or_404(input_id)
-    if url_input.session_id != session_id:
+    stored_session_id = getattr(url_input, "session_id", url_input.source_metadata.get("session_id"))
+    if stored_session_id and stored_session_id != session_id:
         raise HTTPException(status_code=404, detail="URL input not found for session")
 
     if entry_id is None:

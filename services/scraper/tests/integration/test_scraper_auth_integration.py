@@ -8,15 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from pydantic import HttpUrl
 
-from services.scraper.main import (
-    AuthenticationServiceClient,
-    AuthSession,
-    ScrapingEngine,
-    ScrapeRequest,
-    URLRequest,
-    active_jobs,
-    auth_sessions
-)
+from services.scraper.app.auth_client import AuthenticationServiceClient
+from services.scraper.app.engine import ScrapingEngine
+from services.scraper.app.models import AuthSession, ScrapeRequest, URLRequest
+from services.scraper.app.state import state
+
+active_jobs = state.active_jobs
+auth_sessions = state.auth_sessions
 
 
 def _http(url: str) -> HttpUrl:
