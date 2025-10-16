@@ -168,7 +168,7 @@ class TestExportAPI:
         assert "notion" in format_names
         assert "obsidian" in format_names
 
-    @patch('main.qdrant_client')
+    @patch('main.export_engine.qdrant_client')
     def test_create_export_job(self, mock_qdrant, client, mock_qdrant_points):
         """Test creating an export job."""
         # Mock Qdrant response
@@ -197,7 +197,7 @@ class TestExportAPI:
         response = client.get("/export/nonexistent/status")
         assert response.status_code == 404
 
-    @patch('main.qdrant_client')
+    @patch('main.export_engine.qdrant_client')
     def test_batch_export(self, mock_qdrant, client, mock_qdrant_points):
         """Test batch export functionality."""
         # Mock Qdrant response
@@ -256,7 +256,7 @@ class TestExportAPI:
         templates = response.json()
         assert isinstance(templates, list)
 
-    @patch('main.qdrant_client')
+    @patch('main.export_engine.qdrant_client')
     def test_preview_export(self, mock_qdrant, client, mock_qdrant_points):
         """Test export preview functionality."""
         # Mock Qdrant response
@@ -282,7 +282,7 @@ class TestExportEngine:
     """Test export engine functionality."""
 
     @pytest.mark.asyncio
-    @patch('main.qdrant_client')
+    @patch('main.export_engine.qdrant_client')
     async def test_get_session_data(self, mock_qdrant, mock_qdrant_points):
         """Test retrieving session data from Qdrant."""
         # Mock Qdrant response
@@ -342,8 +342,9 @@ class TestExportEngine:
     @pytest.mark.asyncio
     async def test_export_to_word(self, sample_session_data):
         """Test Word document export functionality."""
+        pytest.importorskip("docx")
         result = await export_engine.export_to_word(sample_session_data)
-        
+
         # Verify it's a BytesIO object with content
         assert hasattr(result, 'read')
         assert hasattr(result, 'seek')
@@ -392,7 +393,7 @@ class TestExportEngine:
         assert "Items: 2" in result
 
     @pytest.mark.asyncio
-    @patch('main.NotionClient')
+    @patch('main.export_engine.notion_client_factory')
     async def test_export_to_notion_with_credentials(self, mock_notion_client, sample_session_data):
         """Test Notion export with proper credentials."""
         # Mock Notion client
@@ -448,7 +449,7 @@ class TestExportJobProcessing:
     """Test export job processing functionality."""
 
     @pytest.mark.asyncio
-    @patch('main.qdrant_client')
+    @patch('main.export_engine.qdrant_client')
     async def test_process_export_job_json(self, mock_qdrant, mock_qdrant_points):
         """Test processing a JSON export job."""
         from main import process_export_job, ExportRequest, ExportJob, ExportStatus
@@ -487,7 +488,7 @@ class TestExportJobProcessing:
             Path(processed_job.file_path).unlink(missing_ok=True)
 
     @pytest.mark.asyncio
-    @patch('main.qdrant_client')
+    @patch('main.export_engine.qdrant_client')
     async def test_process_export_job_pdf(self, mock_qdrant, mock_qdrant_points):
         """Test processing a PDF export job."""
         from main import process_export_job, ExportRequest, ExportJob, ExportStatus
@@ -532,7 +533,7 @@ class TestExportJobProcessing:
             Path(processed_job.file_path).unlink(missing_ok=True)
 
     @pytest.mark.asyncio
-    @patch('main.qdrant_client')
+    @patch('main.export_engine.qdrant_client')
     async def test_process_export_job_failure(self, mock_qdrant):
         """Test handling of export job failures."""
         from main import process_export_job, ExportRequest, ExportJob, ExportStatus
