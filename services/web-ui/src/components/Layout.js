@@ -8,7 +8,8 @@ import {
   Download,
   Menu,
   X,
-  Bot
+  Bot,
+  Shield
 } from 'lucide-react';
 
 const Layout = ({ children }) => {
@@ -20,6 +21,7 @@ const Layout = ({ children }) => {
     { name: 'URL Manager', href: '/urls', icon: LinkIcon },
     { name: 'Search', href: '/search', icon: Search },
     { name: 'Chat Assistant', href: '/chat', icon: Bot },
+    { name: 'Authentication', href: '/auth', icon: Shield },
     { name: 'Sessions', href: '/sessions', icon: Settings },
     { name: 'Export', href: '/export', icon: Download },
   ];
@@ -35,6 +37,7 @@ const Layout = ({ children }) => {
               type="button"
               className="ml-1 flex h-10 w-10 items-center justify-center rounded-full focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white"
               onClick={() => setSidebarOpen(false)}
+              aria-label="Close sidebar"
             >
               <X className="h-6 w-6 text-white" />
             </button>
@@ -55,6 +58,7 @@ const Layout = ({ children }) => {
             type="button"
             className="-ml-0.5 -mt-0.5 inline-flex h-12 w-12 items-center justify-center rounded-md text-gray-500 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-500"
             onClick={() => setSidebarOpen(true)}
+            aria-label="Open sidebar"
           >
             <Menu className="h-6 w-6" />
           </button>

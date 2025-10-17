@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useQuery } from 'react-query';
 import { Bot, MessageSquare, Zap, Search, Database } from 'lucide-react';
 import Chatbot from '../components/Chatbot';
-import { sessionAPI } from '../services/api';
+import { sessionAPI } from '../lib/api';
 
 const ChatbotPage = () => {
   const [selectedSession, setSelectedSession] = useState('');

@@ -8,6 +8,7 @@ import SearchPage from './pages/SearchPage';
 import SessionManager from './pages/SessionManager';
 import ExportPage from './pages/ExportPage';
 import ChatbotPage from './pages/ChatbotPage';
+import AuthManager from './pages/AuthManager';
 
 const queryClient = new QueryClient();
 
@@ -22,6 +23,7 @@ function App() {
           <Route path="/sessions" element={<SessionManager />} />
           <Route path="/export" element={<ExportPage />} />
           <Route path="/chat" element={<ChatbotPage />} />
+          <Route path="/auth" element={<AuthManager />} />
         </Routes>
       </Layout>
     </QueryClientProvider>

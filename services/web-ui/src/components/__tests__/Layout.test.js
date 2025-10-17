@@ -19,11 +19,11 @@ test('renders layout with navigation', () => {
   );
 
   expect(screen.getAllByText('Web Scraping Tool').length).toBeGreaterThan(0);
-  expect(screen.getAllByText('Dashboard').length).toBeGreaterThan(0);
-  expect(screen.getByText('URL Manager')).toBeInTheDocument();
-  expect(screen.getByText('Search')).toBeInTheDocument();
-  expect(screen.getByText('Sessions')).toBeInTheDocument();
-  expect(screen.getByText('Export')).toBeInTheDocument();
+  expect(screen.getAllByRole('link', { name: /dashboard/i }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole('link', { name: /url manager/i }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole('link', { name: /search/i }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole('link', { name: /sessions/i }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole('link', { name: /export/i }).length).toBeGreaterThan(0);
   expect(screen.getByText('Test Content')).toBeInTheDocument();
 });
 
@@ -35,7 +35,7 @@ test('mobile menu toggle works', () => {
   );
 
   // Mobile menu should be hidden initially
-  const mobileMenu = screen.getByRole('button');
+  const mobileMenu = screen.getByRole('button', { name: /open sidebar/i });
   expect(mobileMenu).toBeInTheDocument();
 });
 

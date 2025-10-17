@@ -5,7 +5,7 @@ import '@testing-library/jest-dom';
 import App from './App';
 
 // Mock the API module
-jest.mock('./services/api', () => ({
+jest.mock('./lib/api', () => ({
   urlAPI: {
     list: jest.fn(() => Promise.resolve({ data: [] })),
   },

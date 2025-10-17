@@ -3,26 +3,26 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
+    "@eslint/js": "^8.45.0",
     "@testing-library/jest-dom": "^5.16.4",
-    "@testing-library/react": "^13.3.0",
-    "@testing-library/user-event": "^13.5.0",
+    "@testing-library/react": "^14.2.1",
+    "@testing-library/user-event": "^14.5.2",
+    "autoprefixer": "^10.4.14",
+    "axios": "^1.4.0",
+    "eslint": "^8.45.0",
+    "lucide-react": "^0.263.1",
+    "postcss": "^8.4.24",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.3.0",
-    "react-scripts": "5.0.1",
-    "axios": "^1.4.0",
-    "socket.io-client": "^4.7.2",
-    "react-query": "^3.39.3",
     "react-hook-form": "^7.45.1",
+    "react-query": "^3.39.3",
+    "react-router-dom": "^6.3.0",
+    "react-scripts": "^5.0.1",
     "react-select": "^5.7.4",
     "react-table": "^7.8.0",
     "recharts": "^2.7.2",
-    "lucide-react": "^0.263.1",
-    "tailwindcss": "^3.3.3",
-    "autoprefixer": "^10.4.14",
-    "postcss": "^8.4.24",
-    "eslint": "^8.45.0",
-    "@eslint/js": "^8.45.0"
+    "socket.io-client": "^4.7.2",
+    "tailwindcss": "^3.3.3"
   },
   "scripts": {
     "start": "react-scripts start",
@@ -58,6 +58,9 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "devDependencies": {
+    "jest-junit": "^16.0.0"
   },
   "proxy": "http://api-gateway:8080"
 }

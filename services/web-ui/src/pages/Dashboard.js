@@ -11,7 +11,7 @@ import {
   XCircle,
   AlertCircle
 } from 'lucide-react';
-import { scrapingAPI, sessionAPI } from '../services/api';
+import { scrapingAPI, sessionAPI } from '../lib/api';
 
 const Dashboard = () => {
   const { data: jobs } = useQuery('scraping-jobs', scrapingAPI.getJobs);

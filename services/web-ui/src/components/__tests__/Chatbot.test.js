@@ -1,6 +1,23 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import '@testing-library/jest-dom';
+
+const mockSendMessage = jest.fn((_sessionId, message) =>
+  Promise.resolve({
+    data: {
+      response: `Echo: ${message}`,
+      suggestions: [],
+      sources: [],
+    },
+  })
+);
+
+jest.mock('../../lib/api', () => ({
+  chatbotAPI: {
+    sendMessage: (...args) => mockSendMessage(...args),
+  },
+}));
+
 import Chatbot from '../Chatbot';
 
 const createTestQueryClient = () => new QueryClient({
@@ -19,6 +36,11 @@ const renderWithQueryClient = (ui) => {
     </QueryClientProvider>
   );
 };
+
+beforeEach(() => {
+  mockSendMessage.mockClear();
+  window.HTMLElement.prototype.scrollIntoView = jest.fn();
+});
 
 test('renders chatbot interface', () => {
   renderWithQueryClient(<Chatbot sessionId="test-session" />);
@@ -60,15 +82,29 @@ test('input field works correctly', async () => {
   expect(input.value).toBe('test input');
 });
 
-test('handles suggestion clicks', async () => {
+test('applies suggestion when suggestion button is clicked', async () => {
+  mockSendMessage.mockResolvedValueOnce({
+    data: {
+      response: 'Here are some ideas.',
+      suggestions: ['Tell me more about machine learning'],
+      sources: [],
+    },
+  });
+
   renderWithQueryClient(<Chatbot sessionId="test-session" />);
-  
+
   const input = await screen.findByPlaceholderText('Ask me about your scraped content...', {}, { timeout: 5000 });
-  
-  // This would need to be updated based on the actual suggestion rendering
-  // For now, just test that the input can be focused
-  fireEvent.focus(input);
-  expect(input).toHaveFocus();
+  fireEvent.change(input, { target: { value: 'ai topics' } });
+  fireEvent.submit(input.closest('form'));
+
+  const suggestionButton = await screen.findByRole(
+    'button',
+    { name: 'Tell me more about machine learning' },
+    { timeout: 5000 }
+  );
+
+  fireEvent.click(suggestionButton);
+  expect(input.value).toBe('Tell me more about machine learning');
 });
 
 test('closes chatbot when close button is clicked', async () => {
