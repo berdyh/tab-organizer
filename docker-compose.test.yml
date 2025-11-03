@@ -19,9 +19,9 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_url_parser.py -v --tb=short 
-      --cov=. --cov-report=html:/app/coverage/url-input 
-      --cov-report=xml:/app/coverage/url-input.xml 
+      sh -c "python -m pytest tests/unit -v --tb=short
+      --cov=. --cov-report=html:/app/coverage/url-input
+      --cov-report=xml:/app/coverage/url-input.xml
       --junit-xml=/app/test-results/url-input-unit.xml"
     networks:
       - test_network
@@ -43,9 +43,9 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_auth_detection.py -v --tb=short 
-      --cov=. --cov-report=html:/app/coverage/auth 
-      --cov-report=xml:/app/coverage/auth.xml 
+      sh -c "python -m pytest tests/unit -v --tb=short
+      --cov=. --cov-report=html:/app/coverage/auth
+      --cov-report=xml:/app/coverage/auth.xml
       --junit-xml=/app/test-results/auth-unit.xml"
     networks:
       - test_network
@@ -67,9 +67,9 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_scraper.py -v --tb=short 
-      --cov=. --cov-report=html:/app/coverage/scraper 
-      --cov-report=xml:/app/coverage/scraper.xml 
+      sh -c "python -m pytest tests/unit -v --tb=short
+      --cov=. --cov-report=html:/app/coverage/scraper
+      --cov-report=xml:/app/coverage/scraper.xml
       --junit-xml=/app/test-results/scraper-unit.xml"
     networks:
       - test_network
@@ -92,9 +92,9 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_core_components.py test_embedding_system_unit.py test_hardware_detection.py -v --tb=short 
-      --cov=. --cov-report=html:/app/coverage/analyzer 
-      --cov-report=xml:/app/coverage/analyzer.xml 
+      sh -c "python -m pytest tests/unit -v --tb=short
+      --cov=. --cov-report=html:/app/coverage/analyzer
+      --cov-report=xml:/app/coverage/analyzer.xml
       --junit-xml=/app/test-results/analyzer-unit.xml"
     networks:
       - test_network
@@ -116,9 +116,9 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_hdbscan_clustering.py test_umap_dimensionality.py -v --tb=short 
-      --cov=. --cov-report=html:/app/coverage/clustering 
-      --cov-report=xml:/app/coverage/clustering.xml 
+      sh -c "python -m pytest tests/unit -v --tb=short
+      --cov=. --cov-report=html:/app/coverage/clustering
+      --cov-report=xml:/app/coverage/clustering.xml
       --junit-xml=/app/test-results/clustering-unit.xml"
     networks:
       - test_network
@@ -141,9 +141,9 @@ services:
       - ./coverage:/app/coverage
       - export_test_templates:/app/templates
     command: >
-      sh -c "python -m pytest -v --tb=short -k 'not integration' 
-      --cov=. --cov-report=html:/app/coverage/export 
-      --cov-report=xml:/app/coverage/export.xml 
+      sh -c "python -m pytest tests/unit -v --tb=short
+      --cov=. --cov-report=html:/app/coverage/export
+      --cov-report=xml:/app/coverage/export.xml
       --junit-xml=/app/test-results/export-unit.xml"
     networks:
       - test_network
@@ -165,35 +165,58 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest -v --tb=short -k 'not integration' 
-      --cov=. --cov-report=html:/app/coverage/session 
-      --cov-report=xml:/app/coverage/session.xml 
+      sh -c "python -m pytest tests/unit -v --tb=short
+      --cov=. --cov-report=html:/app/coverage/session
+      --cov-report=xml:/app/coverage/session.xml
       --junit-xml=/app/test-results/session-unit.xml"
     networks:
       - test_network
 
-  # Visualization Service - Unit Tests
-  visualization-unit-test:
+  # Monitoring Service - Unit Tests
+  monitoring-unit-test:
     build:
-      context: ./services/visualization
+      context: ./services/monitoring
       dockerfile: Dockerfile
-    container_name: visualization-unit-test
+    container_name: monitoring-unit-test
     environment:
       - TESTING=true
       - TEST_TYPE=unit
       - LOG_LEVEL=DEBUG
       - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.visualization
+      - COVERAGE_FILE=/app/coverage/.coverage.monitoring
     volumes:
-      - ./services/visualization:/app/test_src
-      - ./docs:/app/docs
+      - ./services/monitoring:/app/test_src
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_visualization.py test_doc_generator.py -v --tb=short 
-      --cov=. --cov-report=html:/app/coverage/visualization 
-      --cov-report=xml:/app/coverage/visualization.xml 
-      --junit-xml=/app/test-results/visualization-unit.xml"
+      sh -c "python -m pytest tests/unit -v --tb=short
+      --cov=. --cov-report=html:/app/coverage/monitoring
+      --cov-report=xml:/app/coverage/monitoring.xml
+      --junit-xml=/app/test-results/monitoring-unit.xml"
+    networks:
+      - test_network
+
+  # API Gateway - Unit Tests
+  api-gateway-unit-test:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway-unit-test
+    environment:
+      - TESTING=true
+      - TEST_TYPE=unit
+      - LOG_LEVEL=DEBUG
+      - PYTHONPATH=/app
+      - COVERAGE_FILE=/app/coverage/.coverage.api_gateway
+    volumes:
+      - ./services/api-gateway:/app/test_src
+      - ./test-results:/app/test-results
+      - ./coverage:/app/coverage
+    command: >
+      sh -c "python -m pytest tests/unit -v --tb=short
+      --cov=. --cov-report=html:/app/coverage/api-gateway
+      --cov-report=xml:/app/coverage/api-gateway.xml
+      --junit-xml=/app/test-results/api-gateway-unit.xml"
     networks:
       - test_network
 
@@ -212,7 +235,7 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "npm test -- --coverage --watchAll=false 
+      sh -c "npm test -- --coverage --watchAll=false --silent 
       --coverageDirectory=/app/coverage/web-ui 
       --testResultsProcessor=jest-junit"
     networks:
@@ -232,7 +255,11 @@ services:
     tmpfs:
       - /qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
+      test:
+        - CMD
+        - bash
+        - -lc
+        - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && head -n1 <&3 | grep 200'
       interval: 10s
       timeout: 5s
       retries: 5
@@ -250,7 +277,11 @@ services:
     tmpfs:
       - /root/.ollama
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test:
+        - CMD
+        - bash
+        - -lc
+        - 'exec 3<>/dev/tcp/127.0.0.1/11434 && printf "GET /api/tags HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && head -n1 <&3 | grep 200'
       interval: 10s
       timeout: 5s
       retries: 5
@@ -273,7 +304,7 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_integration.py -v --tb=short 
+      sh -c "python -m pytest tests/integration -v --tb=short
       --junit-xml=/app/test-results/url-input-integration.xml"
     networks:
       - test_network
@@ -294,7 +325,7 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_auth_integration.py -v --tb=short 
+      sh -c "python -m pytest tests/integration -v --tb=short
       --junit-xml=/app/test-results/auth-integration.xml"
     networks:
       - test_network
@@ -316,7 +347,7 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_integration.py test_auth_integration.py -v --tb=short 
+      sh -c "python -m pytest tests/integration -v --tb=short
       --junit-xml=/app/test-results/scraper-integration.xml"
     depends_on:
       - auth-integration-test
@@ -342,7 +373,7 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_api_integration.py test_multi_model_integration.py test_model_switching.py -v --tb=short 
+      sh -c "python -m pytest tests/integration -v --tb=short
       --junit-xml=/app/test-results/analyzer-integration.xml"
     depends_on:
       test-qdrant:
@@ -370,7 +401,7 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_similarity_recommendations.py -v --tb=short 
+      sh -c "python -m pytest tests/integration -v --tb=short
       --junit-xml=/app/test-results/clustering-integration.xml"
     depends_on:
       test-qdrant:
@@ -398,7 +429,7 @@ services:
       - export_test_data:/app/exports
       - export_test_templates:/app/templates
     command: >
-      sh -c "python -m pytest test_export_integration.py -v --tb=short 
+      sh -c "python -m pytest tests/integration -v --tb=short
       --junit-xml=/app/test-results/export-integration.xml"
     depends_on:
       test-qdrant:
@@ -424,11 +455,32 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     command: >
-      sh -c "python -m pytest test_session_management.py -v --tb=short 
+      sh -c "python -m pytest tests/integration -v --tb=short
       --junit-xml=/app/test-results/session-integration.xml"
     depends_on:
       test-qdrant:
         condition: service_healthy
+    networks:
+      - test_network
+
+  # Monitoring Service - Integration Tests
+  monitoring-integration-test:
+    build:
+      context: ./services/monitoring
+      dockerfile: Dockerfile
+    container_name: monitoring-integration-test
+    environment:
+      - TESTING=true
+      - TEST_TYPE=integration
+      - LOG_LEVEL=DEBUG
+      - PYTHONPATH=/app
+    volumes:
+      - ./services/monitoring:/app/test_src
+      - ./test-results:/app/test-results
+      - ./coverage:/app/coverage
+    command: >
+      sh -c "python -m pytest tests/integration -v --tb=short
+      --junit-xml=/app/test-results/monitoring-integration.xml"
     networks:
       - test_network
 
@@ -451,7 +503,7 @@ services:
       - ./coverage:/app/coverage
     command: >
       sh -c "find /app -name '*.pyc' -delete && find /app -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true && 
-      python -m pytest test_api_gateway_integration.py test_simple_integration.py -v --tb=short 
+      python -m pytest tests/integration -v --tb=short
       --junit-xml=/app/test-results/api-gateway-integration.xml"
     depends_on:
       test-qdrant:
@@ -554,11 +606,13 @@ services:
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
       - ./test-reports:/app/reports
+      - .:/app/src:ro
     command: >
-      sh -c "pip install pytest-html coverage && 
-      coverage combine /app/coverage/.coverage.* && 
-      coverage html -d /app/reports/coverage && 
-      coverage xml -o /app/reports/coverage.xml && 
+      sh -c "pip install pytest-html coverage &&
+      python /app/src/scripts/normalize_coverage_paths.py --coverage-dir /app/coverage --source-root /app/src &&
+      coverage combine /app/coverage/.coverage.* &&
+      coverage html -d /app/reports/coverage --ignore-errors &&
+      coverage xml -o /app/reports/coverage.xml &&
       coverage report"
     depends_on:
       - url-input-unit-test
@@ -568,7 +622,8 @@ services:
       - clustering-unit-test
       - export-unit-test
       - session-unit-test
-      - visualization-unit-test
+      - monitoring-unit-test
+      - api-gateway-unit-test
     networks:
       - test_network
 

@@ -3,9 +3,7 @@
 
 services:
   # Remove Ollama service entirely when using local installation
-  ollama:
-    deploy:
-      replicas: 0
+  ollama: null
     
   # Update services to use host network for Ollama access
   api-gateway:

@@ -37,7 +37,8 @@ graph TB
     Gateway --> Clusterer[Clustering Service :8085]
     Gateway --> Exporter[Export Service :8086]
     Gateway --> SessionMgr[Session Manager :8087]
-    Gateway --> ModelMgr[Model Management Service :8088]
+    Gateway --> Chatbot[Chatbot Service :8092]
+    Gateway --> Monitor[Monitoring & Visualization :8091]
     Gateway --> UI[Web UI Service :8089]
     
     URLInput --> Scraper
@@ -49,7 +50,9 @@ graph TB
     Clusterer --> Ollama
     Exporter --> Qdrant
     SessionMgr --> Qdrant
-    ModelMgr --> Ollama
+    Chatbot --> Qdrant
+    Chatbot --> Ollama
+    Monitor --> Qdrant
     UI --> Gateway
     
     Qdrant --> Storage1[Vector Storage]
@@ -254,16 +257,16 @@ sequenceDiagram
   - Backup/restore with model configurations
   - Data archival and cleanup
 
-### 9. Model Management Service (Port 8088)
-- **Purpose**: Advanced AI model lifecycle management with smart LLM chooser
+### 9. Monitoring & Visualization Service (Port 8091)
+- **Purpose**: Centralised observability with integrated architecture visualisation
 - **Features**:
-  - Smart LLM chooser with automatic hardware detection
-  - Task-specific model recommendations (reasoning, code, multilingual, multimodal)
-  - Dynamic model downloading and installation
-  - Intelligent fallback chains for resource constraints
-  - Hot model switching without service restart
-  - Performance monitoring and resource tracking
-  - Automatic cleanup and storage optimization
+  - Service, container, and system health dashboards with Prometheus metrics
+  - Visualization endpoints (`/visualization/*`) for architecture diagrams and pipeline status
+  - Alerting engine with pluggable notification channels
+  - Distributed tracing stub with correlation IDs
+  - Capacity planning and performance recommendations
+  - Real-time service registry reflection based on monitoring settings
+  - Documentation generation hooks for architecture reporting
 
 ### 10. Web UI Service (Port 8089)
 - **Purpose**: User interface for comprehensive system interaction
@@ -274,6 +277,10 @@ sequenceDiagram
   - Session comparison and evolution tracking
   - Real-time processing status and progress monitoring
   - Export template customization and progress tracking
+
+> **Note**: Hardware-aware model recommendations are handled by `scripts/model-manager.py`
+> rather than a dedicated container. The script coordinates Ollama model installs
+> and persists configuration under `config/models.json`.
 
 ## Container Network Architecture
 
@@ -293,7 +300,8 @@ graph TB
             CLUSTER[Clustering :8085]
             EXPORT[Export :8086]
             SESSION[Session :8087]
-            MODEL[Model Manager :8088]
+            CHATBOT[Chatbot :8092]
+            MONITOR[Monitoring & Visualization :8091]
         end
         
         subgraph "Data Network"
@@ -305,7 +313,7 @@ graph TB
             V1[qdrant_data]
             V2[ollama_data]
             V3[scraped_data]
-            V4[model_cache]
+            V4[monitoring_data]
             V5[exports]
             V6[credentials]
         end
@@ -319,7 +327,8 @@ graph TB
     GW --> CLUSTER
     GW --> EXPORT
     GW --> SESSION
-    GW --> MODEL
+    GW --> CHATBOT
+    GW --> MONITOR
     
     SCRAPER --> QDRANT
     ANALYZER --> QDRANT
@@ -328,12 +337,14 @@ graph TB
     CLUSTER --> OLLAMA
     EXPORT --> QDRANT
     SESSION --> QDRANT
-    MODEL --> OLLAMA
+    CHATBOT --> QDRANT
+    CHATBOT --> OLLAMA
+    MONITOR --> QDRANT
     
     QDRANT --> V1
     OLLAMA --> V2
     SCRAPER --> V3
-    MODEL --> V4
+    MONITOR --> V4
     EXPORT --> V5
     AUTH --> V6
 ```
@@ -372,6 +383,10 @@ flowchart TD
     N --> S[Task Completion]
 ```
 
+> This decision flow is executed by `scripts/model-manager.py`, which inspects
+> local hardware and orchestrates Ollama model installations without requiring
+> a dedicated container.
+
 ## Data Flow
 
 ### Primary Workflow
@@ -383,7 +398,7 @@ flowchart TD
 6. **Clustering**: Intelligent grouping with LLM-generated labels
 7. **Export**: Multi-format output (Notion, Obsidian, Word, Markdown)
 
-### Model Management Flow
+### Model Management Script Flow (`scripts/model-manager.py`)
 1. **Detection**: Hardware capabilities and resource constraints
 2. **Recommendation**: Task-specific and performance-optimized model selection
 3. **Installation**: Dynamic downloading with validation
@@ -511,48 +526,42 @@ flowchart TD
                 estimated_time: {type: string}
 ```
 
-#### Model Management Service (Port 8088)
+#### Monitoring & Visualization Service (Port 8091)
 ```yaml
-/models/hardware:
+/health:
   get:
-    summary: Get hardware capabilities
+    summary: Monitoring service health check
     responses:
       200:
-        description: Hardware information
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                cpu: {type: object}
-                gpu: {type: object}
-                memory: {type: object}
-                recommendations: {type: array}
-
-/models/recommend:
-  post:
-    summary: Get model recommendations
-    requestBody:
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              task_type: {type: string, enum: [reasoning, code, multilingual, multimodal]}
-              priority: {type: string, enum: [speed, quality, balanced]}
-              resource_constraints: {type: object}
+        description: Service status payload
+/metrics:
+  get:
+    summary: Prometheus metrics endpoint
     responses:
       200:
-        description: Model recommendations
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                recommended_llm: {type: string}
-                recommended_embedding: {type: string}
-                fallback_chain: {type: array}
-                performance_estimate: {type: object}
+        description: Prometheus formatted metrics
+/visualization/architecture/diagram:
+  get:
+    summary: System architecture graph data
+    responses:
+      200:
+        description: Nodes and edges describing service topology
+/visualization/pipeline/status:
+  get:
+    summary: Pipeline stage metrics snapshot
+    responses:
+      200:
+        description: Processing metrics per stage
+/visualization/diagrams/mermaid/{diagram_type}:
+  get:
+    summary: Mermaid diagram definitions for UI rendering
+    parameters:
+      - in: path
+        name: diagram_type
+        schema: {type: string, enum: [architecture, pipeline, services]}
+    responses:
+      200:
+        description: Mermaid DSL content
 ```
 
 #### Web UI Service (Port 8089)

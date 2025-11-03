@@ -245,30 +245,6 @@ services:
     networks:
       - dev_network
 
-  # Visualization Service (Development)
-  visualization-dev:
-    build:
-      context: ./services/visualization
-      dockerfile: Dockerfile
-      target: development
-    container_name: visualization-dev
-    ports:
-      - "8090:8090"
-      - "5686:5678"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/visualization:/app
-      - ./logs:/app/logs
-      - ./docs:/app/docs
-    depends_on:
-      - api-gateway-dev
-    networks:
-      - dev_network
-    command: uvicorn main:app --host 0.0.0.0 --port 8090 --reload
-
 networks:
   dev_network:
     driver: bridge

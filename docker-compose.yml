@@ -12,7 +12,11 @@ services:
       - QDRANT__SERVICE__HTTP_PORT=6333
       - QDRANT__SERVICE__GRPC_PORT=6334
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
+      test:
+        - CMD
+        - bash
+        - -lc
+        - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && head -n1 <&3 | grep 200'
       interval: 30s
       timeout: 10s
       retries: 3
@@ -269,32 +273,6 @@ services:
     networks:
       - scraping_network
     restart: unless-stopped
-
-  # Visualization Service
-  visualization-service:
-    build:
-      context: ./services/visualization
-      dockerfile: Dockerfile
-    container_name: visualization-service
-    ports:
-      - "8090:8090"
-    environment:
-      - LOG_LEVEL=INFO
-      - ENVIRONMENT=development
-    depends_on:
-      api-gateway:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - scraping_network
-    restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-      - ./docs:/app/docs
 
   # Chatbot Service
   chatbot-service:

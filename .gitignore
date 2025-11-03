@@ -4,27 +4,29 @@
 .local/
 docs.local/
 config.local/
+docs/
+exports/
 
 # Kiro IDE files
 .kiro/
 
 # Environment files
-.env
-.env.local
+**.env
+**.env.local
 
 # Python
-__pycache__/
-*.py[cod]
-*.pyc
+**__pycache__/
+**.py[cod]
+**.pyc
+**.pytest_cache/
 
 # Virtual environments
-.venv/
-venv/
+**venv*/
 
 # IDE files
-.vscode/
-.idea/
-.kiro/
+**.vscode/
+**.idea/
+**.kiro/
 
 # OS files
 .DS_Store
@@ -34,11 +36,23 @@ Thumbs.db
 logs/
 *.log
 
+# Test artefacts
+coverage/
+test-results/
+test-reports/
+monitoring-data/
+**/reports/coverage/
+**/reports/test_logs/
+**/.coverage
+
+# Node
+node_modules/
+
 # Test files (temporary)
-test_*.txt
-test_*.json
-test_*.csv
-test_*.xlsx
+**test_*.txt
+**test_*.json
+**test_*.csv
+**test_*.xlsx
 
 # Docker volumes data
 qdrant_storage/
@@ -49,3 +63,5 @@ credentials/
 *.key
 
 environment-verification-summary.md
+
+docs/ARCHIVE/
