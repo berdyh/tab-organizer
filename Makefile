@@ -47,11 +47,11 @@ test-service: ## Run tests for specific service (usage: make test-service SERVIC
 		exit 1; \
 	fi
 	@echo "$(BLUE)Running tests for $(SERVICE)...$(NC)"
-	@docker compose -f docker-compose.test.yml up --build --abort-on-container-exit $(SERVICE)-unit-test
+	@docker compose --profile test-unit up --build --abort-on-container-exit $(SERVICE)-unit-test
 
 test-watch: ## Run tests in watch mode for development
 	@echo "$(BLUE)Running tests in watch mode...$(NC)"
-	@docker compose -f docker-compose.dev.yml up -d
+	@docker compose --profile dev up -d qdrant-dev ollama-dev api-gateway-dev url-input-dev auth-dev scraper-dev analyzer-dev clustering-dev export-dev session-dev web-ui-dev monitoring-dev
 	@echo "$(GREEN)Development environment started. Tests will run on file changes.$(NC)"
 
 # ==================== COVERAGE ====================
@@ -77,7 +77,7 @@ dev: dev-up ## Start development environment (alias for dev-up)
 
 dev-up: ## Start development environment with hot-reload
 	@echo "$(BLUE)Starting development environment...$(NC)"
-	@docker compose -f docker-compose.dev.yml up -d
+	@docker compose --profile dev up -d qdrant-dev ollama-dev api-gateway-dev url-input-dev auth-dev scraper-dev analyzer-dev clustering-dev export-dev session-dev web-ui-dev monitoring-dev
 	@echo "$(GREEN)Development environment started!$(NC)"
 	@echo "$(YELLOW)Services available at:$(NC)"
 	@echo "  - API Gateway: http://localhost:8080"
@@ -87,20 +87,20 @@ dev-up: ## Start development environment with hot-reload
 
 dev-down: ## Stop development environment
 	@echo "$(BLUE)Stopping development environment...$(NC)"
-	@docker compose -f docker-compose.dev.yml down
+	@docker compose --profile dev down
 	@echo "$(GREEN)Development environment stopped$(NC)"
 
 dev-logs: ## View development environment logs
-	@docker compose -f docker-compose.dev.yml logs -f
+	@docker compose --profile dev logs -f
 
 dev-restart: ## Restart development environment
 	@echo "$(BLUE)Restarting development environment...$(NC)"
-	@docker compose -f docker-compose.dev.yml restart
+	@docker compose --profile dev restart
 	@echo "$(GREEN)Development environment restarted$(NC)"
 
 dev-rebuild: ## Rebuild and restart development environment
 	@echo "$(BLUE)Rebuilding development environment...$(NC)"
-	@docker compose -f docker-compose.dev.yml up -d --build
+	@docker compose --profile dev up -d --build qdrant-dev ollama-dev api-gateway-dev url-input-dev auth-dev scraper-dev analyzer-dev clustering-dev export-dev session-dev web-ui-dev monitoring-dev
 	@echo "$(GREEN)Development environment rebuilt$(NC)"
 
 # ==================== PRODUCTION ====================
@@ -173,8 +173,8 @@ quality: lint format-check type-check security ## Run all code quality checks
 
 clean: ## Clean up containers, volumes, and test artifacts
 	@echo "$(BLUE)Cleaning up...$(NC)"
-	@docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
-	@docker compose -f docker-compose.dev.yml down -v 2>/dev/null || true
+	@docker compose --profile test-unit --profile test-integration --profile test-e2e --profile test-performance --profile test-report down -v 2>/dev/null || true
+	@docker compose --profile dev down -v 2>/dev/null || true
 	@docker compose down -v 2>/dev/null || true
 	@rm -rf test-results coverage test-reports logs/*.log
 	@echo "$(GREEN)Cleanup complete$(NC)"

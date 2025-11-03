@@ -321,44 +321,15 @@ graph TB
 
 ### Automated Testing Pipeline
 
-```yaml
-# docker-compose.test.yml
-version: '3.8'
-services:
-  test-runner:
-    build: 
-      context: .
-      dockerfile: Dockerfile.test
-    volumes:
-      - ./tests:/app/tests
-      - ./coverage:/app/coverage
-    environment:
-      - TEST_ENV=containerized
-    depends_on:
-      - test-qdrant
-      - test-ollama
-    command: |
-      pytest tests/ 
-        --cov=src/ 
-        --cov-report=html:/app/coverage/html 
-        --cov-report=xml:/app/coverage/coverage.xml
-        --junit-xml=/app/coverage/junit.xml
-        -v
+The unified `docker-compose.yml` exposes dedicated profiles for every test stage:
 
-  test-qdrant:
-    image: qdrant/qdrant:latest
-    environment:
-      - QDRANT__SERVICE__HTTP_PORT=6333
-    tmpfs:
-      - /qdrant/storage
+- `test-unit` — spins up per-service unit runners (Python + Jest).
+- `test-integration` — provisions ephemeral Qdrant/Ollama plus integration runners.
+- `test-e2e` — boots API/UI facades and executes the pytest E2E suite.
+- `test-performance` — launches Locust against the test API gateway.
+- `test-report` — aggregates coverage artifacts when present.
 
-  test-ollama:
-    image: ollama/ollama:latest
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-    tmpfs:
-      - /root/.ollama
-```
+Use `docker compose --profile <name> up ...` or the convenience wrappers in `scripts/cli.py test` to run the desired workflows.
 
 #### Unit Tests
 - **Framework**: pytest with async support running in dedicated test containers
@@ -497,13 +468,13 @@ test(analyzer): add unit tests for embedding generation
 ### Service Logs
 ```bash
 # View all service logs
-./scripts/logs.sh
+./scripts/cli.py logs
 
 # View specific service logs
-./scripts/logs.sh url-input-service
+./scripts/cli.py logs url-input-service
 
 # Follow logs in real-time
-docker-compose logs -f url-input-service
+docker compose logs -f url-input-service
 ```
 
 ### Health Checks
@@ -612,14 +583,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Build test environment
-        run: docker-compose -f docker-compose.test.yml build
       - name: Run unit tests
-        run: docker-compose -f docker-compose.test.yml run test-runner
+        run: ./scripts/cli.py test --type unit
       - name: Run integration tests
-        run: docker-compose -f docker-compose.test.yml run integration-tests
-      - name: Generate coverage report
-        run: docker-compose -f docker-compose.test.yml run coverage-report
+        run: ./scripts/cli.py test --type integration
+      - name: Run e2e tests
+        run: ./scripts/cli.py test --type e2e
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
 
@@ -637,11 +606,11 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Build performance test environment
-        run: docker-compose -f docker-compose.perf.yml build
+        run: docker compose --profile test-performance up -d --build test-qdrant test-ollama test-api-gateway
       - name: Run load tests
-        run: docker-compose -f docker-compose.perf.yml run load-tests
-      - name: Generate performance report
-        run: docker-compose -f docker-compose.perf.yml run performance-report
+        run: docker compose --profile test-performance up --abort-on-container-exit load-test-runner
+      - name: Tear down performance environment
+        run: docker compose --profile test-performance down -v
 ```
 
 ## Risk Management

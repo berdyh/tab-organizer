@@ -48,14 +48,17 @@ jobs:
 
       - name: Run ${{ matrix.service }} unit tests
         run: |
-          docker compose -f docker compose.test.yml up --build --abort-on-container-exit ${{ matrix.service }}-unit-test
+          docker compose --profile test-unit up --build --abort-on-container-exit ${{ matrix.service }}-unit-test
 
       - name: Copy test results
         if: always()
         run: |
           mkdir -p test-results coverage
-          docker cp ${{ matrix.service }}-unit-test:/app/test-results/. ./test-results/ || true
-          docker cp ${{ matrix.service }}-unit-test:/app/coverage/. ./coverage/ || true
+          CONTAINER_ID=$(docker compose --profile test-unit ps -q ${{ matrix.service }}-unit-test)
+          if [ -n "$CONTAINER_ID" ]; then
+            docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
+            docker cp $CONTAINER_ID:/app/coverage/. ./coverage/ || true
+          fi
 
       - name: Upload test results
         if: always()
@@ -73,7 +76,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker compose -f docker compose.test.yml down -v
+        run: docker compose --profile test-unit down -v
 
   # ==================== WEB UI TESTS ====================
   web-ui-tests:
@@ -89,14 +92,17 @@ jobs:
 
       - name: Run Web UI tests
         run: |
-          docker compose -f docker compose.test.yml up --build --abort-on-container-exit web-ui-unit-test
+          docker compose --profile test-unit up --build --abort-on-container-exit web-ui-unit-test
 
       - name: Copy test results
         if: always()
         run: |
           mkdir -p test-results coverage
-          docker cp web-ui-unit-test:/app/test-results/. ./test-results/ || true
-          docker cp web-ui-unit-test:/app/coverage/. ./coverage/ || true
+          CONTAINER_ID=$(docker compose --profile test-unit ps -q web-ui-unit-test)
+          if [ -n "$CONTAINER_ID" ]; then
+            docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
+            docker cp $CONTAINER_ID:/app/coverage/. ./coverage/ || true
+          fi
 
       - name: Upload test results
         if: always()
@@ -114,7 +120,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker compose -f docker compose.test.yml down -v
+        run: docker compose --profile test-unit down -v
 
   # ==================== INTEGRATION TESTS ====================
   integration-tests:
@@ -143,18 +149,21 @@ jobs:
 
       - name: Start test infrastructure
         run: |
-          docker compose -f docker compose.test.yml up -d test-qdrant test-ollama
+          docker compose --profile test-integration up -d test-qdrant test-ollama
           sleep 10
 
       - name: Run ${{ matrix.service }} integration tests
         run: |
-          docker compose -f docker compose.test.yml up --build --abort-on-container-exit ${{ matrix.service }}-integration-test
+          docker compose --profile test-integration up --build --abort-on-container-exit ${{ matrix.service }}-integration-test
 
       - name: Copy test results
         if: always()
         run: |
           mkdir -p test-results
-          docker cp ${{ matrix.service }}-integration-test:/app/test-results/. ./test-results/ || true
+          CONTAINER_ID=$(docker compose --profile test-integration ps -q ${{ matrix.service }}-integration-test)
+          if [ -n "$CONTAINER_ID" ]; then
+            docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
+          fi
 
       - name: Upload test results
         if: always()
@@ -165,7 +174,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker compose -f docker compose.test.yml down -v
+        run: docker compose --profile test-integration down -v
 
   # ==================== END-TO-END TESTS ====================
   e2e-tests:
@@ -182,18 +191,21 @@ jobs:
 
       - name: Start test infrastructure
         run: |
-          docker compose -f docker compose.test.yml up -d test-qdrant test-ollama test-api-gateway test-web-ui
+          docker compose --profile test-e2e up -d --build test-qdrant test-ollama test-api-gateway test-web-ui
           sleep 20
 
       - name: Run E2E tests
         run: |
-          docker compose -f docker compose.test.yml up --build --abort-on-container-exit e2e-test-runner
+          docker compose --profile test-e2e up --build --abort-on-container-exit e2e-test-runner
 
       - name: Copy test results
         if: always()
         run: |
           mkdir -p test-results
-          docker cp e2e-test-runner:/app/test-results/. ./test-results/ || true
+          CONTAINER_ID=$(docker compose --profile test-e2e ps -q e2e-test-runner)
+          if [ -n "$CONTAINER_ID" ]; then
+            docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
+          fi
 
       - name: Upload test results
         if: always()
@@ -204,7 +216,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker compose -f docker compose.test.yml down -v
+        run: docker compose --profile test-e2e down -v
 
   # ==================== PERFORMANCE TESTS ====================
   performance-tests:
@@ -222,18 +234,21 @@ jobs:
 
       - name: Start test infrastructure
         run: |
-          docker compose -f docker compose.test.yml up -d test-qdrant test-ollama test-api-gateway
+          docker compose --profile test-performance up -d --build test-qdrant test-ollama test-api-gateway
           sleep 20
 
       - name: Run load tests
         run: |
-          docker compose -f docker compose.test.yml up --abort-on-container-exit load-test-runner
+          docker compose --profile test-performance up --abort-on-container-exit load-test-runner
 
       - name: Copy load test results
         if: always()
         run: |
           mkdir -p load-test-results
-          docker cp load-test-runner:/mnt/locust/. ./load-test-results/ || true
+          CONTAINER_ID=$(docker compose --profile test-performance ps -q load-test-runner)
+          if [ -n "$CONTAINER_ID" ]; then
+            docker cp $CONTAINER_ID:/mnt/locust/. ./load-test-results/ || true
+          fi
 
       - name: Upload load test results
         if: always()
@@ -244,7 +259,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker compose -f docker compose.test.yml down -v
+        run: docker compose --profile test-performance down -v
 
   # ==================== CODE QUALITY ====================
   code-quality:

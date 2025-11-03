@@ -27,8 +27,8 @@ Add `--skip-cleanup` to keep containers alive for debugging or `--skip-artifacts
 Invoke Docker Compose directly when you need to iterate on a single service:
 
 ```bash
-docker compose -f docker-compose.test.yml up --build analyzer-unit-test
-docker compose -f docker-compose.test.yml up --build clustering-integration-test
+docker compose --profile test-unit up --build --abort-on-container-exit analyzer-unit-test
+docker compose --profile test-integration up --build --abort-on-container-exit clustering-integration-test
 ```
 
 ## Artefacts

@@ -43,20 +43,20 @@ make coverage
 Start shared test infra and run a runner:
 
 ```bash
-docker compose -f docker-compose.test.yml up -d test-qdrant test-ollama
-docker compose -f docker-compose.test.yml up --build e2e-test-runner
+docker compose --profile test-e2e up -d --build test-qdrant test-ollama test-api-gateway test-web-ui
+docker compose --profile test-e2e up --build --abort-on-container-exit e2e-test-runner
 ```
 
 Run a single service test:
 
 ```bash
-docker compose -f docker-compose.test.yml up --build analyzer-unit-test
+docker compose --profile test-unit up --build --abort-on-container-exit analyzer-unit-test
 ```
 
 Bring down test infra (remove volumes for a clean slate):
 
 ```bash
-docker compose -f docker-compose.test.yml down -v
+docker compose --profile test-unit --profile test-integration --profile test-e2e --profile test-performance --profile test-report down -v
 ```
 
 ## CI snapshot
@@ -88,20 +88,20 @@ Reports live in `coverage/` and `test-reports/`.
 Interactive container shell and rerun tests:
 
 ```bash
-docker compose -f docker-compose.test.yml run --rm analyzer-unit-test /bin/bash
+docker compose --profile test-unit run --rm analyzer-unit-test /bin/bash
 pytest tests/ -k 'some_test' -vv --pdb
 ```
 
 Stream logs:
 
 ```bash
-docker compose -f docker-compose.test.yml logs -f analyzer-unit-test
+docker compose --profile test-unit logs -f analyzer-unit-test
 ```
 
 Remote debugging (dev compose exposes ports):
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d
+docker compose --profile dev up -d qdrant-dev ollama-dev api-gateway-dev
 # Attach your IDE to the service debugger port (e.g. 5682)
 ```
 
@@ -123,7 +123,7 @@ make test-unit
 3. Run quick integration smoke-tests:
 
 ```bash
-docker compose -f docker-compose.test.yml up -d test-qdrant test-ollama
+docker compose --profile test-integration up -d test-qdrant test-ollama
 ./scripts/cli.py test --type integration
 ```
 
@@ -200,7 +200,7 @@ docker compose -f docker-compose.test.yml up -d test-qdrant test-ollama
 
 3. **Clean up resources**:
    ```bash
-   docker-compose down -v  # Remove volumes
+   docker compose down -v  # Remove volumes
    docker system prune -f  # Clean up unused resources
    ```
 
@@ -261,7 +261,7 @@ docker compose -f docker-compose.test.yml up -d test-qdrant test-ollama
 
 ### Getting Help
 
-- Check logs: `docker-compose logs -f service-name`
+- Check logs: `docker compose logs -f service-name`
 - Inspect containers: `docker inspect container-name`
 - View test results: `cat test-results/*.xml`
 - Review coverage: `open coverage/service/index.html`

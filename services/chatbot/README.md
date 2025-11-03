@@ -70,7 +70,7 @@ python -m pytest services/chatbot/tests
 
 The tests register `sys.modules["main"]` to maintain compatibility with legacy import paths and mock patch locations. They also assert that URLs are validated as `AnyHttpUrl` and that patched `RobotFileParser` instances propagate correctly.
 
-Container-based test utilities now live in `docker/` (for example `docker/docker-compose.test.yml` and `docker/Dockerfile.test`). Coverage and test log artefacts produced by those flows are stored beneath `reports/`.
+Container-based test utilities now live in the root `docker-compose.yml` (see the `test-*` profiles). Coverage and test log artefacts produced by those flows are stored beneath `reports/`.
 
 ## Development Tips
 

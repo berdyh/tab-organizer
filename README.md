@@ -70,6 +70,20 @@ curl http://localhost:8080/health
 curl http://localhost:8091/visualization/health
 ```
 
+### Compose Profiles
+
+The single `docker-compose.yml` file powers every workflow via profiles:
+
+| Profile | Purpose | Example |
+|---------|---------|---------|
+| (default) | Production-style runtime stack | `./scripts/cli.py start` |
+| `dev` | Hot-reload development services | `docker compose --profile dev up -d qdrant-dev api-gateway-dev` |
+| `test-unit` | Per-service unit test runners | `./scripts/cli.py test --type unit` |
+| `test-integration` | Integration harness with ephemeral infra | `./scripts/cli.py test --type integration` |
+| `test-e2e` | End-to-end API/UI flow validation | `./scripts/cli.py test --type e2e` |
+| `test-performance` | Locust load testing setup | `./scripts/cli.py test --type performance` |
+| `test-report` | Coverage aggregation (invoked automatically) | `docker compose --profile test-report up test-report-aggregator` |
+
 ## Testing
 
 Test runners operate inside Docker to mirror production images.

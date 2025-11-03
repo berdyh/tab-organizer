@@ -20,7 +20,6 @@ from urllib import request, error as url_error
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_TRACK_FILE = PROJECT_ROOT / ".docker-compose-files"
 DEFAULT_COMPOSE_FILES = ["docker-compose.yml"]
-TEST_COMPOSE_FILE = "docker-compose.test.yml"
 
 
 def run_command(
@@ -126,6 +125,22 @@ def compose_arguments(files: Iterable[str]) -> List[str]:
     return args
 
 
+def build_compose_command(*args: str, profiles: Iterable[str] | None = None, files: Iterable[str] | None = None) -> List[str]:
+    """Construct a docker compose command with optional profile and file overrides."""
+    compose_files = list(files) if files is not None else list(DEFAULT_COMPOSE_FILES)
+    command: List[str] = ["docker", "compose"]
+
+    for compose_file in compose_files:
+        command.extend(["-f", compose_file])
+
+    if profiles:
+        for profile in profiles:
+            command.extend(["--profile", profile])
+
+    command.extend(args)
+    return command
+
+
 def require_docker() -> None:
     """Verify that docker and docker compose are available."""
     try:
@@ -148,7 +163,6 @@ def cmd_start(args: argparse.Namespace) -> None:
     use_local = detect_local_ollama() if ollama_mode == "auto" else ollama_mode == "local"
     if use_local:
         update_env_var("OLLAMA_URL", "http://localhost:11434")
-        compose_files.append("docker-compose.local-ollama.yml")
         print("Using locally running Ollama on http://localhost:11434")
     else:
         update_env_var("OLLAMA_URL", "http://ollama:11434")
@@ -246,14 +260,10 @@ INTEGRATION_TEST_SERVICES = [
 ]
 
 
-def compose_test_command(*args: str) -> List[str]:
-    """Build a docker compose command targeting the test compose file."""
-    return ["docker", "compose", "-f", TEST_COMPOSE_FILE, *args]
-
-
-def run_docker_compose(args: List[str]) -> None:
-    """Helper that wraps docker compose with project root cwd."""
-    run_command(args, cwd=PROJECT_ROOT)
+def run_compose(*args: str, profiles: Iterable[str] | None = None) -> None:
+    """Execute a docker compose command from the project root."""
+    command = build_compose_command(*args, profiles=profiles)
+    run_command(command, cwd=PROJECT_ROOT)
 
 
 def run_test_suite(test_type: str) -> None:
@@ -262,23 +272,39 @@ def run_test_suite(test_type: str) -> None:
 
     if test_type == "unit":
         for service in UNIT_TEST_SERVICES:
-            run_docker_compose(compose_test_command("up", "--build", "--abort-on-container-exit", service))
+            run_compose("up", "--build", "--abort-on-container-exit", service, profiles=["test-unit"])
     elif test_type == "integration":
-        run_docker_compose(compose_test_command("up", "-d", "test-qdrant", "test-ollama"))
-        run_docker_compose(
-            compose_test_command(
-                "up",
-                "--build",
-                "--abort-on-container-exit",
-                *INTEGRATION_TEST_SERVICES,
-            )
+        run_compose("up", "-d", "test-qdrant", "test-ollama", profiles=["test-integration"])
+        run_compose(
+            "up",
+            "--build",
+            "--abort-on-container-exit",
+            *INTEGRATION_TEST_SERVICES,
+            profiles=["test-integration"],
         )
     elif test_type == "e2e":
-        run_docker_compose(compose_test_command("up", "-d", "test-qdrant", "test-ollama", "test-api-gateway", "test-web-ui"))
-        run_docker_compose(compose_test_command("up", "--build", "--abort-on-container-exit", "e2e-test-runner"))
+        run_compose(
+            "up",
+            "-d",
+            "--build",
+            "test-qdrant",
+            "test-ollama",
+            "test-api-gateway",
+            "test-web-ui",
+            profiles=["test-e2e"],
+        )
+        run_compose("up", "--build", "--abort-on-container-exit", "e2e-test-runner", profiles=["test-e2e"])
     elif test_type == "performance":
-        run_docker_compose(compose_test_command("up", "-d", "test-qdrant", "test-ollama", "test-api-gateway"))
-        run_docker_compose(compose_test_command("up", "--abort-on-container-exit", "load-test-runner"))
+        run_compose(
+            "up",
+            "-d",
+            "--build",
+            "test-qdrant",
+            "test-ollama",
+            "test-api-gateway",
+            profiles=["test-performance"],
+        )
+        run_compose("up", "--abort-on-container-exit", "load-test-runner", profiles=["test-performance"])
     elif test_type == "all":
         run_test_suite("unit")
         run_test_suite("integration")
@@ -305,7 +331,7 @@ def collect_test_artifacts() -> None:
 
 def generate_test_reports() -> None:
     """Trigger report generation container."""
-    run_docker_compose(compose_test_command("up", "--build", "--no-deps", "test-report-aggregator"))
+    run_compose("up", "--abort-on-container-exit", "--no-deps", "test-report-aggregator", profiles=["test-report"])
 
 
 def cmd_test(args: argparse.Namespace) -> None:
@@ -327,7 +353,11 @@ def cmd_test(args: argparse.Namespace) -> None:
             generate_test_reports()
     finally:
         if not args.skip_cleanup:
-            run_docker_compose(compose_test_command("down", "-v"))
+            run_compose(
+                "down",
+                "-v",
+                profiles=["test-unit", "test-integration", "test-e2e", "test-performance", "test-report"],
+            )
 
 
 def cmd_models(_: argparse.Namespace) -> None:
