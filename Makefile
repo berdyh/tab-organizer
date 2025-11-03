@@ -23,23 +23,23 @@ test: test-unit ## Run all unit tests (default)
 
 test-unit: ## Run unit tests for all services
 	@echo "$(BLUE)Running unit tests...$(NC)"
-	@./scripts/run-all-tests.sh unit
+	@./scripts/cli.py test --type unit
 
 test-integration: ## Run integration tests for all services
 	@echo "$(BLUE)Running integration tests...$(NC)"
-	@./scripts/run-all-tests.sh integration
+	@./scripts/cli.py test --type integration
 
 test-e2e: ## Run end-to-end tests
 	@echo "$(BLUE)Running end-to-end tests...$(NC)"
-	@./scripts/run-all-tests.sh e2e
+	@./scripts/cli.py test --type e2e
 
 test-performance: ## Run performance and load tests
 	@echo "$(BLUE)Running performance tests...$(NC)"
-	@./scripts/run-all-tests.sh performance
+	@./scripts/cli.py test --type performance
 
 test-all: ## Run all tests (unit, integration, e2e)
 	@echo "$(BLUE)Running all tests...$(NC)"
-	@./scripts/run-all-tests.sh all
+	@./scripts/cli.py test --type all
 
 test-service: ## Run tests for specific service (usage: make test-service SERVICE=analyzer)
 	@if [ -z "$(SERVICE)" ]; then \
@@ -58,7 +58,7 @@ test-watch: ## Run tests in watch mode for development
 
 coverage: ## Generate coverage reports
 	@echo "$(BLUE)Generating coverage reports...$(NC)"
-	@./scripts/run-all-tests.sh unit
+	@./scripts/cli.py test --type unit
 	@echo "$(GREEN)Coverage reports generated in ./coverage$(NC)"
 	@echo "$(YELLOW)Open coverage/index.html to view reports$(NC)"
 
@@ -259,4 +259,4 @@ ci-local: ## Simulate CI pipeline locally
 	@echo "$(GREEN)CI pipeline complete$(NC)"
 
 ci-test: ## Run CI tests (used by GitHub Actions)
-	@./scripts/run-all-tests.sh all true true
+	@./scripts/cli.py test --type all

@@ -1,403 +1,151 @@
-# Testing Documentation
+# Testing — concise reference
 
-## Overview
+This file is the single source-of-truth for running and debugging the project's containerized tests. It merges the detailed setup summary into a concise, push-ready guide.
 
-This document describes the comprehensive containerized testing strategy for the Web Scraping, Analysis & Clustering Tool. All tests run in Docker containers to ensure consistency across different environments.
+## Quick start
 
-## Table of Contents
-
-1. [Test Architecture](#test-architecture)
-2. [Test Types](#test-types)
-3. [Running Tests](#running-tests)
-4. [CI/CD Pipeline](#cicd-pipeline)
-5. [Test Coverage](#test-coverage)
-6. [Debugging Tests](#debugging-tests)
-7. [Best Practices](#best-practices)
-
-## Test Architecture
-
-### Testing Pyramid
-
-```
-        /\
-       /  \
-      / E2E \
-     /--------\
-    /          \
-   / Integration\
-  /--------------\
- /                \
-/   Unit Tests     \
---------------------
-```
-
-- **Unit Tests (70%)**: Fast, isolated tests for individual components
-- **Integration Tests (20%)**: Tests for service interactions
-- **End-to-End Tests (10%)**: Complete workflow tests
-
-### Test Environments
-
-All tests run in isolated Docker containers with the following environments:
-
-1. **Unit Test Environment**: Minimal dependencies, mocked external services
-2. **Integration Test Environment**: Real Qdrant and Ollama instances
-3. **E2E Test Environment**: Full system deployment
-4. **Load Test Environment**: Performance and stress testing
-
-## Test Types
-
-### 1. Unit Tests
-
-Unit tests verify individual components in isolation.
-
-**Location**: Each service has its own test files (e.g., `test_*.py`)
-
-**Running Unit Tests**:
-```bash
-# Run all unit tests
-./scripts/run-all-tests.sh unit
-
-# Run unit tests for specific service
-docker-compose -f docker-compose.test.yml up --build analyzer-unit-test
-
-# Run with coverage
-docker-compose -f docker-compose.test.yml up --build analyzer-unit-test
-```
-
-**Example Services**:
-- `url-input-unit-test`: URL validation and parsing
-- `auth-unit-test`: Authentication detection
-- `scraper-unit-test`: Content extraction
-- `analyzer-unit-test`: Embedding generation
-- `clustering-unit-test`: UMAP and HDBSCAN
-- `export-unit-test`: Export formatting
-- `session-unit-test`: Session management
-- `visualization-unit-test`: Visualization generation
-- `api-gateway-unit-test`: API routing and middleware
-- `web-ui-unit-test`: React component tests
-
-### 2. Integration Tests
-
-Integration tests verify interactions between services and external dependencies.
-
-**Running Integration Tests**:
-```bash
-# Run all integration tests
-./scripts/run-all-tests.sh integration
-
-# Run integration tests for specific service
-docker-compose -f docker-compose.test.yml up -d test-qdrant test-ollama
-docker-compose -f docker-compose.test.yml up --build analyzer-integration-test
-```
-
-**Test Infrastructure**:
-- `test-qdrant`: Temporary Qdrant instance with tmpfs storage
-- `test-ollama`: Temporary Ollama instance with tmpfs storage
-
-**Example Tests**:
-- API communication between services
-- Database operations with Qdrant
-- Model interactions with Ollama
-- Authentication workflows
-- Data pipeline integration
-
-### 3. End-to-End Tests
-
-E2E tests verify complete user workflows from start to finish.
-
-**Running E2E Tests**:
-```bash
-# Run all E2E tests
-./scripts/run-all-tests.sh e2e
-
-# Run specific E2E test
-docker-compose -f docker-compose.test.yml up -d test-qdrant test-ollama test-api-gateway test-web-ui
-docker-compose -f docker-compose.test.yml up --build e2e-test-runner
-```
-
-**Test Scenarios**:
-- Complete URL submission workflow
-- Session creation and management
-- Search functionality
-- Export workflows
-- Error handling and recovery
-
-### 4. Performance Tests
-
-Load and performance tests verify system behavior under stress.
-
-**Running Performance Tests**:
-```bash
-# Run load tests
-./scripts/run-all-tests.sh performance
-
-# Run with custom parameters
-docker-compose -f docker-compose.test.yml up -d test-api-gateway
-docker run -v ./tests/load:/mnt/locust locustio/locust \
-  -f /mnt/locust/locustfile.py \
-  --host http://test-api-gateway:8080 \
-  --users 100 \
-  --spawn-rate 10 \
-  --run-time 5m \
-  --headless
-```
-
-**Metrics Collected**:
-- Response times (avg, min, max, percentiles)
-- Requests per second (RPS)
-- Error rates
-- Resource utilization
-
-## Running Tests
-
-### Quick Start
+Run the full pipeline:
 
 ```bash
-# Run all tests
-./scripts/run-all-tests.sh all
-
-# Run specific test type
-./scripts/run-all-tests.sh unit
-./scripts/run-all-tests.sh integration
-./scripts/run-all-tests.sh e2e
-./scripts/run-all-tests.sh performance
-
-# Run without cleanup (keep containers running)
-./scripts/run-all-tests.sh unit false false
+./scripts/cli.py test --type all
 ```
 
-### Manual Test Execution
+Run specific suites:
 
 ```bash
-# Start test infrastructure
-docker-compose -f docker-compose.test.yml up -d test-qdrant test-ollama
-
-# Run specific service tests
-docker-compose -f docker-compose.test.yml up --build analyzer-unit-test
-
-# View logs
-docker-compose -f docker-compose.test.yml logs -f analyzer-unit-test
-
-# Cleanup
-docker-compose -f docker-compose.test.yml down -v
+./scripts/cli.py test --type unit
+./scripts/cli.py test --type integration
+./scripts/cli.py test --type e2e
+./scripts/cli.py test --type performance
 ```
 
-### Development Workflow
+Useful Make targets:
 
 ```bash
-# Start development environment with hot-reload
-docker-compose -f docker-compose.dev.yml up -d
-
-# Run tests against development environment
-docker-compose -f docker-compose.test.yml up analyzer-unit-test
-
-# View service logs
-docker-compose -f docker-compose.dev.yml logs -f analyzer-dev
-
-# Stop development environment
-docker-compose -f docker-compose.dev.yml down
+make test          # unit (default)
+make test-all
+make test-integration
+make test-e2e
+make test-service SERVICE=analyzer
+make coverage
 ```
 
-## CI/CD Pipeline
+## What’s included
 
-### GitHub Actions Workflow
+- Unit tests (per-service, fast)
+- Integration tests (ephemeral Qdrant & Ollama)
+- E2E tests (full workflow, API + UI)
+- Performance tests (Locust)
+- JUnit + HTML reports (artifacts in CI)
 
-The CI/CD pipeline automatically runs on:
-- Push to `main` or `develop` branches
-- Pull requests to `main` or `develop`
-- Manual workflow dispatch
+## Running tests (compose)
 
-**Pipeline Stages**:
-
-1. **Unit Tests** (Parallel)
-   - All services tested in parallel
-   - Coverage reports generated
-   - Fast feedback (~5-10 minutes)
-
-2. **Code Quality**
-   - Linting (flake8, pylint)
-   - Formatting (black, isort)
-   - Type checking (mypy)
-   - Security scanning (bandit)
-
-3. **Integration Tests** (Parallel)
-   - Services tested with real dependencies
-   - Database and model interactions verified
-   - ~10-15 minutes
-
-4. **End-to-End Tests**
-   - Complete workflow validation
-   - UI and API testing
-   - ~15-20 minutes
-
-5. **Performance Tests** (Main branch only)
-   - Load testing
-   - Performance benchmarking
-   - ~10 minutes
-
-6. **Build & Push Images** (Main/Develop only)
-   - Docker images built and pushed
-   - Tagged with branch and SHA
-
-7. **Deployment**
-   - Staging: Automatic on develop
-   - Production: Automatic on main (after all tests pass)
-
-### Local CI Simulation
+Start shared test infra and run a runner:
 
 ```bash
-# Simulate CI pipeline locally
-./scripts/run-all-tests.sh all true true
-
-# Check code quality
-flake8 services/
-black --check services/
-isort --check-only services/
-mypy services/ --ignore-missing-imports
-bandit -r services/
+docker compose -f docker-compose.test.yml up -d test-qdrant test-ollama
+docker compose -f docker-compose.test.yml up --build e2e-test-runner
 ```
 
-## Test Coverage
-
-### Coverage Requirements
-
-| Service | Unit Tests | Integration Tests | E2E Tests | Target Coverage |
-|---------|------------|-------------------|-----------|-----------------|
-| API Gateway | ✅ | ✅ | ✅ | 95% |
-| URL Input | ✅ | ✅ | ✅ | 90% |
-| Authentication | ✅ | ✅ | ✅ | 95% |
-| Web Scraper | ✅ | ✅ | ✅ | 90% |
-| Content Analyzer | ✅ | ✅ | ✅ | 90% |
-| Clustering | ✅ | ✅ | ✅ | 85% |
-| Export | ✅ | ✅ | ✅ | 85% |
-| Session Manager | ✅ | ✅ | ✅ | 90% |
-| Model Manager | ✅ | ✅ | ✅ | 95% |
-| Web UI | ✅ | ✅ | ✅ | 80% |
-
-### Viewing Coverage Reports
+Run a single service test:
 
 ```bash
-# Generate coverage reports
-./scripts/run-all-tests.sh unit
-
-# View HTML reports
-open coverage/analyzer/index.html
-open coverage/clustering/index.html
-
-# View combined coverage
-open test-reports/coverage/index.html
+docker compose -f docker-compose.test.yml up --build analyzer-unit-test
 ```
 
-### Coverage Metrics
-
-Coverage reports include:
-- Line coverage
-- Branch coverage
-- Function coverage
-- Missing lines highlighted
-- Complexity metrics
-
-## Debugging Tests
-
-### Container Debugging
+Bring down test infra (remove volumes for a clean slate):
 
 ```bash
-# Run tests with interactive shell
-docker-compose -f docker-compose.test.yml run --rm analyzer-unit-test /bin/bash
-
-# Inside container, run tests manually
-pytest test_core_components.py -v --pdb
-
-# View container logs
-docker logs analyzer-unit-test -f
-
-# Inspect container
-docker exec -it analyzer-unit-test /bin/bash
+docker compose -f docker-compose.test.yml down -v
 ```
 
-### Remote Debugging
+## CI snapshot
 
-Development containers expose debugger ports:
+Pipeline stages (GitHub Actions):
+1. Unit tests (parallel) + coverage
+2. Code quality (lint, format, type, security)
+3. Integration tests
+4. End-to-end tests
+5. Performance tests (main)
+6. Build & push images (main/develop)
+7. Deploy (staging=develop, prod=main)
+
+CI produces JUnit XML and coverage artifacts per run.
+
+## Coverage targets
+
+Aim to meet these minimums before merging:
+
+- API Gateway, Auth, Model Manager: 95%
+- Analyzer, Scraper, URL Input, Session: 90%
+- Clustering, Export: 85%
+- Web UI: 80%
+
+Reports live in `coverage/` and `test-reports/`.
+
+## Debugging
+
+Interactive container shell and rerun tests:
 
 ```bash
-# Start development environment
-docker-compose -f docker-compose.dev.yml up -d analyzer-dev
-
-# Connect debugger to port 5682 (analyzer service)
-# Use your IDE's remote debugging feature
+docker compose -f docker-compose.test.yml run --rm analyzer-unit-test /bin/bash
+pytest tests/ -k 'some_test' -vv --pdb
 ```
 
-**VS Code launch.json example**:
-```json
-{
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "name": "Python: Remote Attach",
-      "type": "python",
-      "request": "attach",
-      "connect": {
-        "host": "localhost",
-        "port": 5682
-      },
-      "pathMappings": [
-        {
-          "localRoot": "${workspaceFolder}/services/analyzer",
-          "remoteRoot": "/app"
-        }
-      ]
-    }
-  ]
-}
+Stream logs:
+
+```bash
+docker compose -f docker-compose.test.yml logs -f analyzer-unit-test
 ```
 
-### Test Debugging Tips
+Remote debugging (dev compose exposes ports):
 
-1. **Use pytest markers**:
-   ```python
-   @pytest.mark.skip(reason="Debugging")
-   def test_something():
-       pass
-   ```
+```bash
+docker compose -f docker-compose.dev.yml up -d
+# Attach your IDE to the service debugger port (e.g. 5682)
+```
 
-2. **Run specific tests**:
-   ```bash
-   pytest test_file.py::TestClass::test_method -v
-   ```
+## Pre-push checklist
 
-3. **Use pytest-pdb**:
-   ```bash
-   pytest --pdb  # Drop into debugger on failure
-   pytest --pdbcls=IPython.terminal.debugger:Pdb  # Use IPython debugger
-   ```
+1. Lint & format:
 
-4. **Increase verbosity**:
-   ```bash
-   pytest -vv --tb=long
-   ```
+```bash
+make lint
+make format
+```
 
-5. **Capture output**:
-   ```bash
-   pytest -s  # Don't capture stdout
-   pytest --log-cli-level=DEBUG  # Show debug logs
-   ```
+2. Run unit tests:
 
-## Best Practices
+```bash
+make test-unit
+```
 
-### Writing Tests
+3. Run quick integration smoke-tests:
 
-1. **Follow AAA Pattern**:
-   ```python
-   def test_something():
-       # Arrange
-       data = setup_test_data()
-       
-       # Act
-       result = function_under_test(data)
-       
-       # Assert
-       assert result == expected_value
-   ```
+```bash
+docker compose -f docker-compose.test.yml up -d test-qdrant test-ollama
+./scripts/cli.py test --type integration
+```
+
+4. Confirm coverage artifacts exist in `coverage/`.
+
+## Troubleshooting (common)
+
+- Ollama not reachable: ensure local Ollama serves on `0.0.0.0` or launch with `./scripts/cli.py start --ollama-mode docker`.
+- Tests hang: check `docker compose ps` and service logs.
+- Out of disk: run `docker system df` and follow safe cleanup steps (avoid `--volumes` unless you intend to delete persistent data like `ollama_models`).
+
+## Artifacts & locations
+
+- Logs → `logs/`
+- JUnit XML → `test-results/`
+- Coverage HTML → `coverage/`
+- Aggregated reports → `test-reports/`
+
+## Notes
+
+- Keep this file concise; long operational details can remain in `docs/TESTING_SETUP_SUMMARY.md` until you remove it.
+- If you want, I will overwrite this file now and move the setup summary to `docs/ARCHIVE/`.
 
 2. **Use Fixtures**:
    ```python

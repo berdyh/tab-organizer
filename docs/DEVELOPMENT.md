@@ -212,22 +212,17 @@ cd web-scraping-clustering-tool
 
 2. **Set up environment**:
 ```bash
-cp .env.example .env
-# Edit .env with your configurations
+./scripts/init.py --provider ollama   # or --provider claude
 ```
 
 3. **Start development services**:
 ```bash
-./scripts/start.sh
+./scripts/cli.py start
 ```
 
 4. **Run tests**:
 ```bash
-# Run specific service tests
-docker run --rm url-input-service python run_tests.py
-
-# Run integration tests (when available)
-./scripts/test.sh
+./scripts/cli.py test --type unit
 ```
 
 ## Service Development Guidelines
@@ -568,13 +563,13 @@ curl http://localhost:8081/health
 ### Development Deployment
 ```bash
 # Start all services
-./scripts/start.sh
+./scripts/cli.py start
 
 # Stop all services
-./scripts/stop.sh
+./scripts/cli.py stop
 
 # Restart specific service
-docker-compose restart url-input-service
+docker compose restart url-input-service
 ```
 
 ### Production Considerations
