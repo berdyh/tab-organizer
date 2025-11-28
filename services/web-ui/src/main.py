@@ -2,9 +2,6 @@ import streamlit as st
 import requests
 import os
 import pandas as pd
-import importlib
-
-# Configuration
 from config import API_URL
 
 st.set_page_config(
@@ -26,10 +23,6 @@ if "session_id" in st.session_state:
 else:
     st.sidebar.warning("No Session Selected")
 
-# Display active provider in sidebar
-llm_prov = st.session_state.get("llm_provider", "ollama")
-st.sidebar.caption(f"LLM: {llm_prov}")
-
 def get_health_status():
     try:
         response = requests.get(f"{API_URL}/health")
@@ -41,19 +34,6 @@ def get_health_status():
 
 if page == "Dashboard":
     st.title("🕸️ Web Scraping & Clustering Tool")
-    st.markdown("""
-    Welcome to the Web Scraping & Clustering Tool. This system allows you to:
-
-    1.  **Configure AI** in Settings (Local, OpenAI, DeepSeek, Gemini).
-    2.  **Manage Sessions** to organize your work.
-    3.  **Input URLs** for scraping.
-    4.  **Monitor Scraping** progress.
-    5.  **Analyze Content** using AI models.
-    6.  **Cluster Content** to find meaningful groups.
-    7.  **Chat** with your scraped data.
-    8.  **Export** results to various formats.
-    """)
-
     status = get_health_status()
     if status:
         st.success("System is connected and healthy.")
@@ -69,14 +49,12 @@ elif page == "Services Health":
     st.title("❤️ Services Health")
     if st.button("Refresh Status"):
         st.rerun()
-
     try:
         response = requests.get(f"{API_URL}/services")
         if response.status_code == 200:
-            services = response.json()
-            st.table(pd.DataFrame(services).T)
+            st.json(response.json())
         else:
-            st.error("Failed to fetch services status.")
+            st.error("Failed.")
     except Exception as e:
         st.error(f"Error: {e}")
 
