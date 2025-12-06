@@ -21,17 +21,12 @@ app.add_middleware(
 
 # Mount sub-apps
 try:
-    # Scraper main.py was at services/scraper/main.py
-    # Now at services/browser-engine/app/scraper/main.py
     from app.scraper.main import app as scraper_app
-    app.mount("/", scraper_app) # Scraper usually owns the root or we mount it?
-    # Scraper endpoints were /scrape/batch etc.
-    # If we mount at root, it matches.
+    app.mount("/", scraper_app)
 except ImportError as e:
     logger.error("Failed to mount Scraper", error=str(e))
 
 try:
-    # Auth (Browser) main.py was at services/auth/main.py
     from app.auth.main import app as auth_app
     app.mount("/auth", auth_app)
 except ImportError as e:

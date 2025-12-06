@@ -1,20 +1,35 @@
-FROM python:3.9-slim
+FROM node:18-alpine
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Install curl for healthcheck
+RUN apk add --no-cache curl
 
-COPY requirements.txt .
+# Copy package files
+COPY package*.json ./
 
-RUN pip3 install -r requirements.txt
+# Install dependencies
+RUN npm install
 
+# Copy source code
 COPY . .
 
+# Accept build args for environment variables
+ARG REACT_APP_API_URL=http://localhost:8080
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+
+# Build the app
+RUN npm run build
+
+# Install serve to run the production build
+RUN npm install -g serve
+
+# Expose port
 EXPOSE 8089
 
-HEALTHCHECK CMD curl --fail http://localhost:8089/_stcore/health || exit 1
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8089/ || exit 1
 
-ENTRYPOINT ["streamlit", "run", "src/main.py", "--server.port=8089", "--server.address=0.0.0.0"]
+# Start the application
+CMD ["serve", "-s", "build", "-l", "8089"]
