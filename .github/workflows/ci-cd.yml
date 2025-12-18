@@ -16,19 +16,6 @@ jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service:
-          - url-input
-          - auth
-          - scraper
-          - analyzer
-          - clustering
-          - export
-          - session
-          - monitoring
-          - api-gateway
-      fail-fast: false
     
     steps:
       - name: Checkout code
@@ -41,20 +28,20 @@ jobs:
         uses: actions/cache@v3
         with:
           path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ matrix.service }}-${{ github.sha }}
+          key: ${{ runner.os }}-buildx-test-unit-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-buildx-${{ matrix.service }}-
+            ${{ runner.os }}-buildx-test-unit-
             ${{ runner.os }}-buildx-
 
-      - name: Run ${{ matrix.service }} unit tests
+      - name: Run unit tests
         run: |
-          docker compose --profile test-unit up --build --abort-on-container-exit ${{ matrix.service }}-unit-test
+          docker compose --profile test-unit up --build --abort-on-container-exit test-unit
 
       - name: Copy test results
         if: always()
         run: |
           mkdir -p test-results coverage
-          CONTAINER_ID=$(docker compose --profile test-unit ps -q ${{ matrix.service }}-unit-test)
+          CONTAINER_ID=$(docker compose --profile test-unit ps -q test-unit)
           if [ -n "$CONTAINER_ID" ]; then
             docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
             docker cp $CONTAINER_ID:/app/coverage/. ./coverage/ || true
@@ -64,14 +51,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ matrix.service }}-unit-test-results
+          name: unit-test-results
           path: test-results/
 
       - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ matrix.service }}-coverage
+          name: coverage-reports
           path: coverage/
 
       - name: Cleanup
@@ -90,55 +77,23 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
+      - name: Build Web UI test image
+        run: |
+          docker build -t web-ui-test -f services/web-ui/Dockerfile.test services/web-ui
+
       - name: Run Web UI tests
         run: |
-          docker compose --profile test-unit up --build --abort-on-container-exit web-ui-unit-test
-
-      - name: Copy test results
-        if: always()
-        run: |
           mkdir -p test-results coverage
-          CONTAINER_ID=$(docker compose --profile test-unit ps -q web-ui-unit-test)
-          if [ -n "$CONTAINER_ID" ]; then
-            docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
-            docker cp $CONTAINER_ID:/app/coverage/. ./coverage/ || true
-          fi
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v3
-        with:
-          name: web-ui-test-results
-          path: test-results/
-
-      - name: Upload coverage reports
-        if: always()
-        uses: actions/upload-artifact@v3
-        with:
-          name: web-ui-coverage
-          path: coverage/
-
-      - name: Cleanup
-        if: always()
-        run: docker compose --profile test-unit down -v
+          docker run --rm \
+            -v ${{ github.workspace }}/test-results:/app/test-results \
+            -v ${{ github.workspace }}/coverage:/app/coverage \
+            web-ui-test
 
   # ==================== INTEGRATION TESTS ====================
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
     needs: unit-tests
-    strategy:
-      matrix:
-        service:
-          - url-input
-          - auth
-          - scraper
-          - analyzer
-          - clustering
-          - export
-          - session
-          - api-gateway
-      fail-fast: false
     
     steps:
       - name: Checkout code
@@ -147,20 +102,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: Start test infrastructure
+      - name: Run integration tests
         run: |
-          docker compose --profile test-integration up -d test-qdrant test-ollama
-          sleep 10
-
-      - name: Run ${{ matrix.service }} integration tests
-        run: |
-          docker compose --profile test-integration up --build --abort-on-container-exit ${{ matrix.service }}-integration-test
+          docker compose --profile default --profile test-integration up --build --abort-on-container-exit test-integration
 
       - name: Copy test results
         if: always()
         run: |
           mkdir -p test-results
-          CONTAINER_ID=$(docker compose --profile test-integration ps -q ${{ matrix.service }}-integration-test)
+          CONTAINER_ID=$(docker compose --profile test-integration ps -q test-integration)
           if [ -n "$CONTAINER_ID" ]; then
             docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
           fi
@@ -169,7 +119,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ matrix.service }}-integration-test-results
+          name: integration-test-results
           path: test-results/
 
       - name: Cleanup
@@ -189,20 +139,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: Start test infrastructure
-        run: |
-          docker compose --profile test-e2e up -d --build test-qdrant test-ollama test-api-gateway test-web-ui
-          sleep 20
-
       - name: Run E2E tests
         run: |
-          docker compose --profile test-e2e up --build --abort-on-container-exit e2e-test-runner
+          docker compose --profile default --profile test-e2e up --build --abort-on-container-exit test-e2e
 
       - name: Copy test results
         if: always()
         run: |
           mkdir -p test-results
-          CONTAINER_ID=$(docker compose --profile test-e2e ps -q e2e-test-runner)
+          CONTAINER_ID=$(docker compose --profile test-e2e ps -q test-e2e)
           if [ -n "$CONTAINER_ID" ]; then
             docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
           fi
@@ -234,21 +179,25 @@ jobs:
 
       - name: Start test infrastructure
         run: |
-          docker compose --profile test-performance up -d --build test-qdrant test-ollama test-api-gateway
-          sleep 20
+          docker compose --profile default up -d
+          sleep 30
 
       - name: Run load tests
         run: |
-          docker compose --profile test-performance up --abort-on-container-exit load-test-runner
-
-      - name: Copy load test results
-        if: always()
-        run: |
           mkdir -p load-test-results
-          CONTAINER_ID=$(docker compose --profile test-performance ps -q load-test-runner)
-          if [ -n "$CONTAINER_ID" ]; then
-            docker cp $CONTAINER_ID:/mnt/locust/. ./load-test-results/ || true
-          fi
+          # Dynamically get the network name (it usually follows pattern 'dirname_networkname' or 'project_networkname')
+          # Here we try to detect it from the running 'backend-core' container
+          NETWORK_NAME=$(docker inspect tab-organizer-backend -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}')
+
+          docker run --network $NETWORK_NAME \
+            -v ${{ github.workspace }}/tests/load:/mnt/locust \
+            -v ${{ github.workspace }}/load-test-results:/mnt/results \
+            locustio/locust \
+            -f /mnt/locust/locustfile.py \
+            --headless -u 10 -r 1 -t 30s \
+            --csv /mnt/results/report \
+            --html /mnt/results/report.html \
+            --host http://backend-core:8080
 
       - name: Upload load test results
         if: always()
@@ -259,7 +208,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker compose --profile test-performance down -v
+        run: docker compose --profile default down -v
 
   # ==================== CODE QUALITY ====================
   code-quality:
@@ -281,28 +230,28 @@ jobs:
 
       - name: Run flake8
         run: |
-          flake8 services/ --count --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 services/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+          flake8 services/backend-core services/ai-engine services/browser-engine services/web-ui --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 services/backend-core services/ai-engine services/browser-engine services/web-ui --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
       - name: Run pylint
         run: |
-          find services/ -name "*.py" | xargs pylint --exit-zero
+          find services/backend-core services/ai-engine services/browser-engine services/web-ui -name "*.py" | xargs pylint --exit-zero
 
       - name: Check code formatting with black
         run: |
-          black --check services/
+          black --check services/backend-core services/ai-engine services/browser-engine services/web-ui
 
       - name: Check import sorting with isort
         run: |
-          isort --check-only services/
+          isort --check-only services/backend-core services/ai-engine services/browser-engine services/web-ui
 
       - name: Run mypy type checking
         run: |
-          mypy services/ --ignore-missing-imports || true
+          mypy services/backend-core services/ai-engine services/browser-engine services/web-ui --ignore-missing-imports || true
 
       - name: Run bandit security checks
         run: |
-          bandit -r services/ -f json -o bandit-report.json || true
+          bandit -r services/backend-core services/ai-engine services/browser-engine services/web-ui -f json -o bandit-report.json || true
 
       - name: Upload security report
         if: always()
@@ -382,16 +331,10 @@ jobs:
     strategy:
       matrix:
         service:
-          - api-gateway
-          - url-input
-          - auth
-          - scraper
-          - analyzer
-          - clustering
-          - export
-          - session
+          - backend-core
+          - ai-engine
+          - browser-engine
           - web-ui
-          - monitoring
     
     steps:
       - name: Checkout code
