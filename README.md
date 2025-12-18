@@ -1,117 +1,255 @@
-# Web Scraping & Clustering Tool
+# 🗂️ Tab Organizer
 
-A local-first microservice platform for collecting web content, analysing it with on-device AI models, clustering related information, and exporting results for downstream tooling.
+A **local-first web scraping and tab organization tool** that helps you analyze, cluster, and manage browser tabs using AI. The system scrapes tab URLs, generates embeddings, clusters related content, and provides chatbot-style discovery.
 
-## Highlights
+## ✨ Features
 
-- End-to-end scraping pipeline with authentication handling, PDF/HTML extraction, and deduplication.
-- Local AI inference via Ollama for embeddings, semantic search, clustering labels, and chatbot answers.
-- Real-time monitoring and visualization served directly from the monitoring service.
-- Modular Docker architecture with per-service unit/integration/e2e test coverage.
+- **URL Deduplication**: Set-like storage with automatic normalization and tracking parameter removal
+- **Parallel Authentication**: Non-blocking scraping that continues for public sites while waiting for credentials
+- **AI-Powered Clustering**: UMAP + HDBSCAN clustering with LLM-generated labels
+- **Multi-Provider AI**: Support for Ollama, OpenAI, Anthropic Claude, DeepSeek, and Google Gemini
+- **RAG Chatbot**: Query your scraped content using natural language
+- **Export Options**: Markdown, JSON, HTML, Obsidian-compatible formats
 
-## Service Topology
+## 🏗️ Architecture
 
-| Port | Service | Purpose |
-|------|---------|---------|
-| 8080 | API Gateway | Central entrypoint, routing, rate limiting, auth guard |
-| 8081 | URL Input | URL ingestion, validation, enrichment |
-| 8082 | Scraper | Scrapy workers, auth-aware fetching, content extraction |
-| 8083 | Analyzer | Embedding generation, model orchestration |
-| 8084 | Clustering | UMAP/HDBSCAN workflows, cluster insights |
-| 8085 | Export | Markdown, Notion, Word, Obsidian exports |
-| 8086 | Session | Persistent collections, incremental updates |
-| 8087 | Auth | Credential management, interactive login helpers |
-| 8088 | Chatbot | Conversational interface backed by embeddings |
-| 8089 | Web UI | React front-end |
-| 8091 | Monitoring | Metrics, alerting, visualization endpoints |
-| 6333 | Qdrant | Vector database |
-| 11434 | Ollama | Local LLM & embedding models |
-
-## Quick Start
-
-```bash
-git clone <repository-url>
-cd web-scraping-clustering-tool
-
-# One-time environment bootstrap (copies .env, selects provider/models, pulls images)
-./scripts/init.py --provider ollama
-
-# Start the full stack (auto-detects local vs Docker Ollama, builds if needed)
-./scripts/cli.py start --pull --build
+```
+┌─────────────────┐
+│  Web UI         │ ← Streamlit (Python)
+│  Port 8089      │
+└────────┬────────┘
+         │
+┌────────▼────────┐     ┌──────────────┐
+│  Backend Core   │────▶│ Qdrant       │
+│  Port 8080      │     │ Port 6333    │
+└────────┬────────┘     └──────────────┘
+         │
+    ┌────┴────┐
+    │         │
+┌───▼───┐ ┌───▼────┐
+│  AI   │ │Browser │
+│Engine │ │Engine  │
+│ 8090  │ │ 8083   │
+└───────┘ └────────┘
 ```
 
-### Provider & model selection
+### Services
 
-- **Ollama (default):** `./scripts/init.py --provider ollama --ollama-mode auto`
-  - `auto` picks a host Ollama if reachable, otherwise the Dockerised service and GPU/CPU profile automatically.
-  - Large model downloads (2–5 GB for LLMs, 90–700 MB for embeddings) occur on first start—allow time and disk space.
-- **Anthropic Claude:** `./scripts/init.py --provider claude --anthropic-key <token>`
-  - Prompts for Claude LLM/embedding models and disables Ollama containers.
-- Inspect curated recommendations any time with `./scripts/cli.py models`.
+| Service | Port | Description |
+|---------|------|-------------|
+| **Web UI** | 8089 | Streamlit-based user interface |
+| **Backend Core** | 8080 | API Gateway, session management, URL storage |
+| **AI Engine** | 8090 | Embeddings, clustering, chatbot |
+| **Browser Engine** | 8083 | Web scraping, auth detection |
+| **Qdrant** | 6333 | Vector database for embeddings |
+| **Ollama** | 11434 | Local LLM inference (optional) |
 
-Front-end lives at `http://localhost:8089`, API gateway at `http://localhost:8080`, and monitoring dashboards at `http://localhost:8091/visualization/dashboard`.
+## 🚀 Quick Start
 
-### Web UI tips
+### Prerequisites
 
-- The Search page now scopes results to the session selected in the new session picker; cluster filters refresh automatically when you switch sessions.
-- Export jobs validate destination requirements up front (e.g., Notion requires both an integration token and database ID) and surface success/errors inline.
+- Docker and Docker Compose
+- Python 3.11+ (for CLI)
 
-## Useful Commands
+### Installation
+
+1. **Clone and initialize**:
+   ```bash
+   git clone <repository>
+   cd tab-organizer
+   cp .env.example .env
+   ```
+
+2. **Configure AI provider** (edit `.env`):
+   ```bash
+   # For local models (default)
+   AI_PROVIDER=ollama
+   EMBEDDING_PROVIDER=ollama
+
+   # For cloud providers
+   AI_PROVIDER=anthropic
+   ANTHROPIC_API_KEY=sk-ant-...
+   EMBEDDING_PROVIDER=openai
+   OPENAI_API_KEY=sk-...
+   ```
+
+3. **Start services**:
+   ```bash
+   ./scripts/cli.py init --build --models
+   ./scripts/cli.py start -d
+   ```
+
+4. **Open the UI**: http://localhost:8089
+
+## 📖 Usage
+
+### CLI Commands
 
 ```bash
-./scripts/cli.py start            # Launch services (auto compose profiles)
-./scripts/cli.py stop             # Stop containers (add --volumes to prune data)
-./scripts/cli.py status           # Docker compose ps shortcut
-./scripts/cli.py logs [service]   # Tail combined or per-service logs
-./scripts/cli.py restart          # Stop + start with the same settings
+# Start/Stop
+./scripts/cli.py start -d          # Start in background
+./scripts/cli.py start --build     # Rebuild and start
+./scripts/cli.py stop              # Stop all services
+./scripts/cli.py stop -v           # Stop and remove volumes
 
-# Useful HTTP probes
-curl http://localhost:8080/health
-curl http://localhost:8091/visualization/health
+# Management
+./scripts/cli.py status            # Show service status
+./scripts/cli.py logs -f web-ui    # Follow logs
+./scripts/cli.py restart           # Restart services
+
+# Testing
+./scripts/cli.py test --type unit         # Run unit tests
+./scripts/cli.py test --type integration  # Run integration tests
+./scripts/cli.py test --type e2e          # Run end-to-end tests
+
+# Ollama Models
+./scripts/cli.py models --list            # List installed models
+./scripts/cli.py models --pull llama3.2   # Pull a model
+
+# Cleanup
+./scripts/cli.py clean             # Remove containers and volumes
+./scripts/cli.py clean --images    # Also remove images
 ```
 
-### Compose Profiles
+### Web UI Workflow
 
-The single `docker-compose.yml` file powers every workflow via profiles:
+1. **Add URLs**: Paste URLs or upload a file on the URL Input page
+2. **Scrape**: Start scraping on the Scraping page; handle auth requests as needed
+3. **Cluster**: Generate AI-powered clusters on the Clusters page
+4. **Chat**: Ask questions about your content on the Chatbot page
+5. **Export**: Download organized tabs in your preferred format
 
-| Profile | Purpose | Example |
-|---------|---------|---------|
-| (default) | Production-style runtime stack | `./scripts/cli.py start` |
-| `dev` | Hot-reload development services | `docker compose --profile dev up -d qdrant-dev api-gateway-dev` |
-| `test-unit` | Per-service unit test runners | `./scripts/cli.py test --type unit` |
-| `test-integration` | Integration harness with ephemeral infra | `./scripts/cli.py test --type integration` |
-| `test-e2e` | End-to-end API/UI flow validation | `./scripts/cli.py test --type e2e` |
-| `test-performance` | Locust load testing setup | `./scripts/cli.py test --type performance` |
-| `test-report` | Coverage aggregation (invoked automatically) | `docker compose --profile test-report up test-report-aggregator` |
+## 🔧 Configuration
 
-## Testing
+### Environment Variables
 
-Test runners operate inside Docker to mirror production images.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_PROVIDER` | `ollama` | LLM provider (ollama/openai/anthropic/deepseek/gemini) |
+| `EMBEDDING_PROVIDER` | `ollama` | Embedding provider |
+| `LLM_MODEL` | `llama3.2` | Model name for chat/analysis |
+| `EMBEDDING_MODEL` | `nomic-embed-text` | Model for embeddings |
+| `EMBEDDING_DIMENSIONS` | `768` | Embedding vector size |
+| `MAX_CONCURRENT_SCRAPES` | `10` | Parallel scraping limit |
+| `SCRAPE_TIMEOUT` | `30` | Scrape timeout in seconds |
+| `RESPECT_ROBOTS` | `true` | Honor robots.txt |
+
+### API Keys
+
+For cloud providers, set the appropriate API key:
 
 ```bash
-./scripts/cli.py test --type unit         # Unit suite (per service)
-./scripts/cli.py test --type integration  # Integration suite
-./scripts/cli.py test --type e2e          # End-to-end browser/API flows
-./scripts/cli.py test --type performance  # Locust load tests
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+DEEPSEEK_API_KEY=...
+GOOGLE_API_KEY=...
 ```
 
-Add `--skip-cleanup` to leave test services running or `--skip-artifacts` during quick iteration. Pytest reports land in `./test-results`, coverage in `./coverage`, and aggregated HTML in `./test-reports`.
+## 🧪 Testing
 
-## Monitoring & Visualization
+```bash
+# Run all tests
+./scripts/cli.py test
 
-The monitoring service (`services/monitoring`) now hosts:
+# Run specific test types
+./scripts/cli.py test --type unit
+./scripts/cli.py test --type integration
+./scripts/cli.py test --type e2e
 
-- `/visualization/health` – module status
-- `/visualization/architecture/diagram` – system graph JSON
-- `/visualization/pipeline/status` – pipeline statistics
-- `/visualization/dashboard` – browser dashboard with Mermaid diagrams
+# Run tests locally (without Docker)
+cd tests
+pip install -r requirements.txt
+pytest unit/ -v
+```
 
-These supersede the legacy standalone visualization container that previously lived under `services/visualization`.
+## 📁 Project Structure
 
-## Troubleshooting
+```
+tab-organizer/
+├── services/
+│   ├── backend-core/          # API Gateway & Session Management
+│   │   └── app/
+│   │       ├── api/           # FastAPI routes
+│   │       ├── url_input/     # URL store & deduplication
+│   │       ├── sessions/      # Session management
+│   │       └── export/        # Export functionality
+│   │
+│   ├── ai-engine/             # AI Services
+│   │   └── app/
+│   │       ├── core/          # LLM client
+│   │       ├── providers/     # Provider implementations
+│   │       ├── clustering/    # Clustering pipeline
+│   │       └── chatbot/       # RAG chatbot
+│   │
+│   ├── browser-engine/        # Web Scraping
+│   │   └── app/
+│   │       ├── auth/          # Auth detection & queue
+│   │       ├── scraper/       # Scraping engine
+│   │       └── extraction/    # Content extraction
+│   │
+│   └── web-ui/                # Streamlit UI
+│       └── src/
+│           ├── api/           # API client
+│           └── pages/         # UI pages
+│
+├── scripts/
+│   └── cli.py                 # Management CLI
+│
+├── tests/
+│   ├── unit/                  # Unit tests
+│   ├── integration/           # Integration tests
+│   └── e2e/                   # End-to-end tests
+│
+├── templates/                 # Export templates
+├── docker-compose.yml
+├── .env.example
+└── README.md
+```
 
-- **GPU detection issues:** Analyzer mocks CUDA calls for unit tests; ensure `torch.cuda.is_available()` is correctly mocked to a `bool` when writing tests.
-- **Async monitoring tests skipped:** The monitoring image bundles `pytest-asyncio`; if you see skips, rebuild the test image (`./scripts/cli.py test --type unit`).
-- **PyPDF2 deprecation warning:** The scraper still relies on PyPDF2 for backwards compatibility. Migration to `pypdf` is tracked separately; warnings are safe to ignore for now.
+## 🔌 API Reference
 
-Feel free to adapt individual services, but keep ingress via the API Gateway so the monitoring and visualization layers retain a consistent view of the system.
+### Backend Core (Port 8080)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/sessions` | POST | Create session |
+| `/api/v1/sessions` | GET | List sessions |
+| `/api/v1/sessions/{id}` | GET | Get session stats |
+| `/api/v1/urls` | POST | Add URLs |
+| `/api/v1/urls/{session_id}` | GET | Get URLs |
+| `/api/v1/scrape` | POST | Start scraping |
+| `/api/v1/cluster` | POST | Start clustering |
+| `/api/v1/export` | POST | Export session |
+
+### AI Engine (Port 8090)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/embed` | POST | Generate embeddings |
+| `/cluster` | POST | Cluster URLs |
+| `/chat` | POST | Chat with content |
+| `/search` | POST | Search content |
+| `/providers` | GET | Get provider info |
+| `/providers/switch` | POST | Switch providers |
+
+### Browser Engine (Port 8083)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/scrape` | POST | Start batch scraping |
+| `/scrape/single` | POST | Scrape single URL |
+| `/scrape/status/{session_id}` | GET | Get scrape status |
+| `/auth/pending` | GET | Get pending auth |
+| `/auth/credentials` | POST | Submit credentials |
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests: `./scripts/cli.py test`
+5. Submit a pull request
+
+## 📄 License
+
+MIT License - see LICENSE file for details.

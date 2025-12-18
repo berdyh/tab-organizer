@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ session.name }} - Tab Organizer Export</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            background: #f5f5f5;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #1a1a1a;
+            margin-bottom: 10px;
+            font-size: 2rem;
+        }
+        
+        .meta {
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .stats {
+            display: flex;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        .stat {
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #2563eb;
+        }
+        
+        .stat-label {
+            font-size: 0.85rem;
+            color: #666;
+        }
+        
+        h2 {
+            color: #1a1a1a;
+            margin: 30px 0 15px;
+            font-size: 1.4rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        h2::before {
+            content: "📁";
+        }
+        
+        .cluster {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .cluster-name {
+            font-weight: 600;
+            color: #1a1a1a;
+            margin-bottom: 10px;
+        }
+        
+        .url-list {
+            list-style: none;
+        }
+        
+        .url-item {
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .url-item:last-child {
+            border-bottom: none;
+        }
+        
+        .url-item a {
+            color: #2563eb;
+            text-decoration: none;
+            word-break: break-all;
+        }
+        
+        .url-item a:hover {
+            text-decoration: underline;
+        }
+        
+        .url-domain {
+            font-size: 0.8rem;
+            color: #888;
+            margin-left: 10px;
+        }
+        
+        footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            text-align: center;
+            color: #888;
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🗂️ {{ session.name }}</h1>
+        <p class="meta">
+            Exported: {{ export_time.strftime('%Y-%m-%d %H:%M UTC') }}<br>
+            Session ID: {{ session.id[:8] }}...
+        </p>
+        
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value">{{ session.url_store.count() }}</div>
+                <div class="stat-label">Total URLs</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{{ session.clusters|length }}</div>
+                <div class="stat-label">Clusters</div>
+            </div>
+        </div>
+        
+        {% if session.clusters %}
+            {% for cluster in session.clusters %}
+            <div class="cluster">
+                <h2>{{ cluster.name or 'Cluster ' ~ loop.index }}</h2>
+                <ul class="url-list">
+                    {% for url_data in cluster.urls %}
+                    <li class="url-item">
+                        {% if url_data is mapping %}
+                        <a href="{{ url_data.url }}" target="_blank">{{ url_data.title or url_data.url }}</a>
+                        {% else %}
+                        <a href="{{ url_data }}" target="_blank">{{ url_data }}</a>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endfor %}
+        {% else %}
+            <h2>All URLs</h2>
+            <ul class="url-list">
+                {% for record in session.url_store.get_all() %}
+                <li class="url-item">
+                    <a href="{{ record.original }}" target="_blank">
+                        {{ record.metadata.get('title', record.original) }}
+                    </a>
+                </li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+        
+        <footer>
+            Generated by Tab Organizer
+        </footer>
+    </div>
+</body>
+</html>

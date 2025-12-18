@@ -1,1245 +1,194 @@
+version: '3.8'
+
 services:
-  # ==================== RUNTIME STACK ====================
-  qdrant:
-    image: qdrant/qdrant:v1.7.4
-    container_name: qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_storage:/qdrant/storage
-    environment:
-      - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__SERVICE__GRPC_PORT=6334
-      - QDRANT__LOG_LEVEL=${QDRANT_LOG_LEVEL:-INFO}
-    healthcheck:
-      test:
-        - CMD
-        - bash
-        - -lc
-        - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && head -n1 <&3 | grep 200'
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    networks:
-      - app
-    restart: unless-stopped
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_ORIGINS=*
-    volumes:
-      - ollama_models:/root/.ollama
-    networks:
-      - app
-    restart: unless-stopped
-    profiles:
-      - cpu
-      - gpu
-
-  api-gateway:
+  # Backend Core - API Gateway and Session Management
+  backend-core:
     build:
-      context: ./services/api-gateway
+      context: ./services/backend-core
       dockerfile: Dockerfile
-    container_name: api-gateway
+    container_name: tab-organizer-backend
     ports:
       - "8080:8080"
     environment:
-      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
-      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - AI_ENGINE_URL=http://ai-engine:8090
+      - BROWSER_ENGINE_URL=http://browser-engine:8083
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
     depends_on:
-      qdrant:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+      - ai-engine
+      - browser-engine
+      - qdrant
     networks:
-      - app
+      - tab-organizer-network
     restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    profiles:
+      - default
+      - dev
 
-  url-input-service:
+  # AI Engine - Embeddings, Clustering, Chat
+  ai-engine:
     build:
-      context: ./services/url-input
+      context: ./services/ai-engine
       dockerfile: Dockerfile
-    container_name: url-input-service
+    container_name: tab-organizer-ai
     ports:
-      - "8081:8081"
+      - "8090:8090"
     environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - AI_PROVIDER=${AI_PROVIDER:-ollama}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-ollama}
+      - LLM_MODEL=${LLM_MODEL:-llama3.2}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-768}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+    depends_on:
+      - qdrant
+      - ollama
     networks:
-      - app
+      - tab-organizer-network
     restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
+    profiles:
+      - default
+      - dev
 
-  auth-service:
+  # Browser Engine - Scraping and Auth
+  browser-engine:
     build:
-      context: ./services/auth
+      context: ./services/browser-engine
       dockerfile: Dockerfile
-    container_name: auth-service
-    ports:
-      - "8082:8082"
-    environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - app
-    restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-      - auth_credentials:/app/credentials
-
-  scraper-service:
-    build:
-      context: ./services/scraper
-      dockerfile: Dockerfile
-    container_name: scraper-service
+    container_name: tab-organizer-browser
     ports:
       - "8083:8083"
     environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - AUTH_SERVICE_URL=${AUTH_SERVICE_URL:-http://auth-service:8082}
-    depends_on:
-      - auth-service
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - BACKEND_URL=http://backend-core:8080
+      - AI_ENGINE_URL=http://ai-engine:8090
+      - MAX_CONCURRENT_SCRAPES=${MAX_CONCURRENT_SCRAPES:-10}
+      - SCRAPE_TIMEOUT=${SCRAPE_TIMEOUT:-30}
+      - RESPECT_ROBOTS=${RESPECT_ROBOTS:-true}
+      - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY:-}
     networks:
-      - app
+      - tab-organizer-network
     restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
+    profiles:
+      - default
+      - dev
 
-  analyzer-service:
-    build:
-      context: ./services/analyzer
-      dockerfile: Dockerfile
-    container_name: analyzer-service
-    ports:
-      - "8084:8084"
-    environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
-      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-    depends_on:
-      qdrant:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - app
-    restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  clustering-service:
-    build:
-      context: ./services/clustering
-      dockerfile: Dockerfile
-    container_name: clustering-service
-    ports:
-      - "8085:8085"
-    environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - QDRANT_HOST=${QDRANT_HOST:-qdrant}
-      - QDRANT_PORT=${QDRANT_PORT:-6333}
-    depends_on:
-      - qdrant
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - app
-    restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  export-service:
-    build:
-      context: ./services/export
-      dockerfile: Dockerfile
-    container_name: export-service
-    ports:
-      - "8086:8086"
-    environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
-    depends_on:
-      qdrant:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - app
-    restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-
-  session-service:
-    build:
-      context: ./services/session
-      dockerfile: Dockerfile
-    container_name: session-service
-    ports:
-      - "8087:8087"
-    environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
-    depends_on:
-      qdrant:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8087/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - app
-    restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-
+  # Web UI - Streamlit
   web-ui:
     build:
       context: ./services/web-ui
       dockerfile: Dockerfile
-      args:
-        - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8080}
-    container_name: web-ui
+    container_name: tab-organizer-ui
     ports:
       - "8089:8089"
     environment:
-      - NODE_ENV=${NODE_ENV:-production}
+      - BACKEND_URL=http://backend-core:8080
+      - AI_ENGINE_URL=http://ai-engine:8090
+      - BROWSER_ENGINE_URL=http://browser-engine:8083
     depends_on:
-      api-gateway:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8089/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+      - backend-core
     networks:
-      - app
+      - tab-organizer-network
     restart: unless-stopped
-
-  chatbot-service:
-    build:
-      context: ./services/chatbot
-      dockerfile: Dockerfile
-    container_name: chatbot-service
-    ports:
-      - "8092:8092"
-    environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - QDRANT_HOST=${QDRANT_HOST:-qdrant}
-      - QDRANT_PORT=${QDRANT_PORT:-6333}
-      - OLLAMA_BASE_URL=${OLLAMA_URL:-http://ollama:11434}
-      - DEFAULT_LLM_MODEL=${OLLAMA_MODEL:-phi4}
-      - DEFAULT_EMBEDDING_MODEL=${OLLAMA_EMBEDDING_MODEL:-mxbai-embed-large}
-    depends_on:
-      qdrant:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - app
-    restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  monitoring-service:
-    build:
-      context: ./services/monitoring
-      dockerfile: Dockerfile
-    container_name: monitoring-service
-    ports:
-      - "8091:8091"
-    environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - METRICS_COLLECTION_INTERVAL=${METRICS_COLLECTION_INTERVAL:-30}
-      - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-30}
-      - PERFORMANCE_TRACKING_ENABLED=${PERFORMANCE_TRACKING_ENABLED:-true}
-      - DISTRIBUTED_TRACING_ENABLED=${DISTRIBUTED_TRACING_ENABLED:-true}
-      - DOCKER_SOCKET=unix://var/run/docker.sock
-    volumes:
-      - ./logs:/app/logs
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./monitoring-data:/app/data
-    depends_on:
-      api-gateway:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - app
-    restart: unless-stopped
-
-  # ==================== DEVELOPMENT PROFILES ====================
-  qdrant-dev:
-    image: qdrant/qdrant:v1.7.4
-    container_name: qdrant-dev
-    ports:
-      - "6333"
-      - "6334"
-    volumes:
-      - qdrant_dev_storage:/qdrant/storage
-    environment:
-      - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__SERVICE__GRPC_PORT=6334
-      - QDRANT__LOG_LEVEL=DEBUG
-    networks:
-      - dev
     profiles:
+      - default
       - dev
 
-  ollama-dev:
+  # Qdrant - Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: tab-organizer-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - tab-organizer-network
+    restart: unless-stopped
+    profiles:
+      - default
+      - dev
+
+  # Ollama - Local LLM (optional)
+  ollama:
     image: ollama/ollama:latest
-    container_name: ollama-dev
+    container_name: tab-organizer-ollama
     ports:
-      - "11434"
+      - "11434:11434"
     volumes:
-      - ollama_dev_models:/root/.ollama
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_ORIGINS=*
-      - OLLAMA_DEBUG=1
+      - ollama-data:/root/.ollama
     networks:
-      - dev
+      - tab-organizer-network
+    restart: unless-stopped
     profiles:
+      - default
       - dev
 
-  api-gateway-dev:
+  # Test services
+  test-unit:
     build:
-      context: ./services/api-gateway
-      dockerfile: Dockerfile
-      target: development
-    container_name: api-gateway-dev
-    ports:
-      - "8080"
-      - "5678:5678"
-    environment:
-      - QDRANT_URL=http://qdrant-dev:6333
-      - OLLAMA_URL=http://ollama-dev:11434
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - PYTHONUNBUFFERED=1
-      - WATCHDOG_ENABLED=true
+      context: .
+      dockerfile: tests/Dockerfile.test
+    container_name: tab-organizer-test-unit
+    command: pytest tests/unit -v
     volumes:
-      - ./services/api-gateway:/app
-      - ./logs:/app/logs
-    depends_on:
-      - qdrant-dev
-      - ollama-dev
+      - ./tests:/app/tests
+      - ./services:/app/services
     networks:
-      - dev
-    command: uvicorn main:app --host 0.0.0.0 --port 8080 --reload
-    profiles:
-      - dev
-
-  url-input-dev:
-    build:
-      context: ./services/url-input
-      dockerfile: Dockerfile
-      target: development
-    container_name: url-input-dev
-    ports:
-      - "8081"
-      - "5679:5678"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/url-input:/app
-      - ./logs:/app/logs
-    networks:
-      - dev
-    command: uvicorn main:app --host 0.0.0.0 --port 8081 --reload
-    profiles:
-      - dev
-
-  auth-dev:
-    build:
-      context: ./services/auth
-      dockerfile: Dockerfile
-      target: development
-    container_name: auth-dev
-    ports:
-      - "8082"
-      - "5680:5678"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/auth:/app
-      - ./logs:/app/logs
-      - auth_dev_credentials:/app/credentials
-    networks:
-      - dev
-    command: uvicorn main:app --host 0.0.0.0 --port 8082 --reload
-    profiles:
-      - dev
-
-  scraper-dev:
-    build:
-      context: ./services/scraper
-      dockerfile: Dockerfile
-      target: development
-    container_name: scraper-dev
-    ports:
-      - "8083"
-      - "5681:5678"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - AUTH_SERVICE_URL=http://auth-dev:8082
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/scraper:/app
-      - ./logs:/app/logs
-    depends_on:
-      - auth-dev
-    networks:
-      - dev
-    command: uvicorn main:app --host 0.0.0.0 --port 8083 --reload
-    profiles:
-      - dev
-
-  analyzer-dev:
-    build:
-      context: ./services/analyzer
-      dockerfile: Dockerfile
-      target: development
-    container_name: analyzer-dev
-    ports:
-      - "8084"
-      - "5682:5678"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - QDRANT_URL=http://qdrant-dev:6333
-      - OLLAMA_URL=http://ollama-dev:11434
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/analyzer:/app
-      - ./logs:/app/logs
-      - ./config:/app/config
-    depends_on:
-      - qdrant-dev
-      - ollama-dev
-    networks:
-      - dev
-    command: uvicorn main:app --host 0.0.0.0 --port 8084 --reload
-    profiles:
-      - dev
-
-  clustering-dev:
-    build:
-      context: ./services/clustering
-      dockerfile: Dockerfile
-      target: development
-    container_name: clustering-dev
-    ports:
-      - "8085"
-      - "5683:5678"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - QDRANT_HOST=qdrant-dev
-      - QDRANT_PORT=6333
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/clustering:/app
-      - ./logs:/app/logs
-    depends_on:
-      - qdrant-dev
-    networks:
-      - dev
-    command: uvicorn main:app --host 0.0.0.0 --port 8085 --reload
-    profiles:
-      - dev
-
-  export-dev:
-    build:
-      context: ./services/export
-      dockerfile: Dockerfile
-      target: development
-    container_name: export-dev
-    ports:
-      - "8086"
-      - "5684:5678"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - QDRANT_URL=http://qdrant-dev:6333
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/export:/app
-      - ./logs:/app/logs
-    depends_on:
-      - qdrant-dev
-    networks:
-      - dev
-    command: uvicorn main:app --host 0.0.0.0 --port 8086 --reload
-    profiles:
-      - dev
-
-  session-dev:
-    build:
-      context: ./services/session
-      dockerfile: Dockerfile
-      target: development
-    container_name: session-dev
-    ports:
-      - "8087"
-      - "5685:5678"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - QDRANT_URL=http://qdrant-dev:6333
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ./services/session:/app
-      - ./logs:/app/logs
-    depends_on:
-      - qdrant-dev
-    networks:
-      - dev
-    command: uvicorn main:app --host 0.0.0.0 --port 8087 --reload
-    profiles:
-      - dev
-
-  web-ui-dev:
-    build:
-      context: ./services/web-ui
-      dockerfile: Dockerfile
-      target: development
-    container_name: web-ui-dev
-    ports:
-      - "8090:8090"
-    environment:
-      - NODE_ENV=development
-      - BROWSER=none
-      - HOST=0.0.0.0
-      - PORT=8090
-      - REACT_APP_API_URL=http://localhost:8080
-    volumes:
-      - ./services/web-ui:/app
-      - /app/node_modules
-    depends_on:
-      - api-gateway-dev
-    command: npm run start
-    networks:
-      - dev
-    profiles:
-      - dev
-
-  monitoring-dev:
-    build:
-      context: ./services/monitoring
-      dockerfile: Dockerfile
-      target: development
-    container_name: monitoring-dev
-    ports:
-      - "8091"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - ENVIRONMENT=development
-      - METRICS_COLLECTION_INTERVAL=10
-      - HEALTH_CHECK_INTERVAL=10
-      - PERFORMANCE_TRACKING_ENABLED=true
-      - DISTRIBUTED_TRACING_ENABLED=true
-      - DOCKER_SOCKET=unix://var/run/docker.sock
-    volumes:
-      - ./services/monitoring:/app
-      - ./logs:/app/logs
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      - api-gateway-dev
-    networks:
-      - dev
-    command: uvicorn main:app --host 0.0.0.0 --port 8091 --reload
-    profiles:
-      - dev
-
-  # ==================== TEST PROFILES ====================
-  url-input-unit-test:
-    build:
-      context: ./services/url-input
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=unit
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.url-input
-    volumes:
-      - ./services/url-input:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/unit -v --tb=short \
-      --cov=. --cov-report=html:/app/coverage/url-input \
-      --cov-report=xml:/app/coverage/url-input.xml \
-      --junit-xml=/app/test-results/url-input-unit.xml"
-    networks:
-      - test
+      - tab-organizer-network
     profiles:
       - test-unit
 
-  auth-unit-test:
+  test-integration:
     build:
-      context: ./services/auth
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: tests/Dockerfile.test
+    container_name: tab-organizer-test-integration
+    command: pytest tests/integration -v
     environment:
-      - TESTING=true
-      - TEST_TYPE=unit
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.auth
-    volumes:
-      - ./services/auth:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/unit -v --tb=short \
-      --cov=. --cov-report=html:/app/coverage/auth \
-      --cov-report=xml:/app/coverage/auth.xml \
-      --junit-xml=/app/test-results/auth-unit.xml"
-    networks:
-      - test
-    profiles:
-      - test-unit
-
-  scraper-unit-test:
-    build:
-      context: ./services/scraper
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=unit
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.scraper
-    volumes:
-      - ./services/scraper:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/unit -v --tb=short \
-      --cov=. --cov-report=html:/app/coverage/scraper \
-      --cov-report=xml:/app/coverage/scraper.xml \
-      --junit-xml=/app/test-results/scraper-unit.xml"
-    networks:
-      - test
-    profiles:
-      - test-unit
-
-  analyzer-unit-test:
-    build:
-      context: ./services/analyzer
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=unit
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.analyzer
-    volumes:
-      - ./services/analyzer:/app/test_src
-      - ./config:/app/config
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/unit -v --tb=short \
-      --cov=. --cov-report=html:/app/coverage/analyzer \
-      --cov-report=xml:/app/coverage/analyzer.xml \
-      --junit-xml=/app/test-results/analyzer-unit.xml"
-    networks:
-      - test
-    profiles:
-      - test-unit
-
-  clustering-unit-test:
-    build:
-      context: ./services/clustering
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=unit
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.clustering
-    volumes:
-      - ./services/clustering:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/unit -v --tb=short \
-      --cov=. --cov-report=html:/app/coverage/clustering \
-      --cov-report=xml:/app/coverage/clustering.xml \
-      --junit-xml=/app/test-results/clustering-unit.xml"
-    networks:
-      - test
-    profiles:
-      - test-unit
-
-  export-unit-test:
-    build:
-      context: ./services/export
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=unit
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.export
-    volumes:
-      - ./services/export:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-      - export_test_templates:/app/templates
-    command: >
-      sh -c "python -m pytest tests/unit -v --tb=short \
-      --cov=. --cov-report=html:/app/coverage/export \
-      --cov-report=xml:/app/coverage/export.xml \
-      --junit-xml=/app/test-results/export-unit.xml"
-    networks:
-      - test
-    profiles:
-      - test-unit
-
-  session-unit-test:
-    build:
-      context: ./services/session
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=unit
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.session
-    volumes:
-      - ./services/session:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/unit -v --tb=short \
-      --cov=. --cov-report=html:/app/coverage/session \
-      --cov-report=xml:/app/coverage/session.xml \
-      --junit-xml=/app/test-results/session-unit.xml"
-    networks:
-      - test
-    profiles:
-      - test-unit
-
-  monitoring-unit-test:
-    build:
-      context: ./services/monitoring
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=unit
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.monitoring
-    volumes:
-      - ./services/monitoring:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/unit -v --tb=short \
-      --cov=. --cov-report=html:/app/coverage/monitoring \
-      --cov-report=xml:/app/coverage/monitoring.xml \
-      --junit-xml=/app/test-results/monitoring-unit.xml"
-    networks:
-      - test
-    profiles:
-      - test-unit
-
-  api-gateway-unit-test:
-    build:
-      context: ./services/api-gateway
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=unit
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - COVERAGE_FILE=/app/coverage/.coverage.api_gateway
-    volumes:
-      - ./services/api-gateway:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/unit -v --tb=short \
-      --cov=. --cov-report=html:/app/coverage/api-gateway \
-      --cov-report=xml:/app/coverage/api-gateway.xml \
-      --junit-xml=/app/test-results/api-gateway-unit.xml"
-    networks:
-      - test
-    profiles:
-      - test-unit
-
-  web-ui-unit-test:
-    build:
-      context: ./services/web-ui
-      dockerfile: Dockerfile.test
-    environment:
-      - CI=true
-      - NODE_ENV=test
-      - COVERAGE_FILE=/app/coverage/.coverage.web-ui
-    volumes:
-      - ./services/web-ui/src:/app/src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "npm test -- --coverage --watchAll=false --silent \
-      --coverageDirectory=/app/coverage/web-ui \
-      --testResultsProcessor=jest-junit"
-    networks:
-      - test
-    profiles:
-      - test-unit
-
-  test-qdrant:
-    image: qdrant/qdrant:v1.7.4
-    environment:
-      - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__LOG_LEVEL=INFO
-    tmpfs:
-      - /qdrant/storage
-    healthcheck:
-      test:
-        - CMD
-        - bash
-        - -lc
-        - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && head -n1 <&3 | grep 200'
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - test
-    profiles:
-      - test-integration
-      - test-e2e
-      - test-performance
-
-  test-ollama:
-    image: ollama/ollama:latest
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-    tmpfs:
-      - /root/.ollama
-    healthcheck:
-      test:
-        - CMD
-        - bash
-        - -lc
-        - 'exec 3<>/dev/tcp/127.0.0.1/11434 && printf "GET /api/tags HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && head -n1 <&3 | grep 200'
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - test
-    profiles:
-      - test-integration
-      - test-e2e
-      - test-performance
-
-  url-input-integration-test:
-    build:
-      context: ./services/url-input
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=integration
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-    volumes:
-      - ./services/url-input:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/integration -v --tb=short \
-      --junit-xml=/app/test-results/url-input-integration.xml"
-    networks:
-      - test
-    profiles:
-      - test-integration
-
-  auth-integration-test:
-    build:
-      context: ./services/auth
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=integration
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-    volumes:
-      - ./services/auth:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/integration -v --tb=short \
-      --junit-xml=/app/test-results/auth-integration.xml"
-    networks:
-      - test
-    profiles:
-      - test-integration
-
-  scraper-integration-test:
-    build:
-      context: ./services/scraper
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=integration
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - AUTH_SERVICE_URL=http://auth-integration-test:8082
-    volumes:
-      - ./services/scraper:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/integration -v --tb=short \
-      --junit-xml=/app/test-results/scraper-integration.xml"
+      - BACKEND_URL=http://backend-core:8080
+      - AI_ENGINE_URL=http://ai-engine:8090
+      - BROWSER_ENGINE_URL=http://browser-engine:8083
     depends_on:
-      - auth-integration-test
+      - backend-core
+      - ai-engine
+      - browser-engine
+      - qdrant
     networks:
-      - test
+      - tab-organizer-network
     profiles:
       - test-integration
 
-  analyzer-integration-test:
+  test-e2e:
     build:
-      context: ./services/analyzer
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: tests/Dockerfile.test
+    container_name: tab-organizer-test-e2e
+    command: pytest tests/e2e -v
     environment:
-      - TESTING=true
-      - TEST_TYPE=integration
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - QDRANT_URL=http://test-qdrant:6333
-      - OLLAMA_URL=http://test-ollama:11434
-    volumes:
-      - ./services/analyzer:/app/test_src
-      - ./config:/app/config
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/integration -v --tb=short \
-      --junit-xml=/app/test-results/analyzer-integration.xml"
+      - WEB_UI_URL=http://web-ui:8089
+      - BACKEND_URL=http://backend-core:8080
     depends_on:
-      test-qdrant:
-        condition: service_healthy
-      test-ollama:
-        condition: service_healthy
+      - web-ui
+      - backend-core
+      - ai-engine
+      - browser-engine
+      - qdrant
     networks:
-      - test
-    profiles:
-      - test-integration
-
-  clustering-integration-test:
-    build:
-      context: ./services/clustering
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=integration
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - QDRANT_HOST=test-qdrant
-      - QDRANT_PORT=6333
-    volumes:
-      - ./services/clustering:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/integration -v --tb=short \
-      --junit-xml=/app/test-results/clustering-integration.xml"
-    depends_on:
-      test-qdrant:
-        condition: service_healthy
-    networks:
-      - test
-    profiles:
-      - test-integration
-
-  export-integration-test:
-    build:
-      context: ./services/export
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=integration
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - QDRANT_HOST=test-qdrant
-      - QDRANT_PORT=6333
-    volumes:
-      - ./services/export:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-      - export_test_data:/app/exports
-      - export_test_templates:/app/templates
-    command: >
-      sh -c "python -m pytest tests/integration -v --tb=short \
-      --junit-xml=/app/test-results/export-integration.xml"
-    depends_on:
-      test-qdrant:
-        condition: service_healthy
-    networks:
-      - test
-    profiles:
-      - test-integration
-
-  session-integration-test:
-    build:
-      context: ./services/session
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=integration
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - QDRANT_HOST=test-qdrant
-      - QDRANT_PORT=6333
-    volumes:
-      - ./services/session:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/integration -v --tb=short \
-      --junit-xml=/app/test-results/session-integration.xml"
-    depends_on:
-      test-qdrant:
-        condition: service_healthy
-    networks:
-      - test
-    profiles:
-      - test-integration
-
-  monitoring-integration-test:
-    build:
-      context: ./services/monitoring
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=integration
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-    volumes:
-      - ./services/monitoring:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/integration -v --tb=short \
-      --junit-xml=/app/test-results/monitoring-integration.xml"
-    networks:
-      - test
-    profiles:
-      - test-integration
-
-  api-gateway-integration-test:
-    build:
-      context: ./services/api-gateway
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=integration
-      - LOG_LEVEL=DEBUG
-      - PYTHONPATH=/app
-      - QDRANT_URL=http://test-qdrant:6333
-      - OLLAMA_URL=http://test-ollama:11434
-    volumes:
-      - ./services/api-gateway:/app/test_src
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-    command: >
-      sh -c "python -m pytest tests/integration -v --tb=short \
-      --junit-xml=/app/test-results/api-gateway-integration.xml"
-    depends_on:
-      test-qdrant:
-        condition: service_healthy
-      test-ollama:
-        condition: service_healthy
-    networks:
-      - test
-    profiles:
-      - test-integration
-
-  test-api-gateway:
-    build:
-      context: ./services/api-gateway
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - LOG_LEVEL=INFO
-      - QDRANT_URL=http://test-qdrant:6333
-      - OLLAMA_URL=http://test-ollama:11434
-    depends_on:
-      test-qdrant:
-        condition: service_healthy
-      test-ollama:
-        condition: service_healthy
-    networks:
-      - test
+      - tab-organizer-network
     profiles:
       - test-e2e
-      - test-performance
-
-  test-web-ui:
-    build:
-      context: ./services/web-ui
-      dockerfile: Dockerfile
-    environment:
-      - NODE_ENV=test
-      - REACT_APP_API_URL=http://test-api-gateway:8080
-    depends_on:
-      - test-api-gateway
-    networks:
-      - test
-    profiles:
-      - test-e2e
-
-  e2e-test-runner:
-    build:
-      context: ./tests/e2e
-      dockerfile: Dockerfile
-    environment:
-      - TESTING=true
-      - TEST_TYPE=e2e
-      - API_GATEWAY_URL=http://test-api-gateway:8080
-      - WEB_UI_URL=http://test-web-ui:8089
-    volumes:
-      - ./tests/e2e:/app/tests
-      - ./test-results:/app/test-results
-    command: >
-      sh -c "python -m pytest -v --tb=short \
-      --junit-xml=/app/test-results/e2e-tests.xml"
-    depends_on:
-      - test-api-gateway
-      - test-web-ui
-    networks:
-      - test
-    profiles:
-      - test-e2e
-
-  load-test-runner:
-    image: locustio/locust:latest
-    ports:
-      - "8089"
-    volumes:
-      - ./tests/load:/mnt/locust
-    environment:
-      - LOCUST_HOST=http://test-api-gateway:8080
-      - LOCUST_USERS=${LOCUST_USERS:-100}
-      - LOCUST_SPAWN_RATE=${LOCUST_SPAWN_RATE:-10}
-      - LOCUST_RUN_TIME=${LOCUST_RUN_TIME:-5m}
-    command: -f /mnt/locust/locustfile.py --headless --csv=/mnt/locust/results
-    depends_on:
-      - test-api-gateway
-    networks:
-      - test
-    profiles:
-      - test-performance
-
-  test-report-aggregator:
-    image: python:3.11-slim
-    profiles:
-      - test-report
-    volumes:
-      - ./test-results:/app/test-results
-      - ./coverage:/app/coverage
-      - ./test-reports:/app/reports
-    command: >
-      sh -c "pip install coverage >/dev/null 2>&1 && \
-      if ls /app/coverage/.coverage.* >/dev/null 2>&1; then \
-        coverage combine /app/coverage/.coverage.* || true && \
-        coverage html -d /app/reports/coverage --ignore-errors || true && \
-        coverage xml -o /app/reports/coverage.xml || true && \
-        coverage report || true; \
-      else \
-        echo 'No coverage files found, skipping aggregation'; \
-      fi"
-    networks:
-      - test
 
 networks:
-  app:
+  tab-organizer-network:
     driver: bridge
-  dev:
-    driver: bridge
-  test:
-    driver: bridge
-    name: test_network
 
 volumes:
-  qdrant_storage:
-  ollama_models:
-  auth_credentials:
-  qdrant_dev_storage:
-  ollama_dev_models:
-  auth_dev_credentials:
-  export_test_data:
-  export_test_templates:
+  qdrant-data:
+  ollama-data:

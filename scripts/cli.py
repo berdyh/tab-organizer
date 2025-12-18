@@ -1,475 +1,280 @@
 #!/usr/bin/env python3
-"""Unified command line interface for Tab Organizer operations.
-
-This tool replaces the legacy shell scripts with a single entry point that
-handles lifecycle management, diagnostics, and test execution.
-"""
-
-from __future__ import annotations
+"""Tab Organizer CLI - Unified management tool."""
 
 import argparse
-import json
+import os
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
-from typing import Iterable, List
-from urllib import request, error as url_error
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-COMPOSE_TRACK_FILE = PROJECT_ROOT / ".docker-compose-files"
-DEFAULT_COMPOSE_FILES = ["docker-compose.yml"]
+PROJECT_ROOT = Path(__file__).parent.parent
+DOCKER_COMPOSE_FILE = PROJECT_ROOT / "docker-compose.yml"
 
 
-def run_command(
-    command: List[str],
-    *,
-    cwd: Path | None = None,
-    capture_output: bool = False,
-    check: bool = True,
-) -> subprocess.CompletedProcess:
-    """Execute a shell command with consistent defaults."""
-    cwd = cwd or PROJECT_ROOT
-    print(f"→ {' '.join(command)}")
+def run_command(cmd: list[str], check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+    """Run a shell command."""
+    print(f"Running: {' '.join(cmd)}")
     return subprocess.run(
-        command,
-        cwd=str(cwd),
+        cmd,
+        cwd=PROJECT_ROOT,
         check=check,
-        capture_output=capture_output,
+        capture_output=capture,
         text=True,
     )
 
 
-def update_env_var(key: str, value: str, env_file: Path | None = None) -> None:
-    """Insert or overwrite a key/value pair in the project's .env file."""
-    env_file = env_file or PROJECT_ROOT / ".env"
-    if not env_file.exists():
-        return
-
-    lines = env_file.read_text().splitlines()
-    updated = False
-    for idx, line in enumerate(lines):
-        if line.startswith(f"{key}="):
-            lines[idx] = f"{key}={value}"
-            updated = True
-            break
-    if not updated:
-        lines.append(f"{key}={value}")
-
-    env_file.write_text("\n".join(lines) + "\n")
-
-
-def ensure_env_file() -> None:
-    """Ensure the runtime .env file exists."""
-    env_file = PROJECT_ROOT / ".env"
-    example = PROJECT_ROOT / ".env.example"
-
-    if env_file.exists():
-        return
-    if not example.exists():
-        raise SystemExit("Missing .env and .env.example files. Run scripts/init.py first.")
-    env_file.write_text(example.read_text())
-    print("Created .env from .env.example; update it with your configuration.")
-
-
-def ensure_logs_dir() -> None:
-    """Create the logs directory if needed."""
-    (PROJECT_ROOT / "logs").mkdir(parents=True, exist_ok=True)
-
-
-def detect_gpu() -> bool:
-    """Heuristically detect if nvidia-smi can see a GPU."""
-    try:
-        run_command(["nvidia-smi"], capture_output=True)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
-
-def detect_local_ollama(timeout: float = 2.0) -> bool:
-    """Check whether a local Ollama instance is reachable."""
-    try:
-        request.urlopen("http://127.0.0.1:11434/api/tags", timeout=timeout)
-        return True
-    except (url_error.URLError, url_error.HTTPError):
-        return False
-
-
-def choose_profile(preference: str) -> List[str]:
-    """Resolve docker compose profile arguments."""
-    if preference == "auto":
-        return ["--profile", "gpu"] if detect_gpu() else ["--profile", "cpu"]
-    if preference in {"gpu", "cpu"}:
-        return ["--profile", preference]
-    return []
-
-
-def read_active_compose_files() -> List[str]:
-    """Return the compose files that were active during the last start."""
-    if not COMPOSE_TRACK_FILE.exists():
-        return []
-    return [line.strip() for line in COMPOSE_TRACK_FILE.read_text().splitlines() if line.strip()]
-
-
-def save_active_compose_files(files: Iterable[str]) -> None:
-    """Persist the compose files used for the running stack."""
-    COMPOSE_TRACK_FILE.write_text("\n".join(files) + "\n")
-
-
-def compose_arguments(files: Iterable[str]) -> List[str]:
-    """Build docker compose CLI arguments for the provided files."""
-    args: List[str] = []
-    for compose_file in files:
-        args.extend(["-f", compose_file])
-    return args
-
-
-def build_compose_command(*args: str, profiles: Iterable[str] | None = None, files: Iterable[str] | None = None) -> List[str]:
-    """Construct a docker compose command with optional profile and file overrides."""
-    compose_files = list(files) if files is not None else list(DEFAULT_COMPOSE_FILES)
-    command: List[str] = ["docker", "compose"]
-
-    for compose_file in compose_files:
-        command.extend(["-f", compose_file])
-
+def docker_compose(*args: str, profiles: list[str] = None) -> subprocess.CompletedProcess:
+    """Run docker compose command."""
+    cmd = ["docker", "compose", "-f", str(DOCKER_COMPOSE_FILE)]
+    
     if profiles:
         for profile in profiles:
-            command.extend(["--profile", profile])
-
-    command.extend(args)
-    return command
-
-
-def require_docker() -> None:
-    """Verify that docker and docker compose are available."""
-    try:
-        run_command(["docker", "--version"], capture_output=True)
-        run_command(["docker", "compose", "version"], capture_output=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        raise SystemExit("Docker Compose V2 is required. Install or update Docker before continuing.")
+            cmd.extend(["--profile", profile])
+    
+    cmd.extend(args)
+    return run_command(cmd)
 
 
-def cmd_start(args: argparse.Namespace) -> None:
-    """Start the application stack."""
-    require_docker()
-    ensure_env_file()
-    ensure_logs_dir()
-
-    compose_files = list(DEFAULT_COMPOSE_FILES)
-    ollama_mode = args.ollama_mode
-    profile_flags: List[str] = []
-
-    use_local = detect_local_ollama() if ollama_mode == "auto" else ollama_mode == "local"
-    if use_local:
-        update_env_var("OLLAMA_URL", "http://localhost:11434")
-        print("Using locally running Ollama on http://localhost:11434")
-    else:
-        update_env_var("OLLAMA_URL", "http://ollama:11434")
-        profile_flags = choose_profile(args.profile)
-        print("Using dockerized Ollama service (profile: {})".format(profile_flags[1] if profile_flags else "default"))
-
-    compose_args = compose_arguments(compose_files)
-
-    if args.pull:
-        run_command(["docker", "compose", *compose_args, *profile_flags, "pull"])
-
+def cmd_start(args):
+    """Start all services."""
+    profiles = ["default"]
+    if args.dev:
+        profiles = ["dev"]
+    
+    extra_args = []
     if args.build:
-        run_command(["docker", "compose", *compose_args, *profile_flags, "build"])
+        extra_args.append("--build")
+    if args.detach:
+        extra_args.append("-d")
+    
+    docker_compose("up", *extra_args, profiles=profiles)
+    
+    if args.detach:
+        print("\n✅ Services started!")
+        print("   Web UI:         http://localhost:8089")
+        print("   Backend API:    http://localhost:8080")
+        print("   AI Engine:      http://localhost:8090")
+        print("   Browser Engine: http://localhost:8083")
+        print("   Qdrant:         http://localhost:6333")
+        print("   Ollama:         http://localhost:11434")
 
-    up_args = ["docker", "compose", *compose_args, *profile_flags, "up", "-d"]
-    if args.quiet_pull:
-        up_args.append("--quiet-pull")
-    run_command(up_args)
 
-    save_active_compose_files(compose_files)
-    print("Stack is up. Access the web UI at http://localhost:8089")
-
-
-def cmd_stop(args: argparse.Namespace) -> None:
-    """Stop the running application stack."""
-    require_docker()
-    compose_files = read_active_compose_files() or DEFAULT_COMPOSE_FILES
-    compose_args = compose_arguments(compose_files)
-
-    down_command = ["docker", "compose", *compose_args, "down"]
+def cmd_stop(args):
+    """Stop all services."""
+    extra_args = []
     if args.volumes:
-        down_command.append("-v")
-    run_command(down_command)
-
-    if COMPOSE_TRACK_FILE.exists():
-        COMPOSE_TRACK_FILE.unlink()
-
-    print("Services stopped successfully.")
+        extra_args.append("-v")
+    
+    docker_compose("down", *extra_args, profiles=["default", "dev"])
+    print("✅ Services stopped")
 
 
-def cmd_restart(args: argparse.Namespace) -> None:
-    """Restart the application stack."""
-    cmd_stop(argparse.Namespace(volumes=False))
-    cmd_start(args)
+def cmd_restart(args):
+    """Restart services."""
+    services = args.services if args.services else []
+    docker_compose("restart", *services, profiles=["default"])
+    print("✅ Services restarted")
 
 
-def cmd_status(_: argparse.Namespace) -> None:
-    """Display docker compose status."""
-    require_docker()
-    compose_files = read_active_compose_files() or DEFAULT_COMPOSE_FILES
-    compose_args = compose_arguments(compose_files)
-    run_command(["docker", "compose", *compose_args, "ps"])
+def cmd_status(args):
+    """Show service status."""
+    docker_compose("ps", profiles=["default", "dev"])
 
 
-def cmd_logs(args: argparse.Namespace) -> None:
-    """Stream logs from the stack."""
-    require_docker()
-    compose_files = read_active_compose_files() or DEFAULT_COMPOSE_FILES
-    compose_args = compose_arguments(compose_files)
-    command = ["docker", "compose", *compose_args, "logs", "-f"]
-    if args.service:
-        command.append(args.service)
-    run_command(command, check=False)
+def cmd_logs(args):
+    """Show service logs."""
+    extra_args = []
+    if args.follow:
+        extra_args.append("-f")
+    if args.tail:
+        extra_args.extend(["--tail", str(args.tail)])
+    
+    services = [args.service] if args.service else []
+    docker_compose("logs", *extra_args, *services, profiles=["default"])
 
 
-def ensure_test_directories() -> None:
-    """Create directories used during test collection."""
-    for dirname in ("test-results", "coverage", "test-reports", "logs"):
-        (PROJECT_ROOT / dirname).mkdir(parents=True, exist_ok=True)
+def cmd_test(args):
+    """Run tests."""
+    test_type = args.type or "unit"
+    profile = f"test-{test_type}"
+    
+    print(f"Running {test_type} tests...")
+    
+    if test_type in ("integration", "e2e"):
+        # Start dependencies first
+        docker_compose("up", "-d", profiles=["default"])
+    
+    docker_compose("run", "--rm", f"test-{test_type}", profiles=[profile])
 
 
-UNIT_TEST_SERVICES = [
-    "url-input-unit-test",
-    "auth-unit-test",
-    "scraper-unit-test",
-    "analyzer-unit-test",
-    "clustering-unit-test",
-    "export-unit-test",
-    "session-unit-test",
-    "monitoring-unit-test",
-    "api-gateway-unit-test",
-    "web-ui-unit-test",
-]
-
-INTEGRATION_TEST_SERVICES = [
-    "url-input-integration-test",
-    "auth-integration-test",
-    "scraper-integration-test",
-    "analyzer-integration-test",
-    "clustering-integration-test",
-    "export-integration-test",
-    "session-integration-test",
-    "monitoring-integration-test",
-    "api-gateway-integration-test",
-]
-
-
-def run_compose(*args: str, profiles: Iterable[str] | None = None) -> None:
-    """Execute a docker compose command from the project root."""
-    command = build_compose_command(*args, profiles=profiles)
-    run_command(command, cwd=PROJECT_ROOT)
-
-
-def run_test_suite(test_type: str) -> None:
-    """Execute dockerized test suites."""
-    ensure_test_directories()
-
-    if test_type == "unit":
-        for service in UNIT_TEST_SERVICES:
-            run_compose("up", "--build", "--abort-on-container-exit", service, profiles=["test-unit"])
-    elif test_type == "integration":
-        run_compose("up", "-d", "test-qdrant", "test-ollama", profiles=["test-integration"])
-        run_compose(
-            "up",
-            "--build",
-            "--abort-on-container-exit",
-            *INTEGRATION_TEST_SERVICES,
-            profiles=["test-integration"],
-        )
-    elif test_type == "e2e":
-        run_compose(
-            "up",
-            "-d",
-            "--build",
-            "test-qdrant",
-            "test-ollama",
-            "test-api-gateway",
-            "test-web-ui",
-            profiles=["test-e2e"],
-        )
-        run_compose("up", "--build", "--abort-on-container-exit", "e2e-test-runner", profiles=["test-e2e"])
-    elif test_type == "performance":
-        run_compose(
-            "up",
-            "-d",
-            "--build",
-            "test-qdrant",
-            "test-ollama",
-            "test-api-gateway",
-            profiles=["test-performance"],
-        )
-        run_compose("up", "--abort-on-container-exit", "load-test-runner", profiles=["test-performance"])
-    elif test_type == "all":
-        run_test_suite("unit")
-        run_test_suite("integration")
-        run_test_suite("e2e")
+def cmd_models(args):
+    """Manage Ollama models."""
+    if args.list:
+        print("Available models in Ollama:")
+        run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "list"])
+    elif args.pull:
+        print(f"Pulling model: {args.pull}")
+        run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "pull", args.pull])
     else:
-        raise SystemExit(f"Unknown test suite: {test_type}")
+        print("Use --list to show models or --pull <model> to download a model")
 
 
-def collect_test_artifacts() -> None:
-    """Copy test artifacts from running containers to the host."""
-    try:
+def cmd_init(args):
+    """Initialize the project."""
+    print("Initializing Tab Organizer...")
+    
+    # Create .env from example if not exists
+    env_file = PROJECT_ROOT / ".env"
+    env_example = PROJECT_ROOT / ".env.example"
+    
+    if not env_file.exists() and env_example.exists():
+        import shutil
+        shutil.copy(env_example, env_file)
+        print("✅ Created .env from .env.example")
+    
+    # Build images
+    if args.build:
+        print("Building Docker images...")
+        docker_compose("build", profiles=["default"])
+    
+    # Pull Ollama models
+    if args.models:
+        print("Starting Ollama...")
+        docker_compose("up", "-d", "ollama", profiles=["default"])
+        
+        import time
+        time.sleep(5)  # Wait for Ollama to start
+        
+        print("Pulling default models...")
+        run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "pull", "llama3.2"], check=False)
+        run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "pull", "nomic-embed-text"], check=False)
+    
+    print("\n✅ Initialization complete!")
+    print("   Run './scripts/cli.py start -d' to start services")
+
+
+def cmd_clean(args):
+    """Clean up Docker resources."""
+    print("Cleaning up...")
+    
+    # Stop services
+    docker_compose("down", "-v", "--remove-orphans", profiles=["default", "dev"])
+    
+    if args.images:
+        print("Removing images...")
+        run_command([
+            "docker", "images", "-q", "tab-organizer-*"
+        ], check=False)
+        # Remove project images
         result = run_command(
-            ["docker", "ps", "-a", "--filter", "name=test", "--format", "{{.Names}}"],
-            capture_output=True,
+            ["docker", "images", "--filter", "reference=tab-organizer-*", "-q"],
+            capture=True,
+            check=False,
         )
-    except subprocess.CalledProcessError:
-        return
-
-    containers = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    for container in containers:
-        run_command(["docker", "cp", f"{container}:/app/test-results/.", "test-results/"], check=False)
-        run_command(["docker", "cp", f"{container}:/app/coverage/.", "coverage/"], check=False)
+        if result.stdout.strip():
+            image_ids = result.stdout.strip().split("\n")
+            run_command(["docker", "rmi", "-f"] + image_ids, check=False)
+    
+    print("✅ Cleanup complete")
 
 
-def generate_test_reports() -> None:
-    """Trigger report generation container."""
-    run_compose("up", "--abort-on-container-exit", "--no-deps", "test-report-aggregator", profiles=["test-report"])
+def cmd_shell(args):
+    """Open a shell in a service container."""
+    service = args.service
+    run_command([
+        "docker", "exec", "-it", f"tab-organizer-{service}", "/bin/bash"
+    ], check=False)
 
 
-def cmd_test(args: argparse.Namespace) -> None:
-    """Run dockerized test suites."""
-    require_docker()
-    test_type = args.type
-
-    print(textwrap.dedent(f"""
-        Running tests
-        -------------
-        Type: {test_type}
-        Cleanup: {not args.skip_cleanup}
-    """).strip())
-
-    try:
-        run_test_suite(test_type)
-        if not args.skip_artifacts:
-            collect_test_artifacts()
-            generate_test_reports()
-    finally:
-        if not args.skip_cleanup:
-            run_compose(
-                "down",
-                "-v",
-                profiles=["test-unit", "test-integration", "test-e2e", "test-performance", "test-report"],
-            )
-
-
-def cmd_models(_: argparse.Namespace) -> None:
-    """Display the currently recommended Ollama models."""
-    models_file = PROJECT_ROOT / "config" / "models.json"
-    if not models_file.exists():
-        raise SystemExit("config/models.json is missing; cannot display model recommendations.")
-
-    data = json.loads(models_file.read_text())
-    llm_models = data.get("llm_models", {})
-    embedding_models = data.get("embedding_models", {})
-
-    print("LLM models:")
-    for key, meta in llm_models.items():
-        provider = meta.get("provider", "Unknown")
-        description = meta.get("description", "")
-        size = meta.get("size", "n/a")
-        print(f"  - {key} ({provider}, {size}): {description}")
-
-    print("\nEmbedding models:")
-    for key, meta in embedding_models.items():
-        provider = meta.get("provider", "Unknown")
-        description = meta.get("description", "")
-        size = meta.get("size", "n/a")
-        print(f"  - {key} ({provider}, {size}): {description}")
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Tab Organizer CLI")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    start_parser = subparsers.add_parser("start", help="Start the application stack")
+def main():
+    parser = argparse.ArgumentParser(
+        description="Tab Organizer CLI - Unified management tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s init --build --models    Initialize project with images and models
+  %(prog)s start -d                 Start all services in background
+  %(prog)s start --build            Rebuild and start services
+  %(prog)s stop                     Stop all services
+  %(prog)s logs -f web-ui           Follow web-ui logs
+  %(prog)s test --type unit         Run unit tests
+  %(prog)s models --pull llama3.2   Pull a model
+        """,
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # start
+    start_parser = subparsers.add_parser("start", help="Start services")
+    start_parser.add_argument("--build", "-b", action="store_true", help="Build images before starting")
+    start_parser.add_argument("--detach", "-d", action="store_true", help="Run in background")
+    start_parser.add_argument("--dev", action="store_true", help="Use development profile")
     start_parser.set_defaults(func=cmd_start)
-    start_parser.add_argument(
-        "--profile",
-        choices=["auto", "cpu", "gpu", "none"],
-        default="auto",
-        help="Docker compose profile for Ollama. 'auto' picks gpu when available.",
-    )
-    start_parser.add_argument(
-        "--ollama-mode",
-        choices=["auto", "local", "docker"],
-        default="auto",
-        help="Prefer a locally running Ollama instance or the dockerized service.",
-    )
-    start_parser.add_argument("--pull", action="store_true", help="Run docker compose pull before starting.")
-    start_parser.add_argument("--build", action="store_true", help="Run docker compose build before starting.")
-    start_parser.add_argument("--quiet-pull", action="store_true", help="Pass --quiet-pull to docker compose up.")
-
-    stop_parser = subparsers.add_parser("stop", help="Stop the application stack")
+    
+    # stop
+    stop_parser = subparsers.add_parser("stop", help="Stop services")
+    stop_parser.add_argument("--volumes", "-v", action="store_true", help="Remove volumes")
     stop_parser.set_defaults(func=cmd_stop)
-    stop_parser.add_argument("--volumes", action="store_true", help="Remove volumes when stopping.")
-
-    restart_parser = subparsers.add_parser("restart", help="Restart the application stack")
+    
+    # restart
+    restart_parser = subparsers.add_parser("restart", help="Restart services")
+    restart_parser.add_argument("services", nargs="*", help="Services to restart")
     restart_parser.set_defaults(func=cmd_restart)
-    restart_parser.add_argument(
-        "--profile",
-        choices=["auto", "cpu", "gpu", "none"],
-        default="auto",
-    )
-    restart_parser.add_argument(
-        "--ollama-mode",
-        choices=["auto", "local", "docker"],
-        default="auto",
-    )
-    restart_parser.add_argument("--pull", action="store_true")
-    restart_parser.add_argument("--build", action="store_true")
-    restart_parser.add_argument("--quiet-pull", action="store_true")
-
-    status_parser = subparsers.add_parser("status", help="Show docker compose status")
+    
+    # status
+    status_parser = subparsers.add_parser("status", help="Show service status")
     status_parser.set_defaults(func=cmd_status)
-
-    logs_parser = subparsers.add_parser("logs", help="Tail service logs")
+    
+    # logs
+    logs_parser = subparsers.add_parser("logs", help="Show service logs")
+    logs_parser.add_argument("service", nargs="?", help="Service name")
+    logs_parser.add_argument("--follow", "-f", action="store_true", help="Follow logs")
+    logs_parser.add_argument("--tail", "-n", type=int, help="Number of lines")
     logs_parser.set_defaults(func=cmd_logs)
-    logs_parser.add_argument("service", nargs="?", help="Optional service name to filter logs.")
-
-    test_parser = subparsers.add_parser("test", help="Run the dockerized test workflow")
+    
+    # test
+    test_parser = subparsers.add_parser("test", help="Run tests")
+    test_parser.add_argument("--type", "-t", choices=["unit", "integration", "e2e"], help="Test type")
     test_parser.set_defaults(func=cmd_test)
-    test_parser.add_argument(
-        "--type",
-        choices=["unit", "integration", "e2e", "performance", "all"],
-        default="all",
-        help="Select which suite to execute.",
-    )
-    test_parser.add_argument("--skip-cleanup", action="store_true", help="Leave test containers running after completion.")
-    test_parser.add_argument("--skip-artifacts", action="store_true", help="Skip artifact collection and report aggregation.")
-
-    models_parser = subparsers.add_parser("models", help="Print model recommendations from config/models.json")
+    
+    # models
+    models_parser = subparsers.add_parser("models", help="Manage Ollama models")
+    models_parser.add_argument("--list", "-l", action="store_true", help="List models")
+    models_parser.add_argument("--pull", "-p", metavar="MODEL", help="Pull a model")
     models_parser.set_defaults(func=cmd_models)
-
-    return parser
-
-
-def main(argv: List[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    if getattr(args, "profile", None) == "none":
-        args.profile = ""
-
+    
+    # init
+    init_parser = subparsers.add_parser("init", help="Initialize project")
+    init_parser.add_argument("--build", "-b", action="store_true", help="Build images")
+    init_parser.add_argument("--models", "-m", action="store_true", help="Pull default models")
+    init_parser.set_defaults(func=cmd_init)
+    
+    # clean
+    clean_parser = subparsers.add_parser("clean", help="Clean up resources")
+    clean_parser.add_argument("--images", "-i", action="store_true", help="Remove images")
+    clean_parser.set_defaults(func=cmd_clean)
+    
+    # shell
+    shell_parser = subparsers.add_parser("shell", help="Open shell in container")
+    shell_parser.add_argument("service", choices=["backend", "ai", "browser", "ui", "qdrant", "ollama"])
+    shell_parser.set_defaults(func=cmd_shell)
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    
     try:
         args.func(args)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: Command failed with exit code {e.returncode}")
+        sys.exit(e.returncode)
     except KeyboardInterrupt:
-        print("Interrupted.")
-        return 130
-    except SystemExit as exc:
-        raise exc
-    except Exception as exc:  # pragma: no cover - guard rail
-        print(f"Error: {exc}")
-        return 1
-    return 0
+        print("\nInterrupted")
+        sys.exit(130)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

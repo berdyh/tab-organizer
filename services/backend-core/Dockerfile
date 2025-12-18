@@ -5,8 +5,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY app/ ./app/
 
-EXPOSE 8089
+EXPOSE 8080
 
-CMD ["streamlit", "run", "app.py", "--server.port=8089", "--server.address=0.0.0.0"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
