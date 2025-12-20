@@ -1,9 +1,12 @@
 FROM python:3.11-slim
 
+# Install uv
+RUN pip install uv
+
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN uv pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
