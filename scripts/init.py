@@ -15,35 +15,15 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from urllib import request, error as url_error
 
+# Import configuration loader
+sys.path.append(str(Path(__file__).parent.parent))
+from config.config_loader import get_ai_config
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = PROJECT_ROOT / ".env"
 ENV_TEMPLATE = PROJECT_ROOT / ".env.example"
 
-
-OLLAMA_LLM_OPTIONS: List[Tuple[str, str]] = [
-    ("qwen3:1.7b", "Ultra-efficient with thinking mode (~1.1GB download)"),
-    ("phi4:3.8b", "GPU-optimized, strong coding skills (~2.3GB download)"),
-    ("gemma3n:e4b", "Balanced Google multimodal model (~2.2GB download)"),
-    ("qwen3:8b", "High-quality reasoning (~4.7GB download)"),
-]
-
-OLLAMA_EMBED_OPTIONS: List[Tuple[str, str]] = [
-    ("nomic-embed-text", "Best general-purpose embeddings (~274MB)"),
-    ("mxbai-embed-large", "Highest quality embeddings (~669MB)"),
-    ("all-minilm", "Lightweight and fast (~90MB)"),
-]
-
-CLAUDE_LLM_OPTIONS: List[Tuple[str, str]] = [
-    ("claude-3-5-sonnet-20241022", "Balanced Claude 3.5 Sonnet (recommended)"),
-    ("claude-3-5-haiku-20241022", "Cost-efficient Claude 3.5 Haiku"),
-    ("claude-3-opus-20240229", "Highest reasoning performance Claude 3 Opus"),
-]
-
-CLAUDE_EMBED_OPTIONS: List[Tuple[str, str]] = [
-    ("claude-embedding-1", "Anthropic Claude Embedding v1 (3k context)"),
-    ("claude-embedding-1-large", "Anthropic Claude Embedding v1 Large (long context)"),
-]
 
 
 def run_command(command: List[str], *, check: bool = True, capture_output: bool = False) -> subprocess.CompletedProcess:
@@ -177,17 +157,27 @@ def configure_ollama(args: argparse.Namespace) -> Dict[str, str]:
             """
         ).strip()
     )
-
-    llm_model = args.ollama_llm or prompt_choice("Choose an Ollama LLM model:", OLLAMA_LLM_OPTIONS, default_index=0)
+    
+    # Get AI configuration
+    ai_config = get_ai_config()
+    
+    # Get available Ollama models
+    ollama_llm_models = ai_config.get_provider_models("ollama", "llm")
+    ollama_embed_models = ai_config.get_provider_models("ollama", "embedding")
+    
+    # Convert to choice format for prompt
+    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in ollama_llm_models]
+    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in ollama_embed_models]
+    
+    llm_model = args.ollama_llm or prompt_choice("Choose an Ollama LLM model:", llm_options, default_index=0)
     embedding_model = args.ollama_embedding or prompt_choice(
-        "Choose an Ollama embedding model:", OLLAMA_EMBED_OPTIONS, default_index=0
+        "Choose an Ollama embedding model:", embed_options, default_index=0
     )
 
     update_env_var("LLM_PROVIDER", "ollama")
     update_env_var("EMBEDDING_PROVIDER", "ollama")
-    update_env_var("OLLAMA_MODEL", llm_model)
-    update_env_var("OLLAMA_EMBEDDING_MODEL", embedding_model)
-    update_env_var("OLLAMA_ENABLED", "true")
+    update_env_var("LLM_MODEL", llm_model)
+    update_env_var("EMBEDDING_MODEL", embedding_model)
 
     mode = args.ollama_mode
     if mode == "auto":
@@ -219,27 +209,46 @@ def configure_claude(args: argparse.Namespace) -> Dict[str, str]:
             """
         ).strip()
     )
-
+    
+    # Get AI configuration
+    ai_config = get_ai_config()
+    
+    # Get available Claude models
+    claude_llm_models = ai_config.get_provider_models("anthropic", "llm")
+    
+    # Convert to choice format for prompt
+    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in claude_llm_models]
+    
     llm_model = args.claude_llm or prompt_choice(
-        "Choose a Claude LLM model:", CLAUDE_LLM_OPTIONS, default_index=0
+        "Choose a Claude LLM model:", llm_options, default_index=0
     )
+    
+    # Claude doesn't support embeddings, so we need to choose another provider
+    print("\nClaude does not provide embeddings. Selecting embedding provider...")
+    embed_providers = [p for p in ai_config.get_all_providers() if ai_config.is_provider_supported(p, "embeddings") and p != "anthropic"]
+    embed_provider = args.claude_embedding_provider or prompt_choice(
+        "Choose embedding provider:", [(p, ai_config.get_provider_config(p).get("type", "")) for p in embed_providers], default_index=0
+    )
+    
+    # Get models for selected embedding provider
+    embed_models = ai_config.get_provider_models(embed_provider, "embedding")
+    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
     embedding_model = args.claude_embedding or prompt_choice(
-        "Choose a Claude embedding model:", CLAUDE_EMBED_OPTIONS, default_index=0
+        f"Choose a {embed_provider} embedding model:", embed_options, default_index=0
     )
+    
     api_key = args.anthropic_key or prompt_text(
         "Enter your ANTHROPIC_API_KEY (leave blank to keep existing value)", required=False, default=""
     )
-
-    update_env_var("LLM_PROVIDER", "anthropic")
-    update_env_var("EMBEDDING_PROVIDER", "anthropic")
-    update_env_var("CLAUDE_MODEL", llm_model)
-    update_env_var("CLAUDE_EMBEDDING_MODEL", embedding_model)
-    update_env_var("OLLAMA_ENABLED", "false")
-    update_env_var("OLLAMA_URL", "")
+    
     if api_key:
         update_env_var("ANTHROPIC_API_KEY", api_key)
 
-    print("Configured project to use Claude APIs. Ensure services know how to read the new provider settings.")
+    update_env_var("LLM_PROVIDER", "anthropic")
+    update_env_var("EMBEDDING_PROVIDER", embed_provider)
+    update_env_var("LLM_MODEL", llm_model)
+    update_env_var("EMBEDDING_MODEL", embedding_model)
+
     return {"provider": "claude", "use_local": "false", "compose_profile": ""}
 
 

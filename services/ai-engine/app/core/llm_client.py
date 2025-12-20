@@ -7,6 +7,9 @@ from typing import Optional, AsyncIterator
 
 import httpx
 
+# Import configuration loader
+from config.config_loader import get_ai_config
+
 
 @dataclass
 class LLMConfig:
@@ -79,47 +82,69 @@ class LLMClient:
         self.embedding_config = embedding_config or self._default_embedding_config()
         self._llm_provider: Optional[BaseLLMProvider] = None
         self._embedding_provider: Optional[BaseEmbeddingProvider] = None
+        self._ai_config = get_ai_config()
     
     def _default_llm_config(self) -> LLMConfig:
         """Get default LLM config from environment."""
         provider = os.getenv("AI_PROVIDER", "ollama")
+        ai_config = get_ai_config()
         
-        defaults = {
-            "ollama": ("llama3.2", None),
-            "openai": ("gpt-4o-mini", os.getenv("OPENAI_API_KEY")),
-            "anthropic": ("claude-3-5-sonnet-20241022", os.getenv("ANTHROPIC_API_KEY")),
-            "deepseek": ("deepseek-chat", os.getenv("DEEPSEEK_API_KEY")),
-            "gemini": ("gemini-1.5-flash", os.getenv("GOOGLE_API_KEY")),
-        }
+        # Get provider config
+        provider_config = ai_config.get_provider_config(provider)
         
-        model, api_key = defaults.get(provider, ("llama3.2", None))
+        # Get default model for provider
+        default_model = ai_config.get_default_model(provider, "llm")
+        model = os.getenv("LLM_MODEL", default_model)
+        
+        # Get API key from environment if cloud provider
+        api_key = None
+        if provider_config.get("type") == "cloud":
+            api_key_env = ai_config.get_api_key_env(provider)
+            if api_key_env:
+                api_key = os.getenv(api_key_env)
         
         return LLMConfig(
             provider=provider,
-            model=os.getenv("LLM_MODEL", model),
+            model=model,
             api_key=api_key,
-            base_url=os.getenv("LLM_BASE_URL"),
+            base_url=os.getenv("LLM_BASE_URL") or ai_config.get_base_url(provider),
         )
     
     def _default_embedding_config(self) -> EmbeddingConfig:
         """Get default embedding config from environment."""
         provider = os.getenv("EMBEDDING_PROVIDER", "ollama")
+        ai_config = get_ai_config()
         
-        defaults = {
-            "ollama": ("nomic-embed-text", None, 768),
-            "openai": ("text-embedding-3-small", os.getenv("OPENAI_API_KEY"), 1536),
-            "deepseek": ("deepseek-embed", os.getenv("DEEPSEEK_API_KEY"), 1536),
-            "gemini": ("text-embedding-004", os.getenv("GOOGLE_API_KEY"), 768),
-        }
+        # Get provider config
+        provider_config = ai_config.get_provider_config(provider)
         
-        model, api_key, dims = defaults.get(provider, ("nomic-embed-text", None, 768))
+        # Check if provider supports embeddings
+        if not ai_config.is_provider_supported(provider, "embeddings"):
+            # Fallback to default provider
+            provider = ai_config.get_defaults().get("provider", "ollama")
+            provider_config = ai_config.get_provider_config(provider)
+        
+        # Get default model for provider
+        default_model = ai_config.get_default_model(provider, "embedding")
+        model = os.getenv("EMBEDDING_MODEL", default_model)
+        
+        # Get model dimensions from config
+        model_config = ai_config.get_model_config(model)
+        dimensions = model_config.get("dimensions", 1536)
+        
+        # Get API key from environment if cloud provider
+        api_key = None
+        if provider_config.get("type") == "cloud":
+            api_key_env = ai_config.get_api_key_env(provider)
+            if api_key_env:
+                api_key = os.getenv(api_key_env)
         
         return EmbeddingConfig(
             provider=provider,
-            model=os.getenv("EMBEDDING_MODEL", model),
+            model=model,
             api_key=api_key,
-            base_url=os.getenv("EMBEDDING_BASE_URL"),
-            dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", dims)),
+            base_url=os.getenv("EMBEDDING_BASE_URL") or ai_config.get_base_url(provider),
+            dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", dimensions)),
         )
     
     @property
@@ -231,3 +256,34 @@ class LLMClient:
                 "dimensions": self.embedding_config.dimensions,
             },
         }
+    
+    def get_available_models(self, provider: Optional[str] = None, model_type: Optional[str] = None) -> dict:
+        """Get available models for UI selection.
+        
+        Args:
+            provider: Optional provider filter
+            model_type: Optional type filter ('llm' or 'embedding')
+            
+        Returns:
+            Dictionary with provider names as keys and model lists as values
+        """
+        if provider:
+            # Get models for specific provider
+            models = self._ai_config.get_provider_models(provider, model_type)
+            return {provider: models}
+        else:
+            # Get models for all providers
+            result = {}
+            for p in self._ai_config.get_all_providers():
+                models = self._ai_config.get_provider_models(p, model_type)
+                if models:
+                    result[p] = models
+            return result
+    
+    def get_model_info(self, model: str) -> dict:
+        """Get detailed information about a model."""
+        return self._ai_config.get_model_info(model)
+    
+    def get_use_case_recommendation(self, use_case: str) -> dict:
+        """Get recommended provider and model for a use case."""
+        return self._ai_config.get_use_case_config(use_case)
