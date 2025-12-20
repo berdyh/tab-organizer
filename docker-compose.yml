@@ -36,7 +36,7 @@ services:
     environment:
       - AI_PROVIDER=${AI_PROVIDER:-ollama}
       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-ollama}
-      - LLM_MODEL=${LLM_MODEL:-llama3.2}
+      - LLM_MODEL=${LLM_MODEL:-llama3.2:3b}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
       - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-768}
       - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
