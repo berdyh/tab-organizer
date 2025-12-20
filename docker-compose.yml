@@ -136,10 +136,12 @@ services:
       context: .
       dockerfile: tests/Dockerfile.test
     container_name: tab-organizer-test-unit
-    command: pytest tests/unit -v
+    command: pytest tests/unit -v --cov=services --cov-report=xml --cov-report=html --cov-report=term
     volumes:
       - ./tests:/app/tests
       - ./services:/app/services
+      - ./test-results:/app/test-results
+      - ./coverage:/app/coverage
     networks:
       - tab-organizer-network
     profiles:
@@ -150,16 +152,24 @@ services:
       context: .
       dockerfile: tests/Dockerfile.test
     container_name: tab-organizer-test-integration
-    command: pytest tests/integration -v
+    command: pytest tests/integration -v --junit-xml=/app/test-results/integration-results.xml
     environment:
       - BACKEND_URL=http://backend-core:8080
       - AI_ENGINE_URL=http://ai-engine:8090
       - BROWSER_ENGINE_URL=http://browser-engine:8083
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - OLLAMA_HOST=http://ollama:11434
+    volumes:
+      - ./tests:/app/tests
+      - ./services:/app/services
+      - ./test-results:/app/test-results
     depends_on:
       - backend-core
       - ai-engine
       - browser-engine
       - qdrant
+      - ollama
     networks:
       - tab-organizer-network
     profiles:
@@ -170,16 +180,22 @@ services:
       context: .
       dockerfile: tests/Dockerfile.test
     container_name: tab-organizer-test-e2e
-    command: pytest tests/e2e -v
+    command: pytest tests/e2e -v --junit-xml=/app/test-results/e2e-results.xml
     environment:
       - WEB_UI_URL=http://web-ui:8089
       - BACKEND_URL=http://backend-core:8080
+      - AI_ENGINE_URL=http://ai-engine:8090
+      - BROWSER_ENGINE_URL=http://browser-engine:8083
+    volumes:
+      - ./tests:/app/tests
+      - ./test-results:/app/test-results
     depends_on:
       - web-ui
       - backend-core
       - ai-engine
       - browser-engine
       - qdrant
+      - ollama
     networks:
       - tab-organizer-network
     profiles:

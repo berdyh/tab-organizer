@@ -41,17 +41,18 @@ test-all: ## Run all tests (unit, integration, e2e)
 	@echo "$(BLUE)Running all tests...$(NC)"
 	@./scripts/cli.py test --type all
 
-test-service: ## Run tests for specific service (usage: make test-service SERVICE=analyzer)
+test-service: ## Run tests for specific service (usage: make test-service SERVICE=backend-core)
 	@if [ -z "$(SERVICE)" ]; then \
-		echo "$(RED)Error: SERVICE not specified. Usage: make test-service SERVICE=analyzer$(NC)"; \
+		echo "$(RED)Error: SERVICE not specified. Usage: make test-service SERVICE=backend-core$(NC)"; \
 		exit 1; \
 	fi
 	@echo "$(BLUE)Running tests for $(SERVICE)...$(NC)"
-	@docker compose --profile test-unit up --build --abort-on-container-exit $(SERVICE)-unit-test
+	@echo "$(YELLOW)Note: Tests are organized by type (unit/integration/e2e), not by service$(NC)"
+	@docker compose --profile test-unit up --build --abort-on-container-exit test-unit
 
 test-watch: ## Run tests in watch mode for development
 	@echo "$(BLUE)Running tests in watch mode...$(NC)"
-	@docker compose --profile dev up -d qdrant-dev ollama-dev api-gateway-dev url-input-dev auth-dev scraper-dev analyzer-dev clustering-dev export-dev session-dev web-ui-dev monitoring-dev
+	@docker compose --profile dev up -d qdrant ollama backend-core ai-engine browser-engine web-ui
 	@echo "$(GREEN)Development environment started. Tests will run on file changes.$(NC)"
 
 # ==================== COVERAGE ====================
@@ -77,10 +78,12 @@ dev: dev-up ## Start development environment (alias for dev-up)
 
 dev-up: ## Start development environment with hot-reload
 	@echo "$(BLUE)Starting development environment...$(NC)"
-	@docker compose --profile dev up -d qdrant-dev ollama-dev api-gateway-dev url-input-dev auth-dev scraper-dev analyzer-dev clustering-dev export-dev session-dev web-ui-dev monitoring-dev
+	@docker compose --profile dev up -d qdrant ollama backend-core ai-engine browser-engine web-ui
 	@echo "$(GREEN)Development environment started!$(NC)"
 	@echo "$(YELLOW)Services available at:$(NC)"
-	@echo "  - API Gateway: http://localhost:8080"
+	@echo "  - Backend Core: http://localhost:8080"
+	@echo "  - AI Engine: http://localhost:8090"
+	@echo "  - Browser Engine: http://localhost:8083"
 	@echo "  - Web UI: http://localhost:8089"
 	@echo "  - Qdrant: http://localhost:6333"
 	@echo "  - Ollama: http://localhost:11434"
@@ -100,7 +103,7 @@ dev-restart: ## Restart development environment
 
 dev-rebuild: ## Rebuild and restart development environment
 	@echo "$(BLUE)Rebuilding development environment...$(NC)"
-	@docker compose --profile dev up -d --build qdrant-dev ollama-dev api-gateway-dev url-input-dev auth-dev scraper-dev analyzer-dev clustering-dev export-dev session-dev web-ui-dev monitoring-dev
+	@docker compose --profile dev up -d --build qdrant ollama backend-core ai-engine browser-engine web-ui
 	@echo "$(GREEN)Development environment rebuilt$(NC)"
 
 # ==================== PRODUCTION ====================
@@ -209,7 +212,12 @@ ps: ## Show running containers
 
 health: ## Check health of all services
 	@echo "$(BLUE)Checking service health...$(NC)"
-	@curl -s http://localhost:8080/health | jq . || echo "$(RED)API Gateway not responding$(NC)"
+	@echo "Backend Core:"
+	@curl -s http://localhost:8080/health | jq . || echo "$(RED)Backend Core not responding$(NC)"
+	@echo "\nAI Engine:"
+	@curl -s http://localhost:8090/health | jq . || echo "$(RED)AI Engine not responding$(NC)"
+	@echo "\nBrowser Engine:"
+	@curl -s http://localhost:8083/health | jq . || echo "$(RED)Browser Engine not responding$(NC)"
 
 # ==================== DOCUMENTATION ====================
 
@@ -225,19 +233,21 @@ docs-serve: ## Serve documentation locally
 
 # ==================== UTILITIES ====================
 
-shell: ## Open shell in a service container (usage: make shell SERVICE=analyzer)
+shell: ## Open shell in a service container (usage: make shell SERVICE=backend-core)
 	@if [ -z "$(SERVICE)" ]; then \
-		echo "$(RED)Error: SERVICE not specified. Usage: make shell SERVICE=analyzer$(NC)"; \
+		echo "$(RED)Error: SERVICE not specified. Usage: make shell SERVICE=backend-core$(NC)"; \
+		echo "$(YELLOW)Available services: backend-core, ai-engine, browser-engine, web-ui$(NC)"; \
 		exit 1; \
 	fi
-	@docker compose exec $(SERVICE)-service /bin/bash
+	@docker compose exec $(SERVICE) /bin/bash || docker compose exec $(SERVICE) /bin/sh
 
-logs-service: ## View logs for specific service (usage: make logs-service SERVICE=analyzer)
+logs-service: ## View logs for specific service (usage: make logs-service SERVICE=backend-core)
 	@if [ -z "$(SERVICE)" ]; then \
-		echo "$(RED)Error: SERVICE not specified. Usage: make logs-service SERVICE=analyzer$(NC)"; \
+		echo "$(RED)Error: SERVICE not specified. Usage: make logs-service SERVICE=backend-core$(NC)"; \
+		echo "$(YELLOW)Available services: backend-core, ai-engine, browser-engine, web-ui$(NC)"; \
 		exit 1; \
 	fi
-	@docker compose logs -f $(SERVICE)-service
+	@docker compose logs -f $(SERVICE)
 
 install: ## Install development dependencies
 	@echo "$(BLUE)Installing development dependencies...$(NC)"
