@@ -1,0 +1,206 @@
+# AI Models Configuration (Updated: Dec 20, 2025)
+# Optimized for Tab-Organizer: Prioritizing 2025 Q4 Architectures
+
+providers:
+  ollama:
+    type: local
+    base_url: "http://localhost:11434"
+    supports:
+      llm: true
+      embeddings: true
+    default_models:
+      llm: "llama3.2:3b"
+      embedding: "nomic-embed-text"
+    
+  openai:
+    type: cloud
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    supports:
+      llm: true
+      embeddings: true
+    default_models:
+      llm: "gpt-5.2"
+      embedding: "text-embedding-3-small"
+    
+  anthropic:
+    type: cloud
+    base_url: "https://api.anthropic.com"
+    api_key_env: "ANTHROPIC_API_KEY"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "claude-sonnet-4-5-20250929"
+      embedding: null
+    
+  deepseek:
+    type: cloud
+    base_url: "https://api.deepseek.com"
+    api_key_env: "DEEPSEEK_API_KEY"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "deepseek-chat"
+      embedding: null
+    
+  gemini:
+    type: cloud
+    base_url: "https://generativelanguage.googleapis.com"
+    api_key_env: "GOOGLE_API_KEY"
+    supports:
+      llm: true
+      embeddings: true
+    default_models:
+      llm: "gemini-3-flash"
+      embedding: "text-embedding-005"
+
+models:
+  # --- Gemini Models (Dec 2025) ---
+  gemini-3-flash:
+    provider: gemini
+    type: llm
+    description: "Gemini 3 Flash - The new speed/cost king. 3x faster than 2.5."
+    context_length: 2000000
+    input_price: "0.50/1M tokens"
+    output_price: "3.00/1M tokens"
+    recommended: true
+    
+  gemini-3-pro:
+    provider: gemini
+    type: llm
+    description: "Gemini 3 Pro - Multimodal reasoning powerhouse."
+    context_length: 2000000
+    input_price: "2.50/1M tokens"
+    output_price: "10.00/1M tokens"
+
+  gemini-3-deep-think:
+    provider: gemini
+    type: llm
+    description: "Gemini 3 Deep Think - Extended reasoning (Preview)."
+    context_length: 1000000
+    
+  text-embedding-005:
+    provider: gemini
+    type: embedding
+    description: "Latest Google embeddings (Higher precision)"
+    dimensions: 768
+    max_tokens: 2048
+    recommended: true
+
+  # --- OpenAI Models (5-Series) ---
+  gpt-5.2:
+    provider: openai
+    type: llm
+    description: "GPT-5.2 - Current SOTA Flagship (Dec 2025)"
+    context_length: 128000
+    input_price: "5.00/1M tokens"
+    output_price: "15.00/1M tokens"
+    
+  gpt-5.1:
+    provider: openai
+    type: llm
+    description: "GPT-5.1 Instant - Low latency, high throughput."
+    context_length: 128000
+    input_price: "0.40/1M tokens"
+    output_price: "1.20/1M tokens"
+    recommended: true
+
+  text-embedding-3-small:
+    provider: openai
+    type: embedding
+    description: "Efficient embeddings"
+    dimensions: 1536
+    max_tokens: 8191
+
+  # --- Anthropic Models (4.5 Series) ---
+  claude-opus-4-5-20251124:
+    provider: anthropic
+    type: llm
+    description: "Claude Opus 4.5 - Max reasoning, highest nuance."
+    context_length: 200000
+    input_price: "15.00/1M tokens"
+    output_price: "75.00/1M tokens"
+    
+  claude-sonnet-4-5-20250929:
+    provider: anthropic
+    type: llm
+    description: "Claude Sonnet 4.5 - Best balanced model."
+    context_length: 200000
+    input_price: "3.00/1M tokens"
+    output_price: "15.00/1M tokens"
+    recommended: true
+
+  claude-haiku-4-5-20251015:
+    provider: anthropic
+    type: llm
+    description: "Claude Haiku 4.5 - Extreme speed."
+    context_length: 200000
+    input_price: "0.25/1M tokens"
+    output_price: "1.25/1M tokens"
+
+  # --- DeepSeek Models ---
+    deepseek-chat:
+    provider: deepseek
+    type: llm
+    description: "DeepSeek V3.2 - Unbeatable price/performance."
+    context_length: 128000
+    # Note: Input pricing depends on KV cache hit/miss
+    input_price_cache_hit: "0.028/1M tokens"
+    input_price_cache_miss: "0.28/1M tokens"
+    output_price: "0.42/1M tokens"
+    recommended: true
+
+  deepseek-reasoner:
+    provider: deepseek
+    type: llm
+    description: "DeepSeek-V3.2 (Thinking Mode)"
+    context_length: 128000
+    # Note: Input pricing depends on KV cache hit/miss
+    input_price_cache_hit: "0.028/1M tokens"
+    input_price_cache_miss: "0.28/1M tokens"
+    output_price: "0.42/1M tokens"
+
+  deepseek-embedding-v2:
+    provider: deepseek
+    type: embedding
+    description: "DeepSeek Embedding"
+    dimensions: 768
+    max_tokens: 8192
+
+
+defaults:
+  provider: "ollama"
+  
+  use_cases:
+    # Creating the folder structure (Requires High Intelligence)
+    reasoning:
+      provider: "openai"
+      model: "gpt-5.2"
+      
+    # Organizing 500+ tabs (Requires Speed & Low Cost)
+    chat:
+      provider: "gemini" 
+      model: "gemini-3-flash"
+      
+    # Coding automation for the tool
+    coding:
+      provider: "anthropic"
+      model: "claude-sonnet-4-5-20250929"
+      
+    # Clustering / Semantic Search
+    embeddings:
+      provider: "gemini"
+      model: "text-embedding-005"
+      
+    # Cost Critical processing
+    cost_optimized:
+      provider: "deepseek"
+      model: "deepseek-chat"
+
+ui_options:
+  group_by_provider: true
+  show_metadata: true
+  filters: ["type", "provider", "size", "price"]
+  sort_options: ["name", "size", "price", "recommended"]
