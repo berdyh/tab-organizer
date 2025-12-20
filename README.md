@@ -50,6 +50,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 
 - Docker and Docker Compose
 - Python 3.11+ (for CLI)
+- [uv](https://github.com/astral-sh/uv) (recommended for dependency management)
 
 ### Installation
 
@@ -104,7 +105,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 
 # Ollama Models
 ./scripts/cli.py models --list            # List installed models
-./scripts/cli.py models --pull llama3.2   # Pull a model
+./scripts/cli.py models --pull llama3.2:3b   # Pull a model
 
 # Cleanup
 ./scripts/cli.py clean             # Remove containers and volumes
@@ -127,7 +128,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 |----------|---------|-------------|
 | `AI_PROVIDER` | `ollama` | LLM provider (ollama/openai/anthropic/deepseek/gemini) |
 | `EMBEDDING_PROVIDER` | `ollama` | Embedding provider |
-| `LLM_MODEL` | `llama3.2` | Model name for chat/analysis |
+| `LLM_MODEL` | `llama3.2:3b` | Model name for chat/analysis |
 | `EMBEDDING_MODEL` | `nomic-embed-text` | Model for embeddings |
 | `EMBEDDING_DIMENSIONS` | `768` | Embedding vector size |
 | `MAX_CONCURRENT_SCRAPES` | `10` | Parallel scraping limit |
@@ -158,8 +159,25 @@ GOOGLE_API_KEY=...
 
 # Run tests locally (without Docker)
 cd tests
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 pytest unit/ -v
+```
+
+## Development
+
+### Dependency Management with uv
+
+This project uses [uv](https://github.com/astral-sh/uv) for fast Python dependency management.
+
+```bash
+# Initialize
+uv init
+
+# Create venv
+uv venv
+
+# Install development dependencies
+uv pip install -r requirements-dev.txt
 ```
 
 ## Project Structure
