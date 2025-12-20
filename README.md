@@ -1,8 +1,8 @@
-# 🗂️ Tab Organizer
+# Tab Organizer
 
 A **local-first web scraping and tab organization tool** that helps you analyze, cluster, and manage browser tabs using AI. The system scrapes tab URLs, generates embeddings, clusters related content, and provides chatbot-style discovery.
 
-## ✨ Features
+## Features
 
 - **URL Deduplication**: Set-like storage with automatic normalization and tracking parameter removal
 - **Parallel Authentication**: Non-blocking scraping that continues for public sites while waiting for credentials
@@ -11,7 +11,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 - **RAG Chatbot**: Query your scraped content using natural language
 - **Export Options**: Markdown, JSON, HTML, Obsidian-compatible formats
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────┐
@@ -44,7 +44,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 | **Qdrant** | 6333 | Vector database for embeddings |
 | **Ollama** | 11434 | Local LLM inference (optional) |
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -81,7 +81,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 
 4. **Open the UI**: http://localhost:8089
 
-## 📖 Usage
+## Usage
 
 ### CLI Commands
 
@@ -119,7 +119,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 4. **Chat**: Ask questions about your content on the Chatbot page
 5. **Export**: Download organized tabs in your preferred format
 
-## 🔧 Configuration
+## Configuration
 
 ### Environment Variables
 
@@ -145,7 +145,7 @@ DEEPSEEK_API_KEY=...
 GOOGLE_API_KEY=...
 ```
 
-## 🧪 Testing
+## Testing
 
 ```bash
 # Run all tests
@@ -162,7 +162,7 @@ pip install -r requirements.txt
 pytest unit/ -v
 ```
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 tab-organizer/
@@ -206,7 +206,7 @@ tab-organizer/
 └── README.md
 ```
 
-## 🔌 API Reference
+## API Reference
 
 ### Backend Core (Port 8080)
 
@@ -242,14 +242,10 @@ tab-organizer/
 | `/auth/pending` | GET | Get pending auth |
 | `/auth/credentials` | POST | Submit credentials |
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Run tests: `./scripts/cli.py test`
 5. Submit a pull request
-
-## 📄 License
-
-MIT License - see LICENSE file for details.
