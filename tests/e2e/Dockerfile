@@ -1,9 +1,12 @@
 FROM python:3.11-slim
 
+# Install uv
+RUN pip install uv
+
 WORKDIR /app
 
 # Install dependencies
-RUN pip install --no-cache-dir \
+RUN uv pip install --no-cache-dir \
     pytest \
     pytest-asyncio \
     pytest-timeout \
