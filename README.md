@@ -1,8 +1,8 @@
-# 🗂️ Tab Organizer
+# Tab Organizer
 
 A **local-first web scraping and tab organization tool** that helps you analyze, cluster, and manage browser tabs using AI. The system scrapes tab URLs, generates embeddings, clusters related content, and provides chatbot-style discovery.
 
-## ✨ Features
+## Features
 
 - **URL Deduplication**: Set-like storage with automatic normalization and tracking parameter removal
 - **Parallel Authentication**: Non-blocking scraping that continues for public sites while waiting for credentials
@@ -11,7 +11,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 - **RAG Chatbot**: Query your scraped content using natural language
 - **Export Options**: Markdown, JSON, HTML, Obsidian-compatible formats
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────┐
@@ -44,12 +44,13 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 | **Qdrant** | 6333 | Vector database for embeddings |
 | **Ollama** | 11434 | Local LLM inference (optional) |
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
 - Docker and Docker Compose
 - Python 3.11+ (for CLI)
+- [uv](https://github.com/astral-sh/uv) (recommended for dependency management)
 
 ### Installation
 
@@ -81,7 +82,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 
 4. **Open the UI**: http://localhost:8089
 
-## 📖 Usage
+## Usage
 
 ### CLI Commands
 
@@ -104,7 +105,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 
 # Ollama Models
 ./scripts/cli.py models --list            # List installed models
-./scripts/cli.py models --pull llama3.2   # Pull a model
+./scripts/cli.py models --pull llama3.2:3b   # Pull a model
 
 # Cleanup
 ./scripts/cli.py clean             # Remove containers and volumes
@@ -119,7 +120,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 4. **Chat**: Ask questions about your content on the Chatbot page
 5. **Export**: Download organized tabs in your preferred format
 
-## 🔧 Configuration
+## Configuration
 
 ### Environment Variables
 
@@ -127,7 +128,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 |----------|---------|-------------|
 | `AI_PROVIDER` | `ollama` | LLM provider (ollama/openai/anthropic/deepseek/gemini) |
 | `EMBEDDING_PROVIDER` | `ollama` | Embedding provider |
-| `LLM_MODEL` | `llama3.2` | Model name for chat/analysis |
+| `LLM_MODEL` | `llama3.2:3b` | Model name for chat/analysis |
 | `EMBEDDING_MODEL` | `nomic-embed-text` | Model for embeddings |
 | `EMBEDDING_DIMENSIONS` | `768` | Embedding vector size |
 | `MAX_CONCURRENT_SCRAPES` | `10` | Parallel scraping limit |
@@ -145,7 +146,7 @@ DEEPSEEK_API_KEY=...
 GOOGLE_API_KEY=...
 ```
 
-## 🧪 Testing
+## Testing
 
 ```bash
 # Run all tests
@@ -158,11 +159,28 @@ GOOGLE_API_KEY=...
 
 # Run tests locally (without Docker)
 cd tests
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 pytest unit/ -v
 ```
 
-## 📁 Project Structure
+## Development
+
+### Dependency Management with uv
+
+This project uses [uv](https://github.com/astral-sh/uv) for fast Python dependency management.
+
+```bash
+# Initialize
+uv init
+
+# Create venv
+uv venv
+
+# Install development dependencies
+uv pip install -r requirements-dev.txt
+```
+
+## Project Structure
 
 ```
 tab-organizer/
@@ -206,7 +224,7 @@ tab-organizer/
 └── README.md
 ```
 
-## 🔌 API Reference
+## API Reference
 
 ### Backend Core (Port 8080)
 
@@ -242,14 +260,10 @@ tab-organizer/
 | `/auth/pending` | GET | Get pending auth |
 | `/auth/credentials` | POST | Submit credentials |
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Run tests: `./scripts/cli.py test`
 5. Submit a pull request
-
-## 📄 License
-
-MIT License - see LICENSE file for details.

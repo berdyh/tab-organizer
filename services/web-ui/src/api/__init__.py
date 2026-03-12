@@ -1,5 +1,5 @@
-"""API client module."""
+"""API client package for Streamlit pages."""
 
-from .client import APIClient, SyncAPIClient
+from .client import SyncAPIClient
 
-__all__ = ["APIClient", "SyncAPIClient"]
+__all__ = ["SyncAPIClient"]

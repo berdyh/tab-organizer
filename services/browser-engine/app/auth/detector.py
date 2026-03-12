@@ -65,18 +65,7 @@ class AuthDetector:
         parsed = urlparse(url)
         path = parsed.path.lower()
         
-        # Check for login URL patterns
-        for pattern in self._login_patterns:
-            if pattern.search(path):
-                return AuthDetectionResult(
-                    requires_auth=True,
-                    auth_type="form",
-                    login_url=url,
-                    confidence=0.8,
-                    details={"matched_pattern": pattern.pattern},
-                )
-        
-        # Check for OAuth providers
+        # Check for OAuth providers first (more specific than generic /auth or /oauth paths)
         full_url = url.lower()
         for provider, patterns in self.OAUTH_PROVIDERS.items():
             for pattern in patterns:
@@ -88,6 +77,17 @@ class AuthDetector:
                         login_url=url,
                         confidence=0.9,
                     )
+
+        # Check for login URL patterns
+        for pattern in self._login_patterns:
+            if pattern.search(path):
+                return AuthDetectionResult(
+                    requires_auth=True,
+                    auth_type="form",
+                    login_url=url,
+                    confidence=0.8,
+                    details={"matched_pattern": pattern.pattern},
+                )
         
         return AuthDetectionResult(requires_auth=False)
     

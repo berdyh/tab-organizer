@@ -1,0 +1,173 @@
+# AI Models Configuration
+
+providers:
+  openrouter:
+    type: cloud
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    supports:
+      llm: true
+      embeddings: true
+    default_models:
+      llm: "openai/gpt-4o-mini"
+      embedding: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+
+  ollama:
+    type: local
+    base_url: "http://localhost:11434"
+    supports:
+      llm: true
+      embeddings: true
+    default_models:
+      llm: "llama3.2:3b"
+      embedding: "nomic-embed-text"
+
+  openai:
+    type: cloud
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    supports:
+      llm: true
+      embeddings: true
+    default_models:
+      llm: "gpt-4o-mini"
+      embedding: "text-embedding-3-small"
+
+  anthropic:
+    type: cloud
+    base_url: "https://api.anthropic.com"
+    api_key_env: "ANTHROPIC_API_KEY"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "claude-3-5-sonnet-latest"
+      embedding: null
+
+  deepseek:
+    type: cloud
+    base_url: "https://api.deepseek.com"
+    api_key_env: "DEEPSEEK_API_KEY"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "deepseek-chat"
+      embedding: null
+
+  gemini:
+    type: cloud
+    base_url: "https://generativelanguage.googleapis.com"
+    api_key_env: "GOOGLE_API_KEY"
+    supports:
+      llm: true
+      embeddings: true
+    default_models:
+      llm: "gemini-1.5-flash"
+      embedding: "text-embedding-004"
+
+models:
+  nvidia/llama-nemotron-embed-vl-1b-v2:free:
+    provider: openrouter
+    type: embedding
+    description: "Default OpenRouter embedding model"
+    dimensions: 1024
+    max_tokens: 8192
+    recommended: true
+
+  qwen/qwen3-embedding-4b:free:
+    provider: openrouter
+    type: embedding
+    description: "Higher-quality multilingual embedding alternative"
+    dimensions: 2560
+    max_tokens: 32768
+    recommended: true
+
+  qwen/qwen3-embedding-0.6b:free:
+    provider: openrouter
+    type: embedding
+    description: "Lower-latency Qwen embedding option"
+    dimensions: 1024
+    max_tokens: 32768
+
+  openai/gpt-4o-mini:
+    provider: openrouter
+    type: llm
+    description: "Balanced default LLM via OpenRouter"
+    context_length: 128000
+
+  llama3.2:3b:
+    provider: ollama
+    type: llm
+    description: "Local default LLM"
+    context_length: 131072
+
+  nomic-embed-text:
+    provider: ollama
+    type: embedding
+    description: "Local embedding model"
+    dimensions: 768
+    max_tokens: 8192
+
+  gpt-4o-mini:
+    provider: openai
+    type: llm
+    description: "OpenAI fast model"
+    context_length: 128000
+
+  text-embedding-3-small:
+    provider: openai
+    type: embedding
+    description: "OpenAI embedding model"
+    dimensions: 1536
+    max_tokens: 8191
+
+  claude-3-5-sonnet-latest:
+    provider: anthropic
+    type: llm
+    description: "Anthropic balanced model"
+    context_length: 200000
+
+  deepseek-chat:
+    provider: deepseek
+    type: llm
+    description: "DeepSeek chat model"
+    context_length: 128000
+
+  gemini-1.5-flash:
+    provider: gemini
+    type: llm
+    description: "Gemini speed model"
+    context_length: 1000000
+
+  text-embedding-004:
+    provider: gemini
+    type: embedding
+    description: "Gemini embedding model"
+    dimensions: 768
+    max_tokens: 2048
+
+defaults:
+  provider: "openrouter"
+  use_cases:
+    reasoning:
+      provider: "openrouter"
+      model: "openai/gpt-4o-mini"
+    chat:
+      provider: "openrouter"
+      model: "openai/gpt-4o-mini"
+    coding:
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-latest"
+    embeddings:
+      provider: "openrouter"
+      model: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+    embeddings_quality:
+      provider: "openrouter"
+      model: "qwen/qwen3-embedding-4b:free"
+
+ui_options:
+  group_by_provider: true
+  show_metadata: true
+  filters: ["type", "provider", "recommended"]
+  sort_options: ["name", "recommended"]

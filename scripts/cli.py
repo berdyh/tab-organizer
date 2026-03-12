@@ -147,8 +147,16 @@ def cmd_init(args):
         time.sleep(5)  # Wait for Ollama to start
         
         print("Pulling default models...")
-        run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "pull", "llama3.2"], check=False)
-        run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "pull", "nomic-embed-text"], check=False)
+        # Get default models from config
+        sys.path.append(str(Path(__file__).parent.parent))
+        from config.config_loader import get_ai_config
+        ai_config = get_ai_config()
+        
+        default_llm = ai_config.get_default_model("ollama", "llm")
+        default_embedding = ai_config.get_default_model("ollama", "embedding")
+        
+        run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "pull", default_llm], check=False)
+        run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "pull", default_embedding], check=False)
     
     print("\n✅ Initialization complete!")
     print("   Run './scripts/cli.py start -d' to start services")
@@ -199,7 +207,7 @@ Examples:
   %(prog)s stop                     Stop all services
   %(prog)s logs -f web-ui           Follow web-ui logs
   %(prog)s test --type unit         Run unit tests
-  %(prog)s models --pull llama3.2   Pull a model
+  %(prog)s models --pull <model>   Pull a model
         """,
     )
     
