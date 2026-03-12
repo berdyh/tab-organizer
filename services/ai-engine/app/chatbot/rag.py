@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import lancedb
-import numpy as np
 import pandas as pd
 
 
@@ -132,49 +131,38 @@ class RAGChatbot:
 
         return len(rows)
 
-    def _all_rows(self, session_id: Optional[str] = None) -> list[dict]:
-        rows = self.table.to_pandas().to_dict("records")
-        if session_id:
-            rows = [r for r in rows if r.get("session_id") == session_id]
-        return rows
-
     async def search(
         self,
         query: str,
         session_id: Optional[str] = None,
         top_k: int = 5,
     ) -> list[dict]:
-        """Search for relevant documents."""
+        """Search for relevant documents using LanceDB vector search."""
         if not self._llm_client:
             raise RuntimeError("LLM client not set")
 
-        rows = self._all_rows(session_id=session_id)
-        if not rows:
+        query_embedding = await self._llm_client.embed_single(query)
+        if not query_embedding:
             return []
 
-        query_embedding = np.array(await self._llm_client.embed_single(query), dtype=np.float32)
-        if query_embedding.size == 0:
+        results = self.table.search(query_embedding)
+        if session_id:
+            escaped = session_id.replace("'", "''")
+            results = results.where(f"session_id = '{escaped}'")
+
+        df = results.limit(top_k).to_pandas()
+        if df.empty:
             return []
 
-        scored = []
-        qnorm = np.linalg.norm(query_embedding)
-        for row in rows:
-            embedding = np.array(row.get("embedding", []), dtype=np.float32)
-            if embedding.size == 0:
-                continue
-            denom = np.linalg.norm(embedding) * qnorm
-            score = float(np.dot(query_embedding, embedding) / denom) if denom else 0.0
-            scored.append((score, row))
-
-        scored.sort(key=lambda item: item[0], reverse=True)
         return [
             {
                 "url": row.get("url", ""),
                 "title": row.get("title", ""),
                 "content": row.get("content", ""),
-                "score": score,
+                # LanceDB returns distance (smaller is better). Convert to a bounded similarity-like score.
+                "score": 1.0 / (1.0 + float(row.get("_distance", 0.0))),
             }
-            for score, row in scored[:top_k]
+            for row in df.to_dict("records")
         ]
 
     async def chat(
@@ -233,12 +221,13 @@ Please answer the question based on the context above. Cite sources using [1], [
         if not self._llm_client:
             raise RuntimeError("LLM client not set")
 
-        rows = self._all_rows(session_id=session_id)
-        if not rows:
+        escaped = session_id.replace("'", "''")
+        df = self.table.search().where(f"session_id = '{escaped}'").limit(20).to_pandas()
+        if df.empty:
             return "No content found for this session."
 
         summaries = []
-        for row in rows[:20]:
+        for row in df.to_dict("records"):
             title = row.get("title", "Untitled")
             content = row.get("content", "")[:500]
             summaries.append(f"- {title}: {content}...")
@@ -253,10 +242,10 @@ Provide a cohesive summary that captures the main themes and topics."""
 
     def delete_session_documents(self, session_id: str) -> int:
         """Delete all documents for a session."""
-        rows = self._all_rows(session_id=session_id)
-        if not rows:
+        escaped = session_id.replace("'", "''")
+        count = self.table.count_rows(filter=f"session_id = '{escaped}'")
+        if count == 0:
             return 0
 
-        escaped = session_id.replace("'", "''")
         self.table.delete(f"session_id = '{escaped}'")
-        return len(rows)
+        return count
