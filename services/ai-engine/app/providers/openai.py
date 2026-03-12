@@ -14,13 +14,18 @@ class OpenAILLMProvider(BaseLLMProvider):
     def __init__(self, config: LLMConfig):
         self.config = config
         self.base_url = config.base_url or "https://api.openai.com/v1"
-        self.api_key = config.api_key or os.getenv("OPENAI_API_KEY")
+        default_key_env = "OPENROUTER_API_KEY" if "openrouter.ai" in self.base_url else "OPENAI_API_KEY"
+        self.api_key = config.api_key or os.getenv(default_key_env)
     
     def _headers(self) -> dict:
-        return {
+        headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if "openrouter.ai" in self.base_url:
+            headers["HTTP-Referer"] = os.getenv("OPENROUTER_SITE_URL", "https://tab-organizer.local")
+            headers["X-Title"] = os.getenv("OPENROUTER_APP_NAME", "Tab Organizer")
+        return headers
     
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text from prompt."""
@@ -83,13 +88,18 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
     def __init__(self, config: EmbeddingConfig):
         self.config = config
         self.base_url = config.base_url or "https://api.openai.com/v1"
-        self.api_key = config.api_key or os.getenv("OPENAI_API_KEY")
+        default_key_env = "OPENROUTER_API_KEY" if "openrouter.ai" in self.base_url else "OPENAI_API_KEY"
+        self.api_key = config.api_key or os.getenv(default_key_env)
     
     def _headers(self) -> dict:
-        return {
+        headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if "openrouter.ai" in self.base_url:
+            headers["HTTP-Referer"] = os.getenv("OPENROUTER_SITE_URL", "https://tab-organizer.local")
+            headers["X-Title"] = os.getenv("OPENROUTER_APP_NAME", "Tab Organizer")
+        return headers
     
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for texts."""

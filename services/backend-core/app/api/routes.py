@@ -257,6 +257,47 @@ async def export_session(request: ExportRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+
+
+@router.get("/scrape/status/{session_id}")
+async def get_scrape_status(session_id: str):
+    """Get scraping status for a session from browser engine."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"http://browser-engine:8083/scrape/status/{session_id}",
+                timeout=10.0,
+            )
+            if response.status_code == 404:
+                session = session_manager.get_session(session_id)
+                if not session:
+                    raise HTTPException(status_code=404, detail="Session not found")
+
+                counts = session.url_store.count_by_status()
+                total = session.url_store.count()
+                completed = (
+                    counts.get("scraped", 0)
+                    + counts.get("failed", 0)
+                    + counts.get("auth_required", 0)
+                )
+                status = "completed" if total > 0 and completed >= total else "not_started"
+                return {
+                    "session_id": session_id,
+                    "status": status,
+                    "total": total,
+                    "completed": completed,
+                    "success": counts.get("scraped", 0),
+                    "failed": counts.get("failed", 0),
+                    "auth_required": counts.get("auth_required", 0),
+                }
+            response.raise_for_status()
+            return response.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Status check failed: {e}")
+
+
 # Auth queue endpoints (proxy to browser engine)
 @router.get("/auth/pending")
 async def get_pending_auth():

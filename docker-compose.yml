@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # Backend Core - API Gateway and Session Management
   backend-core:
     build:
       context: ./services/backend-core
@@ -12,20 +11,14 @@ services:
     environment:
       - AI_ENGINE_URL=http://ai-engine:8090
       - BROWSER_ENGINE_URL=http://browser-engine:8083
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
     depends_on:
       - ai-engine
       - browser-engine
-      - qdrant
     networks:
       - tab-organizer-network
     restart: unless-stopped
-    profiles:
-      - default
-      - dev
+    profiles: [default, dev]
 
-  # AI Engine - Embeddings, Clustering, Chat
   ai-engine:
     build:
       context: ./services/ai-engine
@@ -34,29 +27,27 @@ services:
     ports:
       - "8090:8090"
     environment:
-      - AI_PROVIDER=${AI_PROVIDER:-ollama}
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-ollama}
-      - LLM_MODEL=${LLM_MODEL:-llama3.2:3b}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
-      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-768}
+      - AI_PROVIDER=${AI_PROVIDER:-openrouter}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openrouter}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-4o-mini}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nvidia/llama-nemotron-embed-vl-1b-v2:free}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-1024}
+      - VECTOR_DB_PATH=/data/lancedb
       - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
     depends_on:
-      - qdrant
       - ollama
+    volumes:
+      - lancedb-data:/data/lancedb
     networks:
       - tab-organizer-network
     restart: unless-stopped
-    profiles:
-      - default
-      - dev
+    profiles: [default, dev]
 
-  # Browser Engine - Scraping and Auth
   browser-engine:
     build:
       context: ./services/browser-engine
@@ -74,11 +65,8 @@ services:
     networks:
       - tab-organizer-network
     restart: unless-stopped
-    profiles:
-      - default
-      - dev
+    profiles: [default, dev]
 
-  # Web UI - Streamlit
   web-ui:
     build:
       context: ./services/web-ui
@@ -95,27 +83,8 @@ services:
     networks:
       - tab-organizer-network
     restart: unless-stopped
-    profiles:
-      - default
-      - dev
+    profiles: [default, dev]
 
-  # Qdrant - Vector Database
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: tab-organizer-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant-data:/qdrant/storage
-    networks:
-      - tab-organizer-network
-    restart: unless-stopped
-    profiles:
-      - default
-      - dev
-
-  # Ollama - Local LLM (optional)
   ollama:
     image: ollama/ollama:latest
     container_name: tab-organizer-ollama
@@ -126,11 +95,8 @@ services:
     networks:
       - tab-organizer-network
     restart: unless-stopped
-    profiles:
-      - default
-      - dev
+    profiles: [default, dev]
 
-  # Test services
   test-unit:
     build:
       context: .
@@ -144,8 +110,7 @@ services:
       - ./coverage:/app/coverage
     networks:
       - tab-organizer-network
-    profiles:
-      - test-unit
+    profiles: [test-unit]
 
   test-integration:
     build:
@@ -157,8 +122,6 @@ services:
       - BACKEND_URL=http://backend-core:8080
       - AI_ENGINE_URL=http://ai-engine:8090
       - BROWSER_ENGINE_URL=http://browser-engine:8083
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
       - OLLAMA_HOST=http://ollama:11434
     volumes:
       - ./tests:/app/tests
@@ -168,12 +131,10 @@ services:
       - backend-core
       - ai-engine
       - browser-engine
-      - qdrant
       - ollama
     networks:
       - tab-organizer-network
-    profiles:
-      - test-integration
+    profiles: [test-integration]
 
   test-e2e:
     build:
@@ -194,17 +155,15 @@ services:
       - backend-core
       - ai-engine
       - browser-engine
-      - qdrant
       - ollama
     networks:
       - tab-organizer-network
-    profiles:
-      - test-e2e
+    profiles: [test-e2e]
 
 networks:
   tab-organizer-network:
     driver: bridge
 
 volumes:
-  qdrant-data:
   ollama-data:
+  lancedb-data:

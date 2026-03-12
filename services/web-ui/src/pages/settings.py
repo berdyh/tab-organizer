@@ -27,7 +27,7 @@ def render_settings_page():
             current_llm = providers.get("llm", {})
             st.info(f"Current: {current_llm.get('provider', 'unknown')} / {current_llm.get('model', 'unknown')}")
             
-            llm_options = ["ollama", "openai", "anthropic", "deepseek", "gemini"]
+            llm_options = ["openrouter", "ollama", "openai", "anthropic", "deepseek", "gemini"]
             new_llm = st.selectbox(
                 "Select LLM Provider",
                 options=llm_options,
@@ -40,7 +40,7 @@ def render_settings_page():
             current_emb = providers.get("embeddings", {})
             st.info(f"Current: {current_emb.get('provider', 'unknown')} / {current_emb.get('model', 'unknown')}")
             
-            emb_options = ["ollama", "openai", "deepseek", "gemini"]
+            emb_options = ["openrouter", "ollama", "openai", "deepseek", "gemini"]
             new_emb = st.selectbox(
                 "Select Embedding Provider",
                 options=emb_options,
@@ -70,6 +70,9 @@ def render_settings_page():
     
     with st.expander("Environment Variables Reference"):
         st.code("""
+# OpenRouter
+OPENROUTER_API_KEY=sk-or-...
+
 # OpenAI
 OPENAI_API_KEY=sk-...
 
