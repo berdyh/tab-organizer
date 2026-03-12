@@ -120,7 +120,7 @@ class RAGChatbot:
             ids = [row["id"] for row in rows if row.get("id")]
             if ids:
                 id_filter = " OR ".join(
-                    f"id = '{doc_id.replace("'", "''")}'" for doc_id in ids
+                    f"id = '{doc_id.replace(chr(39), chr(39) * 2)}'" for doc_id in ids
                 )
                 try:
                     self.table.delete(id_filter)
