@@ -33,7 +33,7 @@ class RAGChatbot:
     def __init__(
         self,
         db_uri: str = "/data/lancedb",
-        embedding_dim: int = 768,
+        embedding_dim: int = 1024,
     ):
         self.db_uri = db_uri
         self.embedding_dim = embedding_dim
@@ -117,6 +117,17 @@ class RAGChatbot:
             )
 
         if rows:
+            ids = [row["id"] for row in rows if row.get("id")]
+            if ids:
+                id_filter = " OR ".join(
+                    f"id = '{doc_id.replace("'", "''")}'" for doc_id in ids
+                )
+                try:
+                    self.table.delete(id_filter)
+                except Exception:
+                    # Best-effort cleanup for upsert semantics.
+                    pass
+
             self.table.add(pd.DataFrame(rows))
 
         return len(rows)

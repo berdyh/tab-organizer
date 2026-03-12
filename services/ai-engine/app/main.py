@@ -30,7 +30,7 @@ clusterer = TabClusterer()
 clusterer.set_llm_client(llm_client)
 chatbot = RAGChatbot(
     db_uri=os.getenv("VECTOR_DB_PATH", "/data/lancedb"),
-    embedding_dim=int(os.getenv("EMBEDDING_DIMENSIONS", 768)),
+    embedding_dim=llm_client.embedding_config.dimensions,
 )
 chatbot.set_llm_client(llm_client)
 
