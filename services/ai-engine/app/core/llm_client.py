@@ -71,6 +71,7 @@ class LLMClient:
         "anthropic": {"llm": True, "embeddings": False, "local": False},
         "deepseek": {"llm": True, "embeddings": True, "local": False},
         "gemini": {"llm": True, "embeddings": True, "local": False},
+        "openrouter": {"llm": True, "embeddings": True, "local": False},
     }
     
     def __init__(
@@ -86,7 +87,7 @@ class LLMClient:
     
     def _default_llm_config(self) -> LLMConfig:
         """Get default LLM config from environment."""
-        provider = os.getenv("AI_PROVIDER", "ollama")
+        provider = os.getenv("AI_PROVIDER", "openrouter")
         ai_config = get_ai_config()
         
         # Get provider config
@@ -112,7 +113,7 @@ class LLMClient:
     
     def _default_embedding_config(self) -> EmbeddingConfig:
         """Get default embedding config from environment."""
-        provider = os.getenv("EMBEDDING_PROVIDER", "ollama")
+        provider = os.getenv("EMBEDDING_PROVIDER", "openrouter")
         ai_config = get_ai_config()
         
         # Get provider config
@@ -177,6 +178,7 @@ class LLMClient:
             "anthropic": AnthropicLLMProvider,
             "deepseek": DeepSeekLLMProvider,
             "gemini": GeminiLLMProvider,
+            "openrouter": OpenAILLMProvider,
         }
         
         provider_class = providers.get(self.llm_config.provider)
@@ -199,6 +201,7 @@ class LLMClient:
             "openai": OpenAIEmbeddingProvider,
             "deepseek": DeepSeekEmbeddingProvider,
             "gemini": GeminiEmbeddingProvider,
+            "openrouter": OpenAIEmbeddingProvider,
         }
         
         provider_class = providers.get(self.embedding_config.provider)

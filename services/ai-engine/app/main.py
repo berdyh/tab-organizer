@@ -29,9 +29,8 @@ llm_client = LLMClient()
 clusterer = TabClusterer()
 clusterer.set_llm_client(llm_client)
 chatbot = RAGChatbot(
-    qdrant_host=os.getenv("QDRANT_HOST", "qdrant"),
-    qdrant_port=int(os.getenv("QDRANT_PORT", 6333)),
-    embedding_dim=int(os.getenv("EMBEDDING_DIMENSIONS", 768)),
+    db_uri=os.getenv("VECTOR_DB_PATH", "/data/lancedb"),
+    embedding_dim=llm_client.embedding_config.dimensions,
 )
 chatbot.set_llm_client(llm_client)
 
