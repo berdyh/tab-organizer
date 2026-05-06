@@ -1,5 +1,5 @@
 """Scraper module."""
 
-from .engine import ScraperEngine, ScrapeResult, ContentExtractor
+from .engine import ContentExtractor, ScraperEngine, ScrapeResult
 
 __all__ = ["ScraperEngine", "ScrapeResult", "ContentExtractor"]

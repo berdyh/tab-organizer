@@ -1,10 +1,10 @@
 """AI Provider implementations."""
 
-from .ollama import OllamaLLMProvider, OllamaEmbeddingProvider
-from .openai import OpenAILLMProvider, OpenAIEmbeddingProvider
 from .anthropic import AnthropicLLMProvider
-from .deepseek import DeepSeekLLMProvider, DeepSeekEmbeddingProvider
-from .gemini import GeminiLLMProvider, GeminiEmbeddingProvider
+from .deepseek import DeepSeekEmbeddingProvider, DeepSeekLLMProvider
+from .gemini import GeminiEmbeddingProvider, GeminiLLMProvider
+from .ollama import OllamaEmbeddingProvider, OllamaLLMProvider
+from .openai import OpenAIEmbeddingProvider, OpenAILLMProvider
 
 __all__ = [
     "OllamaLLMProvider",

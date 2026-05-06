@@ -1,5 +1,5 @@
 """Clustering module."""
 
-from .pipeline import TabClusterer, Tab, Cluster
+from .pipeline import Cluster, Tab, TabClusterer
 
 __all__ = ["TabClusterer", "Tab", "Cluster"]

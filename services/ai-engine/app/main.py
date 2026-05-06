@@ -1,14 +1,15 @@
 """AI Engine Service - Main Application."""
 
 import os
+from typing import Optional
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 
+from .chatbot.rag import Document, RAGChatbot
+from .clustering.pipeline import Tab, TabClusterer
 from .core.llm_client import LLMClient
-from .clustering.pipeline import TabClusterer, Tab
-from .chatbot.rag import RAGChatbot, Document
 
 app = FastAPI(
     title="Tab Organizer - AI Engine",
@@ -139,10 +140,10 @@ async def cluster_urls(request: ClusterRequest):
             )
             for u in request.urls
         ]
-        
+
         # Cluster
         clusters = await clusterer.cluster(tabs)
-        
+
         return {
             "session_id": request.session_id,
             "clusters": clusterer.to_dict(clusters),
@@ -166,7 +167,7 @@ async def index_documents(request: IndexRequest):
             )
             for d in request.documents
         ]
-        
+
         count = await chatbot.index_documents(documents, request.session_id)
         return {"indexed": count}
     except Exception as e:

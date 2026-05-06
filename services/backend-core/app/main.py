@@ -26,11 +26,7 @@ app.include_router(router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
-    return {
-        "service": "backend-core",
-        "version": "1.0.0",
-        "status": "running"
-    }
+    return {"service": "backend-core", "version": "1.0.0", "status": "running"}
 
 
 @app.get("/health")

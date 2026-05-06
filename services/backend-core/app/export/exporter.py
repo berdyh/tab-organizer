@@ -12,13 +12,13 @@ from ..sessions.manager import Session
 
 class Exporter:
     """Export sessions to various formats."""
-    
+
     def __init__(self, templates_dir: Optional[str] = None):
         self.templates_dir = templates_dir or str(
             Path(__file__).parent.parent.parent.parent.parent / "templates"
         )
         self._env: Optional[Environment] = None
-    
+
     @property
     def env(self) -> Environment:
         """Lazy-load Jinja2 environment."""
@@ -28,7 +28,7 @@ class Exporter:
                 autoescape=select_autoescape(["html", "xml"]),
             )
         return self._env
-    
+
     def export_markdown(self, session: Session) -> str:
         """Export session to Markdown format."""
         lines = [
@@ -39,34 +39,42 @@ class Exporter:
             f"**Total URLs:** {session.url_store.count()}",
             "",
         ]
-        
+
         # Export clusters if available
         if session.clusters:
             lines.append("## Clusters")
             lines.append("")
-            
+
             for i, cluster in enumerate(session.clusters, 1):
                 cluster_name = cluster.get("name", f"Cluster {i}")
                 lines.append(f"### {cluster_name}")
                 lines.append("")
-                
+
                 for url_data in cluster.get("urls", []):
-                    url = url_data if isinstance(url_data, str) else url_data.get("url", "")
-                    title = url_data.get("title", url) if isinstance(url_data, dict) else url
+                    url = (
+                        url_data
+                        if isinstance(url_data, str)
+                        else url_data.get("url", "")
+                    )
+                    title = (
+                        url_data.get("title", url)
+                        if isinstance(url_data, dict)
+                        else url
+                    )
                     lines.append(f"- [{title}]({url})")
-                
+
                 lines.append("")
         else:
             # Export all URLs without clustering
             lines.append("## URLs")
             lines.append("")
-            
+
             for record in session.url_store.get_all():
                 title = record.metadata.get("title", record.original)
                 lines.append(f"- [{title}]({record.original})")
-        
+
         return "\n".join(lines)
-    
+
     def export_json(self, session: Session) -> str:
         """Export session to JSON format."""
         data = {
@@ -88,7 +96,7 @@ class Exporter:
             "clusters": session.clusters,
         }
         return json.dumps(data, indent=2)
-    
+
     def export_obsidian(self, session: Session) -> str:
         """Export session to Obsidian-compatible Markdown."""
         lines = [
@@ -101,7 +109,7 @@ class Exporter:
             f"# {session.name}",
             "",
         ]
-        
+
         if session.clusters:
             for cluster in session.clusters:
                 cluster_name = cluster.get("name", "Unnamed Cluster")
@@ -109,20 +117,28 @@ class Exporter:
                 safe_name = cluster_name.replace(" ", "-").lower()
                 lines.append(f"## [[{safe_name}|{cluster_name}]]")
                 lines.append("")
-                
+
                 for url_data in cluster.get("urls", []):
-                    url = url_data if isinstance(url_data, str) else url_data.get("url", "")
-                    title = url_data.get("title", url) if isinstance(url_data, dict) else url
+                    url = (
+                        url_data
+                        if isinstance(url_data, str)
+                        else url_data.get("url", "")
+                    )
+                    title = (
+                        url_data.get("title", url)
+                        if isinstance(url_data, dict)
+                        else url
+                    )
                     lines.append(f"- [{title}]({url})")
-                
+
                 lines.append("")
         else:
             for record in session.url_store.get_all():
                 title = record.metadata.get("title", record.original)
                 lines.append(f"- [{title}]({record.original})")
-        
+
         return "\n".join(lines)
-    
+
     def export_notion(self, session: Session) -> dict:
         """Export session to Notion-compatible format (blocks)."""
         blocks = [
@@ -131,41 +147,53 @@ class Exporter:
                 "type": "heading_1",
                 "heading_1": {
                     "rich_text": [{"type": "text", "text": {"content": session.name}}]
-                }
+                },
             }
         ]
-        
+
         if session.clusters:
             for cluster in session.clusters:
                 cluster_name = cluster.get("name", "Unnamed Cluster")
-                
+
                 # Add cluster heading
-                blocks.append({
-                    "object": "block",
-                    "type": "heading_2",
-                    "heading_2": {
-                        "rich_text": [{"type": "text", "text": {"content": cluster_name}}]
+                blocks.append(
+                    {
+                        "object": "block",
+                        "type": "heading_2",
+                        "heading_2": {
+                            "rich_text": [
+                                {"type": "text", "text": {"content": cluster_name}}
+                            ]
+                        },
                     }
-                })
-                
+                )
+
                 # Add URLs as bookmarks
                 for url_data in cluster.get("urls", []):
-                    url = url_data if isinstance(url_data, str) else url_data.get("url", "")
-                    blocks.append({
-                        "object": "block",
-                        "type": "bookmark",
-                        "bookmark": {"url": url}
-                    })
+                    url = (
+                        url_data
+                        if isinstance(url_data, str)
+                        else url_data.get("url", "")
+                    )
+                    blocks.append(
+                        {
+                            "object": "block",
+                            "type": "bookmark",
+                            "bookmark": {"url": url},
+                        }
+                    )
         else:
             for record in session.url_store.get_all():
-                blocks.append({
-                    "object": "block",
-                    "type": "bookmark",
-                    "bookmark": {"url": record.original}
-                })
-        
+                blocks.append(
+                    {
+                        "object": "block",
+                        "type": "bookmark",
+                        "bookmark": {"url": record.original},
+                    }
+                )
+
         return {"blocks": blocks}
-    
+
     def export_html(self, session: Session) -> str:
         """Export session to HTML format."""
         try:
@@ -174,7 +202,7 @@ class Exporter:
         except Exception:
             # Fallback to basic HTML if template not found
             return self._generate_basic_html(session)
-    
+
     def _generate_basic_html(self, session: Session) -> str:
         """Generate basic HTML without template."""
         html = [
@@ -195,18 +223,26 @@ class Exporter:
             "<body>",
             f"<h1>{session.name}</h1>",
         ]
-        
+
         if session.clusters:
             for cluster in session.clusters:
                 cluster_name = cluster.get("name", "Unnamed Cluster")
                 html.append(f"<h2>{cluster_name}</h2>")
                 html.append("<ul>")
-                
+
                 for url_data in cluster.get("urls", []):
-                    url = url_data if isinstance(url_data, str) else url_data.get("url", "")
-                    title = url_data.get("title", url) if isinstance(url_data, dict) else url
+                    url = (
+                        url_data
+                        if isinstance(url_data, str)
+                        else url_data.get("url", "")
+                    )
+                    title = (
+                        url_data.get("title", url)
+                        if isinstance(url_data, dict)
+                        else url
+                    )
                     html.append(f'<li><a href="{url}">{title}</a></li>')
-                
+
                 html.append("</ul>")
         else:
             html.append("<ul>")
@@ -214,10 +250,10 @@ class Exporter:
                 title = record.metadata.get("title", record.original)
                 html.append(f'<li><a href="{record.original}">{title}</a></li>')
             html.append("</ul>")
-        
+
         html.extend(["</body>", "</html>"])
         return "\n".join(html)
-    
+
     def export(self, session: Session, format: str) -> str:
         """Export session to specified format."""
         exporters = {
@@ -227,11 +263,11 @@ class Exporter:
             "obsidian": self.export_obsidian,
             "html": self.export_html,
         }
-        
+
         exporter = exporters.get(format.lower())
         if not exporter:
             raise ValueError(f"Unsupported export format: {format}")
-        
+
         result = exporter(session)
         if isinstance(result, dict):
             return json.dumps(result, indent=2)
