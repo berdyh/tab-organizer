@@ -93,8 +93,7 @@ def render_settings_page():
     st.caption("API keys are configured via environment variables in Docker.")
 
     with st.expander("Environment Variables Reference"):
-        st.code(
-            """
+        st.code("""
 # OpenRouter
 OPENROUTER_API_KEY=sk-or-...
 
@@ -112,8 +111,7 @@ GOOGLE_API_KEY=...
 
 # Ollama (local)
 OLLAMA_HOST=http://ollama:11434
-        """
-        )
+        """)
 
     st.divider()
 

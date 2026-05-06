@@ -144,7 +144,7 @@ lint: ## Run linting checks
 format: ## Format code with black and isort
 	@echo "$(BLUE)Formatting code...$(NC)"
 	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim sh -c "\
-		pip install black isort > /dev/null 2>&1 && \
+		pip install black==26.3.1 isort==6.1.0 > /dev/null 2>&1 && \
 		black --target-version py312 services/ && \
 		isort services/"
 	@echo "$(GREEN)Code formatted$(NC)"
@@ -152,7 +152,7 @@ format: ## Format code with black and isort
 format-check: ## Check code formatting without modifying
 	@echo "$(BLUE)Checking code formatting...$(NC)"
 	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim sh -c "\
-		pip install black isort > /dev/null 2>&1 && \
+		pip install black==26.3.1 isort==6.1.0 > /dev/null 2>&1 && \
 		black --check --target-version py312 services/ && \
 		isort --check-only services/"
 
