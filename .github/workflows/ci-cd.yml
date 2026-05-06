@@ -98,9 +98,13 @@ jobs:
             echo "ready: $url"
           done
 
+      - name: Build test image
+        run: |
+          docker compose --profile default --profile test-integration build test-integration
+
       - name: Run integration tests
         run: |
-          docker compose --profile default --profile test-integration up --build --abort-on-container-exit test-integration
+          docker compose --profile default --profile test-integration run --rm --no-deps test-integration
 
       - name: Copy test results
         if: always()
@@ -158,9 +162,13 @@ jobs:
             echo "ready: $url"
           done
 
+      - name: Build test image
+        run: |
+          docker compose --profile default --profile test-e2e build test-e2e
+
       - name: Run E2E tests
         run: |
-          docker compose --profile default --profile test-e2e up --build --abort-on-container-exit test-e2e
+          docker compose --profile default --profile test-e2e run --rm --no-deps test-e2e
 
       - name: Copy test results
         if: always()
