@@ -7,6 +7,10 @@ on:
     branches: [ main, develop ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: write
+
 env:
   DOCKER_BUILDKIT: 1
   COMPOSE_DOCKER_CLI_BUILD: 1
@@ -80,23 +84,23 @@ jobs:
 
       - name: Start test infrastructure
         run: |
-          docker compose --profile test-integration up -d ollama
+          docker compose --profile default --profile test-integration up -d ollama
           sleep 15
 
       - name: Start services
         run: |
-          docker compose --profile test-integration up -d --build backend-core ai-engine browser-engine
+          docker compose --profile default --profile test-integration up -d --build backend-core ai-engine browser-engine
           sleep 10
 
       - name: Run integration tests
         run: |
-          docker compose --profile test-integration up --build --abort-on-container-exit test-integration
+          docker compose --profile default --profile test-integration up --build --abort-on-container-exit test-integration
 
       - name: Copy test results
         if: always()
         run: |
           mkdir -p test-results
-          CONTAINER_ID=$(docker compose --profile test-integration ps -q test-integration)
+          CONTAINER_ID=$(docker compose --profile default --profile test-integration ps -q test-integration)
           if [ -n "$CONTAINER_ID" ]; then
             docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
           fi
@@ -111,13 +115,13 @@ jobs:
       - name: Show service logs
         if: failure()
         run: |
-          docker compose --profile test-integration logs backend-core
-          docker compose --profile test-integration logs ai-engine
-          docker compose --profile test-integration logs browser-engine
+          docker compose --profile default --profile test-integration logs backend-core
+          docker compose --profile default --profile test-integration logs ai-engine
+          docker compose --profile default --profile test-integration logs browser-engine
 
       - name: Cleanup
         if: always()
-        run: docker compose --profile test-integration down -v
+        run: docker compose --profile default --profile test-integration down -v
 
   # ==================== END-TO-END TESTS ====================
   e2e-tests:
@@ -134,12 +138,12 @@ jobs:
 
       - name: Start infrastructure
         run: |
-          docker compose --profile test-e2e up -d ollama
+          docker compose --profile default --profile test-e2e up -d ollama
           sleep 15
 
       - name: Start all services
         run: |
-          docker compose --profile test-e2e up -d --build backend-core ai-engine browser-engine web-ui
+          docker compose --profile default --profile test-e2e up -d --build backend-core ai-engine browser-engine web-ui
           sleep 20
 
       - name: Wait for services to be healthy
@@ -149,13 +153,13 @@ jobs:
 
       - name: Run E2E tests
         run: |
-          docker compose --profile test-e2e up --build --abort-on-container-exit test-e2e
+          docker compose --profile default --profile test-e2e up --build --abort-on-container-exit test-e2e
 
       - name: Copy test results
         if: always()
         run: |
           mkdir -p test-results
-          CONTAINER_ID=$(docker compose --profile test-e2e ps -q test-e2e)
+          CONTAINER_ID=$(docker compose --profile default --profile test-e2e ps -q test-e2e)
           if [ -n "$CONTAINER_ID" ]; then
             docker cp $CONTAINER_ID:/app/test-results/. ./test-results/ || true
           fi
@@ -170,14 +174,14 @@ jobs:
       - name: Show service logs
         if: failure()
         run: |
-          docker compose --profile test-e2e logs backend-core
-          docker compose --profile test-e2e logs ai-engine
-          docker compose --profile test-e2e logs browser-engine
-          docker compose --profile test-e2e logs web-ui
+          docker compose --profile default --profile test-e2e logs backend-core
+          docker compose --profile default --profile test-e2e logs ai-engine
+          docker compose --profile default --profile test-e2e logs browser-engine
+          docker compose --profile default --profile test-e2e logs web-ui
 
       - name: Cleanup
         if: always()
-        run: docker compose --profile test-e2e down -v
+        run: docker compose --profile default --profile test-e2e down -v
 
   # ==================== PERFORMANCE TESTS ====================
   performance-tests:
