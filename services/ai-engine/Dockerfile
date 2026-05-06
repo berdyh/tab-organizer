@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 # Install uv
 RUN pip install uv
@@ -9,10 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN uv pip install --no-cache-dir -r requirements.txt
+COPY services/ai-engine/requirements.txt .
+RUN uv pip install --system --no-cache-dir -r requirements.txt
 
-COPY app/ ./app/
+COPY services/ai-engine/app/ ./app/
+COPY config/ ./config/
 
 EXPOSE 8090
 

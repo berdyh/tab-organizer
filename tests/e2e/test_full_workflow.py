@@ -8,6 +8,11 @@ from typing import Dict, List
 import pytest
 import requests
 
+pytestmark = pytest.mark.skip(
+    reason="Targets a former API-gateway architecture (paths like /api/url-input-service/...). "
+    "Current architecture exposes direct services; see test_workflow.py for the live e2e coverage."
+)
+
 
 API_GATEWAY_URL = os.getenv("API_GATEWAY_URL", "http://localhost:8080").rstrip("/")
 WEB_UI_URL = os.getenv("WEB_UI_URL", "http://localhost:8089").rstrip("/")

@@ -47,6 +47,10 @@ docker-compose.override.yml
 htmlcov/
 .tox/
 .nox/
+test-results/
+test-reports/
+coverage/
+bandit-report.json
 
 # Logs
 *.log
