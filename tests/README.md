@@ -17,7 +17,7 @@ Prefer the unified CLI so the same containers run locally and in CI:
 
 ```bash
 ./scripts/cli.py test --type unit        # All unit suites
-./scripts/cli.py test --type integration # Integration suites (requires test-qdrant/test-ollama)
+./scripts/cli.py test --type integration # Integration suites (require Ollama + AI Engine with embedded LanceDB)
 ./scripts/cli.py test --type e2e         # Full workflow
 ./scripts/cli.py test --type performance # Locust load scenarios
 ```

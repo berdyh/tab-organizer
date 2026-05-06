@@ -31,7 +31,7 @@ make coverage
 ## What's Included
 
 - Unit tests (fast, isolated)
-- Integration tests (with Qdrant & Ollama)
+- Integration tests (with the AI Engine's embedded LanceDB store and Ollama)
 - E2E tests (full workflow, API + UI)
 - JUnit + HTML reports (artifacts in CI)
 
@@ -45,10 +45,10 @@ docker compose --profile test-unit up --build --abort-on-container-exit test-uni
 
 ### Integration Tests
 
-Start infrastructure and services:
+Start infrastructure and services (LanceDB is embedded inside `ai-engine`):
 
 ```bash
-docker compose --profile test-integration up -d qdrant ollama
+docker compose --profile test-integration up -d ollama
 docker compose --profile test-integration up -d --build backend-core ai-engine browser-engine
 docker compose --profile test-integration up --build --abort-on-container-exit test-integration
 ```
@@ -58,7 +58,7 @@ docker compose --profile test-integration up --build --abort-on-container-exit t
 Start full stack:
 
 ```bash
-docker compose --profile test-e2e up -d qdrant ollama
+docker compose --profile test-e2e up -d ollama
 docker compose --profile test-e2e up -d --build backend-core ai-engine browser-engine web-ui
 docker compose --profile test-e2e up --build --abort-on-container-exit test-e2e
 ```
@@ -135,7 +135,7 @@ make test-unit
 3. Run integration smoke-tests:
 
 ```bash
-docker compose --profile test-integration up -d qdrant ollama
+docker compose --profile test-integration up -d ollama
 ./scripts/cli.py test --type integration
 ```
 
@@ -151,7 +151,7 @@ docker compose --profile test-integration up -d qdrant ollama
 
 **Out of disk**: Run `docker system df` and clean up unused resources.
 
-**Port conflicts**: Stop other services using the same ports (8080, 8083, 8089, 8090, 6333, 11434).
+**Port conflicts**: Stop other services using the same ports (8080, 8083, 8089, 8090, 11434).
 
 ### Service Health Checks
 
@@ -159,9 +159,8 @@ Check if services are healthy:
 
 ```bash
 curl http://localhost:8080/health  # Backend Core
-curl http://localhost:8090/health  # AI Engine
+curl http://localhost:8090/health  # AI Engine (also reports LanceDB readiness)
 curl http://localhost:8083/health  # Browser Engine
-curl http://localhost:6333/        # Qdrant
 curl http://localhost:11434/       # Ollama
 ```
 
@@ -222,14 +221,14 @@ tests/
 1. **Use tmpfs for test data** (faster, no disk I/O):
    ```yaml
    tmpfs:
-     - /qdrant/storage
+     - /data/lancedb
      - /root/.ollama
    ```
 
 2. **Set proper timeouts**:
    ```yaml
    healthcheck:
-     test: ["CMD", "curl", "-f", "http://localhost:6333/"]
+     test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
      interval: 10s
      timeout: 5s
      retries: 5

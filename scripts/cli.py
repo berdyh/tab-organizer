@@ -56,8 +56,8 @@ def cmd_start(args):
         print("   Backend API:    http://localhost:8080")
         print("   AI Engine:      http://localhost:8090")
         print("   Browser Engine: http://localhost:8083")
-        print("   Qdrant:         http://localhost:6333")
         print("   Ollama:         http://localhost:11434")
+        print("   LanceDB:        embedded in AI Engine (volume: lancedb-data)")
 
 
 def cmd_stop(args):
@@ -265,7 +265,7 @@ Examples:
     
     # shell
     shell_parser = subparsers.add_parser("shell", help="Open shell in container")
-    shell_parser.add_argument("service", choices=["backend", "ai", "browser", "ui", "qdrant", "ollama"])
+    shell_parser.add_argument("service", choices=["backend", "ai", "browser", "ui", "ollama"])
     shell_parser.set_defaults(func=cmd_shell)
     
     args = parser.parse_args()

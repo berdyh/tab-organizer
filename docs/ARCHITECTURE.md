@@ -34,11 +34,11 @@ graph TB
     Backend --> AI[AI Engine :8090]
     Backend --> Browser[Browser Engine :8083]
     
-    AI --> Qdrant[(Qdrant Vector DB :6333)]
+    AI --> LanceDB[(LanceDB - embedded vector store)]
     AI --> Ollama[Ollama LLM :11434]
     Browser --> Backend
     
-    Qdrant --> Storage1[Vector Storage]
+    LanceDB --> Storage1[Vector Storage volume: lancedb-data]
     Ollama --> Storage2[Model Storage]
     
     subgraph "Input Sources"
@@ -70,7 +70,7 @@ flowchart TD
     G --> H
     
     H --> I[Embedding Generation]
-    I --> J[Vector Storage - Qdrant]
+    I --> J[Vector Storage - LanceDB]
     
     J --> K[UMAP Dimensionality Reduction]
     K --> L[HDBSCAN Clustering]
@@ -116,7 +116,7 @@ sequenceDiagram
     participant BE as Backend Core
     participant BR as Browser Engine
     participant AI as AI Engine
-    participant Q as Qdrant DB
+    participant Q as LanceDB (embedded)
     participant O as Ollama LLM
 
     UI->>BE: Submit URLs for processing
@@ -166,7 +166,7 @@ sequenceDiagram
 - `app/sessions/manager.py` - Session management
 - `app/export/exporter.py` - Multi-format export
 
-**Technology**: FastAPI, Python 3.11
+**Technology**: FastAPI, Python 3.12
 
 ### 2. AI Engine (Port 8090)
 **Purpose**: AI services for embeddings, clustering, and chatbot
@@ -175,7 +175,7 @@ sequenceDiagram
 - Multi-provider LLM support (Ollama, OpenAI, Anthropic, DeepSeek, Gemini)
 - Embedding generation with configurable models
 - UMAP + HDBSCAN clustering pipeline
-- RAG-based chatbot with Qdrant vector search
+- RAG-based chatbot with LanceDB vector search (native LanceDB query/search APIs)
 - Dynamic provider switching
 
 **Key Components**:
@@ -184,7 +184,7 @@ sequenceDiagram
 - `app/clustering/pipeline.py` - Clustering pipeline
 - `app/chatbot/rag.py` - RAG chatbot
 
-**Technology**: FastAPI, UMAP, HDBSCAN, Qdrant client, Python 3.11
+**Technology**: FastAPI, UMAP, HDBSCAN, LanceDB (embedded), Python 3.12
 
 ### 3. Browser Engine (Port 8083)
 **Purpose**: Web scraping and authentication handling
@@ -202,7 +202,7 @@ sequenceDiagram
 - `app/auth/queue.py` - Authentication queue management
 - `app/extraction/` - Content extraction utilities
 
-**Technology**: FastAPI, httpx, BeautifulSoup, trafilatura, Python 3.11
+**Technology**: FastAPI, httpx, BeautifulSoup, trafilatura, Python 3.12
 
 ### 4. Web UI (Port 8089)
 **Purpose**: Streamlit-based user interface
@@ -222,7 +222,7 @@ sequenceDiagram
 - `src/pages/settings.py` - Settings page
 - `src/api/client.py` - Backend API client
 
-**Technology**: Streamlit, Python 3.11
+**Technology**: Streamlit, Python 3.12
 
 ## Container Network Architecture
 
@@ -237,13 +237,12 @@ graph TB
         end
         
         subgraph "Infrastructure Services"
-            QDRANT[(Qdrant :6333)]
             OLLAMA[Ollama :11434]
         end
         
         subgraph "Storage Volumes"
-            V1[qdrant_data]
-            V2[ollama_data]
+            V1[lancedb-data - mounted into ai-engine]
+            V2[ollama-data]
         end
     end
     
@@ -252,10 +251,8 @@ graph TB
     Backend --> Browser
     Browser --> Backend
     
-    AI --> QDRANT
     AI --> OLLAMA
-    
-    QDRANT --> V1
+    AI --> V1
     OLLAMA --> V2
 ```
 
@@ -274,15 +271,15 @@ graph TB
 1. **Creation**: New session with unique ID
 2. **URL Storage**: Deduplicated URL collection
 3. **Processing**: Scraping and clustering workflows
-4. **Persistence**: Session data stored in Qdrant collections
+4. **Persistence**: Session data stored in LanceDB tables on disk (volume `lancedb-data`)
 5. **Export**: Session data exported in various formats
 
 ## Technology Stack
 
 ### Core Infrastructure
 - **Containerization**: Docker & Docker Compose
-- **API Framework**: FastAPI (Python 3.11)
-- **Vector Database**: Qdrant
+- **API Framework**: FastAPI (Python 3.12)
+- **Vector Database**: LanceDB (embedded, file-backed)
 - **AI Models**: Ollama (local) or cloud providers
 
 ### AI & Machine Learning
@@ -299,7 +296,7 @@ graph TB
 ### Export & Integration
 - **Template Engine**: Jinja2
 - **Export Formats**: Markdown, JSON, HTML, Obsidian
-- **Vector Search**: Qdrant for RAG chatbot
+- **Vector Search**: LanceDB native search/query APIs powering the RAG chatbot
 
 ## Security Considerations
 
@@ -325,13 +322,13 @@ graph TB
 ### Horizontal Scaling
 - Microservice architecture enables independent scaling
 - Docker Compose profiles for different deployment scenarios
-- Stateless services (except Qdrant and Ollama)
+- Stateless services (except the AI Engine's LanceDB volume and Ollama's model cache)
 
 ### Resource Optimization
 - Configurable AI provider selection
 - Dynamic model switching
 - Parallel scraping with configurable concurrency
-- Efficient vector storage with Qdrant
+- Efficient on-disk vector storage with LanceDB
 
 ### Performance Monitoring
 - Health check endpoints on all services
@@ -397,42 +394,39 @@ graph TB
 
 ### Container Orchestration
 ```yaml
-version: '3.8'
 services:
   # Infrastructure
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports: ["6333:6333"]
-    volumes: [qdrant_data:/qdrant/storage]
-    
   ollama:
     image: ollama/ollama:latest
     ports: ["11434:11434"]
-    volumes: [ollama_data:/root/.ollama]
-    
+    volumes: [ollama-data:/root/.ollama]
+
   # Application Services
-  backend-core:
-    build: ./services/backend-core
-    ports: ["8080:8080"]
-    depends_on: [qdrant, ai-engine, browser-engine]
-    
   ai-engine:
     build: ./services/ai-engine
     ports: ["8090:8090"]
-    depends_on: [qdrant, ollama]
-    
+    environment:
+      VECTOR_DB_PATH: /data/lancedb
+    depends_on: [ollama]
+    volumes: [lancedb-data:/data/lancedb]
+
+  backend-core:
+    build: ./services/backend-core
+    ports: ["8080:8080"]
+    depends_on: [ai-engine, browser-engine]
+
   browser-engine:
     build: ./services/browser-engine
     ports: ["8083:8083"]
-    
+
   web-ui:
     build: ./services/web-ui
     ports: ["8089:8089"]
     depends_on: [backend-core]
-    
+
 volumes:
-  qdrant_data:
-  ollama_data:
+  lancedb-data:
+  ollama-data:
 ```
 
 ## Service Dependencies
@@ -442,23 +436,21 @@ graph TD
     UI[Web UI] --> Backend[Backend Core]
     Backend --> AI[AI Engine]
     Backend --> Browser[Browser Engine]
-    AI --> Qdrant[Qdrant]
+    AI --> LanceDB[LanceDB embedded]
     AI --> Ollama[Ollama]
     Browser --> Backend
 ```
 
 ### Startup Order
-1. Qdrant (vector database)
-2. Ollama (LLM server)
-3. AI Engine (depends on Qdrant, Ollama)
-4. Browser Engine (independent)
-5. Backend Core (depends on AI Engine, Browser Engine)
-6. Web UI (depends on Backend Core)
+1. Ollama (LLM server)
+2. AI Engine (mounts LanceDB volume; depends on Ollama)
+3. Browser Engine (independent)
+4. Backend Core (depends on AI Engine, Browser Engine)
+5. Web UI (depends on Backend Core)
 
 ### Health Checks
 All services expose `/health` endpoints for monitoring:
 - Backend Core: `http://localhost:8080/health`
-- AI Engine: `http://localhost:8090/health`
+- AI Engine: `http://localhost:8090/health` (also reports LanceDB readiness)
 - Browser Engine: `http://localhost:8083/health`
-- Qdrant: `http://localhost:6333/`
 - Ollama: `http://localhost:11434/`

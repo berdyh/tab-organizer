@@ -4,7 +4,7 @@ This guide explains how to run the Tab Organizer project without Docker, using P
 
 ## Prerequisites
 
-- Python 3.11+ 
+- Python 3.12+ 
 - [uv](https://github.com/astral-sh/uv) (recommended) or pip
 - PostgreSQL (optional, for persistent storage)
 - Redis (optional, for caching)
@@ -40,25 +40,23 @@ cp .env.example .env
 uv venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install development dependencies
-uv pip install -r requirements-dev.txt
+# Install per-service runtime dependencies
+uv pip install -r services/ai-engine/requirements.txt
+uv pip install -r services/backend-core/requirements.txt
+uv pip install -r services/browser-engine/requirements.txt
+uv pip install -r services/web-ui/requirements.txt
+
+# Install test dependencies
+uv pip install -r tests/requirements.txt
 ```
 
 ### 4. Setup External Services
 
-#### Qdrant (Vector Database)
+#### LanceDB (Vector Storage)
 
-```bash
-# Option A: Install locally
-curl -L https://github.com/qdrant/qdrant/releases/latest/download/qdrant-linux-x86_64.tar.gz | tar xz
-./qdrant/qdrant &
-
-# Option B: Use Docker for just Qdrant
-docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant:latest
-
-# Option C: Use cloud service (e.g., Qdrant Cloud)
-# Update .env with your cloud URL
-```
+LanceDB is an embedded vector store — no separate service is needed. The AI Engine
+opens a LanceDB directory on disk; pick any local path and point `VECTOR_DB_PATH`
+at it (e.g. `./data/lancedb`). The directory is created on first use.
 
 #### Ollama (Local LLM)
 
@@ -103,7 +101,7 @@ streamlit run app.py --server.port=8089 --server.address=0.0.0.0
 - Backend API: http://localhost:8080
 - AI Engine: http://localhost:8090
 - Browser Engine: http://localhost:8083
-- Qdrant Dashboard: http://localhost:6333/dashboard
+- LanceDB: embedded — inspect via the AI Engine's `/search` and `/providers` endpoints, or by opening the on-disk directory at `VECTOR_DB_PATH`
 
 ## Option 2: Using pip
 
@@ -120,8 +118,12 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Upgrade pip
 pip install --upgrade pip
 
-# Install development dependencies
-pip install -r requirements-dev.txt
+# Install per-service runtime + test dependencies
+pip install -r services/ai-engine/requirements.txt
+pip install -r services/backend-core/requirements.txt
+pip install -r services/browser-engine/requirements.txt
+pip install -r services/web-ui/requirements.txt
+pip install -r tests/requirements.txt
 ```
 
 ### 3. Follow steps 4-6 from Option 1
@@ -143,8 +145,10 @@ EMBEDDING_MODEL=nomic-embed-text
 BACKEND_URL=http://localhost:8080
 AI_ENGINE_URL=http://localhost:8090
 BROWSER_ENGINE_URL=http://localhost:8083
-QDRANT_URL=http://localhost:6333
-OLLAMA_URL=http://localhost:11434
+OLLAMA_HOST=http://localhost:11434
+
+# Embedded vector store (LanceDB on local disk)
+VECTOR_DB_PATH=./data/lancedb
 
 # Database (optional, defaults to SQLite)
 DATABASE_URL=sqlite:///./tab_organizer.db
@@ -216,10 +220,10 @@ uv run safety check
    playwright install chromium
    ```
 
-4. **Qdrant connection failed**
-   - Ensure Qdrant is running on port 6333
-   - Check firewall settings
-   - Verify QDRANT_URL in .env
+4. **LanceDB errors at startup**
+   - Ensure `VECTOR_DB_PATH` points to a writable directory
+   - Check that the AI Engine process has read/write access to that path
+   - Delete the directory and let the AI Engine recreate it if the index is corrupt
 
 5. **Ollama models not found**
    ```bash

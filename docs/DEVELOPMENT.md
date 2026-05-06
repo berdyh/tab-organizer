@@ -61,7 +61,7 @@ gantt
 
 #### 1. Core Infrastructure Setup
 - [x] **Docker Compose configuration** for 4 core services
-- [x] **Qdrant vector database** with persistent storage and collection management
+- [x] **LanceDB embedded vector store** with persistent on-disk storage and table management
 - [x] **Ollama LLM service** with model management and hot-swapping
 - [x] **Backend Core** with API Gateway, session management, and URL storage
 - [x] **Inter-service communication** and Docker networking
@@ -96,7 +96,7 @@ gantt
 - [x] **Configurable embedding generation** system
 - [x] **Multiple model support** (nomic-embed-text, all-minilm, mxbai-embed-large)
 - [x] **Ollama integration** with multiple LLM models
-- [x] **Qdrant vector database** integration
+- [x] **LanceDB embedded vector store** integration
 - [x] **Model switching** and configuration management
 - [x] **Hardware detection** for optimal model selection
 
@@ -199,7 +199,7 @@ gantt
 
 ### Prerequisites
 - Docker and Docker Compose
-- Python 3.11+
+- Python 3.12+
 - Git
 
 ### Local Development Environment
@@ -324,7 +324,7 @@ graph TB
 The unified `docker-compose.yml` exposes dedicated profiles for every test stage:
 
 - `test-unit` — spins up per-service unit runners (Python + Jest).
-- `test-integration` — provisions ephemeral Qdrant/Ollama plus integration runners.
+- `test-integration` — provisions an ephemeral Ollama instance plus the AI Engine (with its embedded LanceDB) and integration runners.
 - `test-e2e` — boots API/UI facades and executes the pytest E2E suite.
 - `test-performance` — launches Locust against the test API gateway.
 - `test-report` — aggregates coverage artifacts when present.
@@ -345,7 +345,7 @@ Use `docker compose --profile <name> up ...` or the convenience wrappers in `scr
 #### Integration Tests
 - **Service Communication**: Test inter-service APIs using Docker Compose test networks
 - **Database Operations**: Test data persistence and retrieval with containerized test databases
-- **External Dependencies**: Test Qdrant, Ollama integration in isolated container environments
+- **External Dependencies**: Test the AI Engine's embedded LanceDB and Ollama integration in isolated container environments
 - **End-to-End Workflows**: Complete user journeys tested across containerized services
 - **Parallel Processing**: Test authentication and scraping workflows in parallel container environments
 
@@ -606,7 +606,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Build performance test environment
-        run: docker compose --profile test-performance up -d --build test-qdrant test-ollama test-api-gateway
+        run: docker compose --profile test-performance up -d --build test-ollama test-ai-engine test-api-gateway
       - name: Run load tests
         run: docker compose --profile test-performance up --abort-on-container-exit load-test-runner
       - name: Tear down performance environment
@@ -630,7 +630,7 @@ jobs:
 ### Documentation
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
 - [Docker Compose Reference](https://docs.docker.com/compose/)
-- [Qdrant Documentation](https://qdrant.tech/documentation/)
+- [LanceDB Documentation](https://lancedb.github.io/lancedb/)
 - [Ollama Documentation](https://ollama.ai/docs/)
 - [UMAP Documentation](https://umap-learn.readthedocs.io/)
 - [HDBSCAN Documentation](https://hdbscan.readthedocs.io/)
@@ -640,7 +640,7 @@ jobs:
 - **Testing**: pytest, pytest-asyncio, pytest-cov
 - **Logging**: structlog
 - **Containerization**: Docker, Docker Compose
-- **Vector Database**: Qdrant
+- **Vector Database**: LanceDB (embedded)
 - **AI Models**: Ollama
 - **Clustering**: UMAP, HDBSCAN, scikit-learn
 - **Web Scraping**: Scrapy, Beautiful Soup, trafilatura
