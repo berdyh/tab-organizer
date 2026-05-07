@@ -52,7 +52,7 @@ test-service: ## Run tests for specific service (usage: make test-service SERVIC
 
 test-watch: ## Run tests in watch mode for development
 	@echo "$(BLUE)Running tests in watch mode...$(NC)"
-	@docker compose --profile dev up -d qdrant ollama backend-core ai-engine browser-engine web-ui
+	@docker compose --profile dev up -d ollama backend-core ai-engine browser-engine web-ui
 	@echo "$(GREEN)Development environment started. Tests will run on file changes.$(NC)"
 
 # ==================== COVERAGE ====================
@@ -78,15 +78,15 @@ dev: dev-up ## Start development environment (alias for dev-up)
 
 dev-up: ## Start development environment with hot-reload
 	@echo "$(BLUE)Starting development environment...$(NC)"
-	@docker compose --profile dev up -d qdrant ollama backend-core ai-engine browser-engine web-ui
+	@docker compose --profile dev up -d ollama backend-core ai-engine browser-engine web-ui
 	@echo "$(GREEN)Development environment started!$(NC)"
 	@echo "$(YELLOW)Services available at:$(NC)"
 	@echo "  - Backend Core: http://localhost:8080"
 	@echo "  - AI Engine: http://localhost:8090"
 	@echo "  - Browser Engine: http://localhost:8083"
 	@echo "  - Web UI: http://localhost:8089"
-	@echo "  - Qdrant: http://localhost:6333"
 	@echo "  - Ollama: http://localhost:11434"
+	@echo "  - LanceDB: embedded in AI Engine (volume: lancedb-data)"
 
 dev-down: ## Stop development environment
 	@echo "$(BLUE)Stopping development environment...$(NC)"
@@ -103,7 +103,7 @@ dev-restart: ## Restart development environment
 
 dev-rebuild: ## Rebuild and restart development environment
 	@echo "$(BLUE)Rebuilding development environment...$(NC)"
-	@docker compose --profile dev up -d --build qdrant ollama backend-core ai-engine browser-engine web-ui
+	@docker compose --profile dev up -d --build ollama backend-core ai-engine browser-engine web-ui
 	@echo "$(GREEN)Development environment rebuilt$(NC)"
 
 # ==================== PRODUCTION ====================
@@ -133,7 +133,7 @@ restart: ## Restart production environment
 
 lint: ## Run linting checks
 	@echo "$(BLUE)Running linting checks...$(NC)"
-	@docker run --rm -v $(PWD):/app -w /app python:3.11-slim sh -c "\
+	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim sh -c "\
 		pip install flake8 pylint > /dev/null 2>&1 && \
 		echo '$(YELLOW)Running flake8...$(NC)' && \
 		flake8 services/ --count --select=E9,F63,F7,F82 --show-source --statistics && \
@@ -143,22 +143,22 @@ lint: ## Run linting checks
 
 format: ## Format code with black and isort
 	@echo "$(BLUE)Formatting code...$(NC)"
-	@docker run --rm -v $(PWD):/app -w /app python:3.11-slim sh -c "\
-		pip install black isort > /dev/null 2>&1 && \
-		black services/ && \
+	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim sh -c "\
+		pip install black==26.3.1 isort==6.1.0 > /dev/null 2>&1 && \
+		black --target-version py312 services/ && \
 		isort services/"
 	@echo "$(GREEN)Code formatted$(NC)"
 
 format-check: ## Check code formatting without modifying
 	@echo "$(BLUE)Checking code formatting...$(NC)"
-	@docker run --rm -v $(PWD):/app -w /app python:3.11-slim sh -c "\
-		pip install black isort > /dev/null 2>&1 && \
-		black --check services/ && \
+	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim sh -c "\
+		pip install black==26.3.1 isort==6.1.0 > /dev/null 2>&1 && \
+		black --check --target-version py312 services/ && \
 		isort --check-only services/"
 
 security: ## Run security checks
 	@echo "$(BLUE)Running security checks...$(NC)"
-	@docker run --rm -v $(PWD):/app -w /app python:3.11-slim sh -c "\
+	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim sh -c "\
 		pip install bandit safety > /dev/null 2>&1 && \
 		bandit -r services/ -f json -o bandit-report.json && \
 		safety check"
@@ -166,7 +166,7 @@ security: ## Run security checks
 
 type-check: ## Run type checking with mypy
 	@echo "$(BLUE)Running type checks...$(NC)"
-	@docker run --rm -v $(PWD):/app -w /app python:3.11-slim sh -c "\
+	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim sh -c "\
 		pip install mypy > /dev/null 2>&1 && \
 		mypy services/ --ignore-missing-imports"
 
@@ -189,17 +189,17 @@ clean-all: clean ## Clean everything including Docker images
 
 # ==================== DATABASE ====================
 
-db-reset: ## Reset Qdrant database
-	@echo "$(BLUE)Resetting Qdrant database...$(NC)"
-	@docker compose down qdrant
-	@docker volume rm $(shell docker volume ls -q | grep qdrant) 2>/dev/null || true
-	@docker compose up -d qdrant
+db-reset: ## Reset LanceDB vector store (deletes the lancedb-data volume)
+	@echo "$(BLUE)Resetting LanceDB vector store...$(NC)"
+	@docker compose stop ai-engine
+	@docker volume rm $(shell docker volume ls -q | grep lancedb-data) 2>/dev/null || true
+	@docker compose up -d ai-engine
 	@echo "$(GREEN)Database reset complete$(NC)"
 
-db-backup: ## Backup Qdrant database
-	@echo "$(BLUE)Backing up Qdrant database...$(NC)"
+db-backup: ## Backup LanceDB vector store
+	@echo "$(BLUE)Backing up LanceDB vector store...$(NC)"
 	@mkdir -p backups
-	@docker run --rm -v $(shell docker volume ls -q | grep qdrant):/data -v $(PWD)/backups:/backup alpine tar czf /backup/qdrant-backup-$(shell date +%Y%m%d-%H%M%S).tar.gz -C /data .
+	@docker run --rm -v $(shell docker volume ls -q | grep lancedb-data):/data -v $(PWD)/backups:/backup alpine tar czf /backup/lancedb-backup-$(shell date +%Y%m%d-%H%M%S).tar.gz -C /data .
 	@echo "$(GREEN)Database backup complete$(NC)"
 
 # ==================== MONITORING ====================
@@ -228,7 +228,7 @@ docs: ## Generate documentation
 
 docs-serve: ## Serve documentation locally
 	@echo "$(BLUE)Serving documentation...$(NC)"
-	@docker run --rm -v $(PWD)/docs:/docs -p 8000:8000 python:3.11-slim sh -c "\
+	@docker run --rm -v $(PWD)/docs:/docs -p 8000:8000 python:3.12-slim sh -c "\
 		cd /docs && python -m http.server 8000"
 
 # ==================== UTILITIES ====================
@@ -236,7 +236,7 @@ docs-serve: ## Serve documentation locally
 shell: ## Open shell in a service container (usage: make shell SERVICE=backend-core)
 	@if [ -z "$(SERVICE)" ]; then \
 		echo "$(RED)Error: SERVICE not specified. Usage: make shell SERVICE=backend-core$(NC)"; \
-		echo "$(YELLOW)Available services: backend-core, ai-engine, browser-engine, web-ui$(NC)"; \
+		echo "$(YELLOW)Available services: backend-core, ai-engine, browser-engine, web-ui, ollama$(NC)"; \
 		exit 1; \
 	fi
 	@docker compose exec $(SERVICE) /bin/bash || docker compose exec $(SERVICE) /bin/sh
@@ -244,14 +244,14 @@ shell: ## Open shell in a service container (usage: make shell SERVICE=backend-c
 logs-service: ## View logs for specific service (usage: make logs-service SERVICE=backend-core)
 	@if [ -z "$(SERVICE)" ]; then \
 		echo "$(RED)Error: SERVICE not specified. Usage: make logs-service SERVICE=backend-core$(NC)"; \
-		echo "$(YELLOW)Available services: backend-core, ai-engine, browser-engine, web-ui$(NC)"; \
+		echo "$(YELLOW)Available services: backend-core, ai-engine, browser-engine, web-ui, ollama$(NC)"; \
 		exit 1; \
 	fi
 	@docker compose logs -f $(SERVICE)
 
 install: ## Install development dependencies
 	@echo "$(BLUE)Installing development dependencies...$(NC)"
-	@pip install -r requirements-dev.txt 2>/dev/null || echo "$(YELLOW)requirements-dev.txt not found$(NC)"
+	@uv pip install -r tests/requirements.txt 2>/dev/null || pip install -r tests/requirements.txt
 	@echo "$(GREEN)Dependencies installed$(NC)"
 
 version: ## Show version information

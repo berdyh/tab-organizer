@@ -37,13 +37,10 @@
 
 ## Low Priority
 
-1. **Documentation freshness**
-   - Several docs still mention Qdrant; ensure all architecture/setup docs reflect LanceDB default.
+1. **Developer experience**
+   - Add `make smoke-test` for a quick local validation loop alongside the existing `make dev-up`.
 
-2. **Developer experience**
-   - Add `make dev-up` and `make smoke-test` commands for a quick local validation loop.
-
-3. **Code organization**
+2. **Code organization**
    - Consider consolidating API client logic and adding typed response models for Streamlit pages.
 
 ## Suggested Next Sprint Scope

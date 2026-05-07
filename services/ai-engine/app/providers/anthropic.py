@@ -1,7 +1,7 @@
 """Anthropic Claude provider implementation."""
 
 import os
-from typing import Optional, AsyncIterator
+from typing import AsyncIterator, Optional
 
 import httpx
 
@@ -10,19 +10,19 @@ from ..core.llm_client import BaseLLMProvider, LLMConfig
 
 class AnthropicLLMProvider(BaseLLMProvider):
     """Anthropic Claude LLM provider."""
-    
+
     def __init__(self, config: LLMConfig):
         self.config = config
         self.base_url = config.base_url or "https://api.anthropic.com"
         self.api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
-    
+
     def _headers(self) -> dict:
         return {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-    
+
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text from prompt."""
         payload = {
@@ -30,10 +30,10 @@ class AnthropicLLMProvider(BaseLLMProvider):
             "max_tokens": self.config.max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }
-        
+
         if system:
             payload["system"] = system
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/v1/messages",
@@ -43,16 +43,16 @@ class AnthropicLLMProvider(BaseLLMProvider):
             )
             response.raise_for_status()
             data = response.json()
-            
+
             # Extract text from content blocks
             content = data.get("content", [])
             text_parts = [
-                block.get("text", "") 
-                for block in content 
+                block.get("text", "")
+                for block in content
                 if block.get("type") == "text"
             ]
             return "".join(text_parts)
-    
+
     async def generate_stream(
         self, prompt: str, system: Optional[str] = None
     ) -> AsyncIterator[str]:
@@ -63,10 +63,10 @@ class AnthropicLLMProvider(BaseLLMProvider):
             "messages": [{"role": "user", "content": prompt}],
             "stream": True,
         }
-        
+
         if system:
             payload["system"] = system
-        
+
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
@@ -78,6 +78,7 @@ class AnthropicLLMProvider(BaseLLMProvider):
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):
                         import json
+
                         try:
                             data = json.loads(line[6:])
                             if data.get("type") == "content_block_delta":

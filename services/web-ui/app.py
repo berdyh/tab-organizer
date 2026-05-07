@@ -10,7 +10,8 @@ st.set_page_config(
 )
 
 # Custom CSS
-st.markdown("""
+st.markdown(
+    """
 <style>
     .stApp {
         max-width: 1400px;
@@ -25,7 +26,9 @@ st.markdown("""
         background-color: #f8f9fa;
     }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # Sidebar navigation
 st.sidebar.title("🗂️ Tab Organizer")
@@ -47,17 +50,19 @@ st.sidebar.divider()
 
 # Session info in sidebar
 if st.session_state.get("current_session_id"):
-    st.sidebar.success(f"Session: {st.session_state.get('current_session_id', '')[:8]}...")
+    st.sidebar.success(
+        f"Session: {st.session_state.get('current_session_id', '')[:8]}..."
+    )
 else:
     st.sidebar.info("No session selected")
 
 # Import and render pages
 from src.pages import (
-    render_url_input_page,
-    render_scraping_page,
-    render_clustering_page,
     render_chatbot_page,
+    render_clustering_page,
+    render_scraping_page,
     render_settings_page,
+    render_url_input_page,
 )
 
 if page == "📥 URL Input":

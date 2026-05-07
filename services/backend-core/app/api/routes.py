@@ -1,14 +1,14 @@
 """API routes for Backend Core service."""
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel, HttpUrl
 from typing import Optional
-import httpx
 
+import httpx
+from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import BaseModel, HttpUrl
+
+from ..export.exporter import Exporter
 from ..sessions.manager import SessionManager
 from ..url_input.store import URLStore
-from ..export.exporter import Exporter
-
 
 # Global instances
 session_manager = SessionManager()
@@ -66,10 +66,7 @@ async def health_check():
 async def create_session(request: SessionCreate):
     session = session_manager.create_session(request.name)
     return SessionResponse(
-        id=session.id,
-        name=session.name,
-        total_urls=0,
-        status=session.status
+        id=session.id, name=session.name, total_urls=0, status=session.status
     )
 
 
@@ -114,16 +111,14 @@ async def add_urls(request: URLInput):
             raise HTTPException(status_code=404, detail="Session not found")
     else:
         session = session_manager.get_or_create_current_session()
-    
-    added, duplicates, _ = session_manager.add_urls_to_session(
-        session.id, request.urls
-    )
-    
+
+    added, duplicates, _ = session_manager.add_urls_to_session(session.id, request.urls)
+
     return URLInputResponse(
         session_id=session.id,
         added=added,
         duplicates=duplicates,
-        total=session.url_store.count()
+        total=session.url_store.count(),
     )
 
 
@@ -132,12 +127,12 @@ async def get_urls(session_id: str, status: Optional[str] = None):
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     if status:
         records = session.url_store.get_by_status(status)
     else:
         records = session.url_store.get_all()
-    
+
     return [
         {
             "original": r.original,
@@ -155,25 +150,21 @@ async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTas
     session = session_manager.get_session(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     # Get URLs to scrape
     if request.urls:
         urls = request.urls
     else:
         pending = session.url_store.get_by_status("pending")
         urls = [r.original for r in pending]
-    
+
     if not urls:
         return {"status": "no_urls", "message": "No URLs to scrape"}
-    
+
     # Trigger browser engine scraping
     background_tasks.add_task(trigger_scraping, session.id, urls)
-    
-    return {
-        "status": "started",
-        "session_id": session.id,
-        "url_count": len(urls)
-    }
+
+    return {"status": "started", "session_id": session.id, "url_count": len(urls)}
 
 
 async def trigger_scraping(session_id: str, urls: list[str]):
@@ -183,7 +174,7 @@ async def trigger_scraping(session_id: str, urls: list[str]):
             await client.post(
                 "http://browser-engine:8083/scrape",
                 json={"session_id": session_id, "urls": urls},
-                timeout=30.0
+                timeout=30.0,
             )
     except Exception as e:
         print(f"Error triggering scraping: {e}")
@@ -195,15 +186,14 @@ async def start_clustering(request: ClusterRequest):
     session = session_manager.get_session(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     # Get scraped URLs
     scraped = session.url_store.get_by_status("scraped")
     if not scraped:
         raise HTTPException(
-            status_code=400, 
-            detail="No scraped content available for clustering"
+            status_code=400, detail="No scraped content available for clustering"
         )
-    
+
     # Trigger AI engine clustering
     try:
         async with httpx.AsyncClient() as client:
@@ -218,13 +208,13 @@ async def start_clustering(request: ClusterRequest):
                             "title": r.metadata.get("title", ""),
                         }
                         for r in scraped
-                    ]
+                    ],
                 },
-                timeout=120.0
+                timeout=120.0,
             )
             clusters = response.json().get("clusters", [])
             session_manager.set_session_clusters(session.id, clusters)
-            
+
             return {"status": "completed", "clusters": clusters}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Clustering failed: {e}")
@@ -235,7 +225,7 @@ async def get_clusters(session_id: str):
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     return {"clusters": session.clusters}
 
 
@@ -245,18 +235,16 @@ async def export_session(request: ExportRequest):
     session = session_manager.get_session(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     try:
         content = exporter.export(session, request.format)
         return {
             "format": request.format,
             "content": content,
-            "filename": f"{session.name.replace(' ', '_')}.{request.format}"
+            "filename": f"{session.name.replace(' ', '_')}.{request.format}",
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
 
 
 @router.get("/scrape/status/{session_id}")
@@ -280,7 +268,9 @@ async def get_scrape_status(session_id: str):
                     + counts.get("failed", 0)
                     + counts.get("auth_required", 0)
                 )
-                status = "completed" if total > 0 and completed >= total else "not_started"
+                status = (
+                    "completed" if total > 0 and completed >= total else "not_started"
+                )
                 return {
                     "session_id": session_id,
                     "status": status,
@@ -305,8 +295,7 @@ async def get_pending_auth():
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                "http://browser-engine:8083/auth/pending",
-                timeout=10.0
+                "http://browser-engine:8083/auth/pending", timeout=10.0
             )
             return response.json()
     except Exception as e:
@@ -321,7 +310,7 @@ async def submit_credentials(domain: str, credentials: dict):
             response = await client.post(
                 "http://browser-engine:8083/auth/credentials",
                 json={"domain": domain, "credentials": credentials},
-                timeout=10.0
+                timeout=10.0,
             )
             return response.json()
     except Exception as e:
@@ -337,16 +326,14 @@ async def scrape_complete_callback(data: dict):
     status = data.get("status")
     content = data.get("content")
     metadata = data.get("metadata", {})
-    
+
     session = session_manager.get_session(session_id)
     if not session:
         return {"status": "error", "message": "Session not found"}
-    
+
     # Update URL record
     session.url_store.update_status(
-        url, 
-        status,
-        metadata={**metadata, "content": content} if content else metadata
+        url, status, metadata={**metadata, "content": content} if content else metadata
     )
-    
+
     return {"status": "updated"}

@@ -19,10 +19,10 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 │  Port 8089      │
 └────────┬────────┘
          │
-┌────────▼────────┐     ┌──────────────┐
-│  Backend Core   │────▶│ Qdrant       │
-│  Port 8080      │     │ Port 6333    │
-└────────┬────────┘     └──────────────┘
+┌────────▼────────┐
+│  Backend Core   │
+│  Port 8080      │
+└────────┬────────┘
          │
     ┌────┴────┐
     │         │
@@ -30,7 +30,12 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 │  AI   │ │Browser │
 │Engine │ │Engine  │
 │ 8090  │ │ 8083   │
-└───────┘ └────────┘
+└───┬───┘ └────────┘
+    │
+┌───▼──────────────┐
+│ LanceDB (embedded)│
+│ volume: lancedb-data│
+└──────────────────┘
 ```
 
 ### Services
@@ -39,17 +44,18 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 |---------|------|-------------|
 | **Web UI** | 8089 | Streamlit-based user interface |
 | **Backend Core** | 8080 | API Gateway, session management, URL storage |
-| **AI Engine** | 8090 | Embeddings, clustering, chatbot |
+| **AI Engine** | 8090 | Embeddings, clustering, chatbot (with embedded LanceDB) |
 | **Browser Engine** | 8083 | Web scraping, auth detection |
-| **Qdrant** | 6333 | Vector database for embeddings |
 | **Ollama** | 11434 | Local LLM inference (optional) |
+
+The vector store is **LanceDB**, embedded inside the AI Engine container and persisted via the `lancedb-data` Docker volume — there is no separate vector-DB service.
 
 ## Quick Start
 
 ### Prerequisites
 
 - Docker and Docker Compose
-- Python 3.11+ (for CLI)
+- Python 3.12+ (for CLI)
 - [uv](https://github.com/astral-sh/uv) (recommended for dependency management)
 
 ### Installation
@@ -176,8 +182,8 @@ uv init
 # Create venv
 uv venv
 
-# Install development dependencies
-uv pip install -r requirements-dev.txt
+# Install test dependencies
+uv pip install -r tests/requirements.txt
 ```
 
 ## Project Structure

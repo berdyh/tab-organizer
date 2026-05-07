@@ -13,7 +13,9 @@ class SyncAPIClient:
         backend_base = os.getenv("BACKEND_URL", "http://backend-core:8080")
         self.backend_url = f"{backend_base.rstrip('/')}/api/v1"
         self.ai_url = os.getenv("AI_ENGINE_URL", "http://ai-engine:8090").rstrip("/")
-        self.browser_url = os.getenv("BROWSER_ENGINE_URL", "http://browser-engine:8083").rstrip("/")
+        self.browser_url = os.getenv(
+            "BROWSER_ENGINE_URL", "http://browser-engine:8083"
+        ).rstrip("/")
         self.timeout = float(os.getenv("UI_API_TIMEOUT", "30"))
 
     def _request(self, method: str, url: str, **kwargs):
@@ -25,7 +27,9 @@ class SyncAPIClient:
 
     # Sessions / URL management
     def create_session(self, name: str) -> dict:
-        return self._request("POST", f"{self.backend_url}/sessions", json={"name": name})
+        return self._request(
+            "POST", f"{self.backend_url}/sessions", json={"name": name}
+        )
 
     def list_sessions(self) -> list[dict]:
         return self._request("GET", f"{self.backend_url}/sessions")
@@ -42,20 +46,30 @@ class SyncAPIClient:
 
     def get_urls(self, session_id: str, status: Optional[str] = None) -> list[dict]:
         params = {"status": status} if status else None
-        return self._request("GET", f"{self.backend_url}/urls/{session_id}", params=params)
+        return self._request(
+            "GET", f"{self.backend_url}/urls/{session_id}", params=params
+        )
 
     # Scraping / Auth
     def start_scraping(self, session_id: str) -> dict:
-        return self._request("POST", f"{self.backend_url}/scrape", json={"session_id": session_id})
+        return self._request(
+            "POST", f"{self.backend_url}/scrape", json={"session_id": session_id}
+        )
 
     def get_scrape_status(self, session_id: str) -> dict:
         try:
-            return self._request("GET", f"{self.backend_url}/scrape/status/{session_id}")
+            return self._request(
+                "GET", f"{self.backend_url}/scrape/status/{session_id}"
+            )
         except requests.HTTPError:
             stats = self.get_session(session_id)
             counts = stats.get("status_counts", {})
             total = stats.get("total_urls", 0)
-            done = counts.get("scraped", 0) + counts.get("failed", 0) + counts.get("auth_required", 0)
+            done = (
+                counts.get("scraped", 0)
+                + counts.get("failed", 0)
+                + counts.get("auth_required", 0)
+            )
             return {
                 "session_id": session_id,
                 "status": "completed" if total and done >= total else "not_started",
@@ -79,16 +93,26 @@ class SyncAPIClient:
 
     # AI features
     def start_clustering(self, session_id: str) -> dict:
-        return self._request("POST", f"{self.backend_url}/cluster", json={"session_id": session_id})
+        return self._request(
+            "POST", f"{self.backend_url}/cluster", json={"session_id": session_id}
+        )
 
     def get_clusters(self, session_id: str) -> dict:
         return self._request("GET", f"{self.backend_url}/clusters/{session_id}")
 
     def chat(self, query: str, session_id: Optional[str] = None) -> dict:
-        return self._request("POST", f"{self.ai_url}/chat", json={"query": query, "session_id": session_id})
+        return self._request(
+            "POST",
+            f"{self.ai_url}/chat",
+            json={"query": query, "session_id": session_id},
+        )
 
     def search(self, query: str, session_id: Optional[str] = None) -> dict:
-        return self._request("POST", f"{self.ai_url}/search", json={"query": query, "session_id": session_id})
+        return self._request(
+            "POST",
+            f"{self.ai_url}/search",
+            json={"query": query, "session_id": session_id},
+        )
 
     def summarize_session(self, session_id: str) -> dict:
         return self._request("GET", f"{self.ai_url}/summarize/{session_id}")
@@ -105,7 +129,10 @@ class SyncAPIClient:
         return self._request(
             "POST",
             f"{self.ai_url}/providers/switch",
-            json={"llm_provider": llm_provider, "embedding_provider": embedding_provider},
+            json={
+                "llm_provider": llm_provider,
+                "embedding_provider": embedding_provider,
+            },
         )
 
     def export_session(self, session_id: str, export_format: str) -> dict:

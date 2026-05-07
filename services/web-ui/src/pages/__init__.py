@@ -1,10 +1,10 @@
 """Streamlit pages module."""
 
-from .url_input import render_url_input_page
-from .scraping import render_scraping_page
-from .clustering import render_clustering_page
 from .chatbot import render_chatbot_page
+from .clustering import render_clustering_page
+from .scraping import render_scraping_page
 from .settings import render_settings_page
+from .url_input import render_url_input_page
 
 __all__ = [
     "render_url_input_page",

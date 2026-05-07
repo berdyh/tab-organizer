@@ -21,8 +21,8 @@ services:
 
   ai-engine:
     build:
-      context: ./services/ai-engine
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/ai-engine/Dockerfile
     container_name: tab-organizer-ai
     ports:
       - "8090:8090"

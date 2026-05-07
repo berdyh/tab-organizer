@@ -222,7 +222,9 @@ Please answer the question based on the context above. Cite sources using [1], [
             raise RuntimeError("LLM client not set")
 
         escaped = session_id.replace("'", "''")
-        df = self.table.search().where(f"session_id = '{escaped}'").limit(20).to_pandas()
+        df = (
+            self.table.search().where(f"session_id = '{escaped}'").limit(20).to_pandas()
+        )
         if df.empty:
             return "No content found for this session."
 

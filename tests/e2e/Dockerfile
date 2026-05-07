@@ -6,7 +6,7 @@ RUN pip install uv
 WORKDIR /app
 
 # Install dependencies
-RUN uv pip install --no-cache-dir \
+RUN uv pip install --system --no-cache-dir \
     pytest \
     pytest-asyncio \
     pytest-timeout \

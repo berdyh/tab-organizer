@@ -1,27 +1,34 @@
 """Ollama provider implementation."""
 
 import os
-from typing import Optional, AsyncIterator
+from typing import AsyncIterator, Optional
 
 import httpx
 
-from ..core.llm_client import BaseLLMProvider, BaseEmbeddingProvider, LLMConfig, EmbeddingConfig
+from ..core.llm_client import (
+    BaseEmbeddingProvider,
+    BaseLLMProvider,
+    EmbeddingConfig,
+    LLMConfig,
+)
 
 
 class OllamaLLMProvider(BaseLLMProvider):
     """Ollama LLM provider for local models."""
-    
+
     def __init__(self, config: LLMConfig):
         self.config = config
-        self.base_url = config.base_url or os.getenv("OLLAMA_HOST", "http://ollama:11434")
-    
+        self.base_url = config.base_url or os.getenv(
+            "OLLAMA_HOST", "http://ollama:11434"
+        )
+
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text from prompt."""
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/api/chat",
@@ -39,7 +46,7 @@ class OllamaLLMProvider(BaseLLMProvider):
             response.raise_for_status()
             data = response.json()
             return data.get("message", {}).get("content", "")
-    
+
     async def generate_stream(
         self, prompt: str, system: Optional[str] = None
     ) -> AsyncIterator[str]:
@@ -48,7 +55,7 @@ class OllamaLLMProvider(BaseLLMProvider):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        
+
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
@@ -67,6 +74,7 @@ class OllamaLLMProvider(BaseLLMProvider):
                 async for line in response.aiter_lines():
                     if line:
                         import json
+
                         data = json.loads(line)
                         content = data.get("message", {}).get("content", "")
                         if content:
@@ -75,11 +83,13 @@ class OllamaLLMProvider(BaseLLMProvider):
 
 class OllamaEmbeddingProvider(BaseEmbeddingProvider):
     """Ollama embedding provider for local models."""
-    
+
     def __init__(self, config: EmbeddingConfig):
         self.config = config
-        self.base_url = config.base_url or os.getenv("OLLAMA_HOST", "http://ollama:11434")
-    
+        self.base_url = config.base_url or os.getenv(
+            "OLLAMA_HOST", "http://ollama:11434"
+        )
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for texts."""
         embeddings = []
@@ -97,7 +107,7 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
                 data = response.json()
                 embeddings.append(data.get("embedding", []))
         return embeddings
-    
+
     async def embed_single(self, text: str) -> list[float]:
         """Generate embedding for single text."""
         result = await self.embed([text])

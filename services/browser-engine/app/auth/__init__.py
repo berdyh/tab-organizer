@@ -1,6 +1,6 @@
 """Authentication module."""
 
-from .detector import AuthDetector, AuthDetectionResult
+from .detector import AuthDetectionResult, AuthDetector
 from .queue import AuthQueue, AuthRequest, CredentialStore
 
 __all__ = [

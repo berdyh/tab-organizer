@@ -1,34 +1,39 @@
 """DeepSeek provider implementation."""
 
 import os
-from typing import Optional, AsyncIterator
+from typing import AsyncIterator, Optional
 
 import httpx
 
-from ..core.llm_client import BaseLLMProvider, BaseEmbeddingProvider, LLMConfig, EmbeddingConfig
+from ..core.llm_client import (
+    BaseEmbeddingProvider,
+    BaseLLMProvider,
+    EmbeddingConfig,
+    LLMConfig,
+)
 
 
 class DeepSeekLLMProvider(BaseLLMProvider):
     """DeepSeek LLM provider."""
-    
+
     def __init__(self, config: LLMConfig):
         self.config = config
         self.base_url = config.base_url or "https://api.deepseek.com"
         self.api_key = config.api_key or os.getenv("DEEPSEEK_API_KEY")
-    
+
     def _headers(self) -> dict:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-    
+
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text from prompt."""
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
@@ -44,7 +49,7 @@ class DeepSeekLLMProvider(BaseLLMProvider):
             response.raise_for_status()
             data = response.json()
             return data["choices"][0]["message"]["content"]
-    
+
     async def generate_stream(
         self, prompt: str, system: Optional[str] = None
     ) -> AsyncIterator[str]:
@@ -53,7 +58,7 @@ class DeepSeekLLMProvider(BaseLLMProvider):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        
+
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
@@ -71,6 +76,7 @@ class DeepSeekLLMProvider(BaseLLMProvider):
                 async for line in response.aiter_lines():
                     if line.startswith("data: ") and line != "data: [DONE]":
                         import json
+
                         data = json.loads(line[6:])
                         content = data["choices"][0].get("delta", {}).get("content", "")
                         if content:
@@ -79,18 +85,18 @@ class DeepSeekLLMProvider(BaseLLMProvider):
 
 class DeepSeekEmbeddingProvider(BaseEmbeddingProvider):
     """DeepSeek embedding provider."""
-    
+
     def __init__(self, config: EmbeddingConfig):
         self.config = config
         self.base_url = config.base_url or "https://api.deepseek.com"
         self.api_key = config.api_key or os.getenv("DEEPSEEK_API_KEY")
-    
+
     def _headers(self) -> dict:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-    
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for texts."""
         async with httpx.AsyncClient() as client:
@@ -106,7 +112,7 @@ class DeepSeekEmbeddingProvider(BaseEmbeddingProvider):
             response.raise_for_status()
             data = response.json()
             return [item["embedding"] for item in data["data"]]
-    
+
     async def embed_single(self, text: str) -> list[float]:
         """Generate embedding for single text."""
         result = await self.embed([text])

@@ -2,12 +2,12 @@
 
 import asyncio
 import os
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from typing import Optional
 
 import httpx
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from .auth.detector import AuthDetector
 from .auth.queue import AuthQueue
@@ -80,7 +80,7 @@ async def health():
 async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTasks):
     """Start scraping URLs in the background."""
     session_id = request.session_id
-    
+
     # Track scraping task
     scraping_tasks[session_id] = {
         "total": len(request.urls),
@@ -90,7 +90,7 @@ async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTas
         "auth_required": 0,
         "status": "running",
     }
-    
+
     # Start background scraping
     background_tasks.add_task(
         scrape_urls_background,
@@ -98,7 +98,7 @@ async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTas
         request.urls,
         request.use_browser,
     )
-    
+
     return {
         "status": "started",
         "session_id": session_id,
@@ -113,19 +113,19 @@ async def scrape_urls_background(
 ):
     """Background task for scraping URLs."""
     backend_url = os.getenv("BACKEND_URL", "http://backend-core:8080")
-    
+
     async def on_result(result):
         """Callback for each scrape result."""
         task_info = scraping_tasks.get(session_id, {})
         task_info["completed"] = task_info.get("completed", 0) + 1
-        
+
         if result.status == "success":
             task_info["success"] = task_info.get("success", 0) + 1
         elif result.status == "auth_required":
             task_info["auth_required"] = task_info.get("auth_required", 0) + 1
         else:
             task_info["failed"] = task_info.get("failed", 0) + 1
-        
+
         # Notify backend
         try:
             async with httpx.AsyncClient() as client:
@@ -146,16 +146,16 @@ async def scrape_urls_background(
                 )
         except Exception:
             pass
-    
+
     try:
         results = await scraper.scrape_batch(
             urls=urls,
             session_id=session_id,
             callback=on_result,
         )
-        
+
         scraping_tasks[session_id]["status"] = "completed"
-        
+
         # Index successful results in AI engine
         ai_url = os.getenv("AI_ENGINE_URL", "http://ai-engine:8090")
         documents = [
@@ -169,7 +169,7 @@ async def scrape_urls_background(
             for r in results
             if r.status == "success" and r.content
         ]
-        
+
         if documents:
             try:
                 async with httpx.AsyncClient() as client:
@@ -183,7 +183,7 @@ async def scrape_urls_background(
                     )
             except Exception:
                 pass
-                
+
     except Exception as e:
         scraping_tasks[session_id]["status"] = "failed"
         scraping_tasks[session_id]["error"] = str(e)
@@ -199,7 +199,7 @@ async def scrape_single(request: SingleScrapeRequest):
         session_id=request.session_id,
         use_browser=request.use_browser,
     )
-    
+
     return {
         "url": result.url,
         "status": result.status,
@@ -217,7 +217,7 @@ async def get_scrape_status(session_id: str):
     task_info = scraping_tasks.get(session_id)
     if not task_info:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     return {
         "session_id": session_id,
         **task_info,
@@ -259,13 +259,13 @@ async def submit_credentials(request: CredentialsRequest):
         domain=request.domain,
         credentials=request.credentials,
     )
-    
+
     if not success:
         raise HTTPException(
             status_code=404,
             detail=f"No pending auth request for domain: {request.domain}",
         )
-    
+
     return {"status": "credentials_stored", "domain": request.domain}
 
 
