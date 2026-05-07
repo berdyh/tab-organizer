@@ -1,124 +1,92 @@
 # Web UI Service
 
-## Overview
+A [Streamlit](https://streamlit.io/) front end for Tab Organizer. It talks to
+`backend-core` (sessions, URLs, scraping orchestration, export), `ai-engine`
+(clustering, chat, search), and `browser-engine` (auth flow) over HTTP.
 
-The Web UI is a React application that orchestrates URL ingestion, content exploration, clustering analysis, authentication workflows, and export operations for the broader tab_organizer platform. It relies on a set of backend microservices that expose REST APIs. The UI is organised into focused feature modules to keep the codebase maintainable and easy to evolve.
+> Parent docs live in the repo root. See [../../README.md](../../README.md) and
+> [../../docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) for the wider
+> context.
 
-## Architecture
-
-```mermaid
-flowchart LR
-    subgraph App
-        direction TB
-        QueryClientProvider --> Layout --> Router
-        Router -->|routes| Pages
-    end
-
-    subgraph Pages
-        Dashboard
-        URLManager
-        Search
-        Sessions
-        Export
-        Auth
-        ChatbotPage
-    end
-
-    Pages --> FeatureModules
-    FeatureModules --> SharedComponents
-    FeatureModules --> APIClient
-
-    subgraph FeatureModules
-        url_management
-        sessions
-        search
-        export
-        auth
-        chatbot
-    end
-
-    APIClient --> BackendServices
-```
-
-### Key Directories
+## Layout
 
 ```
-services/web-ui/src
-├── components/               # Cross-feature UI widgets (e.g. Layout, Chatbot shell)
-├── features/                 # Feature-specific hooks and components
-│   ├── auth/
-│   ├── chatbot/
-│   ├── export/
-│   ├── search/
-│   ├── sessions/
-│   └── url-management/
-├── lib/
-│   └── api/                  # Axios client + typed service modules
-├── pages/                    # Route-level containers that orchestrate features
-└── shared/                   # Reusable UI primitives and utilities
+services/web-ui/
+├── app.py              # Streamlit entry point + sidebar navigation
+├── Dockerfile          # Production image (Python 3.12 + Streamlit)
+├── requirements.txt
+├── scripts/            # Local helper scripts
+│   ├── run_single_test.sh
+│   ├── run_tests_debug.sh
+│   ├── test_quick.sh
+│   └── test-docker.sh
+└── src/
+    ├── api/
+    │   └── client.py   # Thin HTTP client used by every page
+    └── pages/
+        ├── url_input.py
+        ├── scraping.py
+        ├── clustering.py
+        ├── chatbot.py
+        └── settings.py
 ```
 
-### API Modules
+Pages are plain Python modules that Streamlit re-runs top-to-bottom on every
+interaction. Cross-service calls go through `src/api/client.py`, which reads the
+service URLs from environment variables.
 
-The API client lives in `src/lib/api`. Each backend service has its own module (e.g. `sessions.js`, `search.js`). All modules share the configured Axios client (`client.js`) that injects authentication headers and handles error propagation.
+## Running locally
 
-## Setup
+In Docker (recommended — matches CI):
+
+```bash
+./scripts/cli.py start -d           # full stack
+# UI: http://localhost:8089
+```
+
+Or directly with Streamlit (requires the other services running somewhere):
 
 ```bash
 cd services/web-ui
-npm install
-# Start the dev server (proxy configured in package.json)
-npm start
-```
-
-The development server proxies API calls to `http://api-gateway:8080` by default. To work against a different gateway, set `REACT_APP_API_URL` in `.env`.
-
-Helper scripts now live under `services/web-ui/scripts`. For example:
-
-```bash
-# run the quick unit-test loop
-./scripts/test_quick.sh
-
-# build and execute tests inside Docker
-./scripts/test-docker.sh
+uv pip install -r requirements.txt
+streamlit run app.py --server.port=8089 --server.address=0.0.0.0
 ```
 
 ## Configuration
 
-Environment variables are consumed via `process.env.REACT_APP_*`. Common options:
+The UI reads these environment variables:
 
-- `REACT_APP_API_URL` – Base URL for the API gateway (defaults to `http://localhost:8080`).
-- `REACT_APP_POSTHOG_TOKEN`, `REACT_APP_POSTHOG_HOST` (optional) – Enable PostHog analytics if required.
+| Variable | Default in `docker-compose.yml` | Purpose |
+|----------|---------------------------------|---------|
+| `BACKEND_URL` | `http://backend-core:8080` | Sessions, URLs, scraping orchestration, export |
+| `AI_ENGINE_URL` | `http://ai-engine:8090` | Clustering, chat, search |
+| `BROWSER_ENGINE_URL` | `http://browser-engine:8083` | Auth flow |
+
+When running outside Docker, point them at `http://localhost:<port>` instead.
 
 ## Testing
 
+The repo's unified test pipeline covers the UI:
+
 ```bash
-cd services/web-ui
-npm test -- --watchAll=false
+./scripts/cli.py test --type unit         # fast, isolated
+./scripts/cli.py test --type integration  # against running services
+./scripts/cli.py test --type e2e          # full stack
 ```
 
-The Jest suite exercises critical pages (Search, URL Manager, Chatbot) and mocks backend services via the new `lib/api` modules.
+Helper scripts under `services/web-ui/scripts/` wrap common loops while
+iterating locally:
 
-## Development Tips
+```bash
+./scripts/test_quick.sh       # quick smoke loop
+./scripts/test-docker.sh      # build + run inside Docker
+./scripts/run_single_test.sh  # run a single named test
+./scripts/run_tests_debug.sh  # verbose, with PDB on failure
+```
 
-- **Feature-first organisation**: Keep page components lean. Place reusable view logic or hooks under `src/features/<feature-name>`.
-- **React Query**: All remote data access is powered by React Query. Prefer colocated hooks (e.g. `useSessionsManager`) that encapsulate fetch/mutation behaviour.
-- **Shared utilities**: Cross-cutting helpers, such as `getErrorMessage`, live under `src/shared`. Reuse them to keep error handling consistent.
-- **Styling**: Tailwind-style utility classes are used throughout. New components should follow the existing patterns for spacing and typography.
-- **API contracts**: Reuse the typed service modules instead of scattering `axios` calls. This keeps service connections auditable and simplifies future gateway changes.
+## Adding a new page
 
-## Service Integrations
-
-The UI communicates with backend microservices through the following modules:
-
-| Module                          | Endpoint namespace                  | Primary Responsibilities                         |
-|---------------------------------|-------------------------------------|--------------------------------------------------|
-| `src/lib/api/url.js`           | `/api/input`                        | URL ingestion, metadata management               |
-| `src/lib/api/scraping.js`      | `/api/scraper-service`              | Triggering and monitoring scrapes                |
-| `src/lib/api/search.js`        | `/api/analyzer-service`             | Semantic/keyword search                          |
-| `src/lib/api/sessions.js`      | `/api/session-service`              | Session CRUD, merge, compare, split              |
-| `src/lib/api/exportService.js` | `/api/export-service`               | Export job management and template discovery     |
-| `src/lib/api/auth.js`          | `/api/auth`                         | Credential storage, interactive auth, sessions   |
-| `src/lib/api/chatbot.js`       | `/api/chatbot-service`              | Conversational assistant interactions            |
-
-These modules expose Promise-based helpers that are consumed by feature hooks, allowing each page to focus on state orchestration instead of request wiring.
+1. Create `src/pages/my_page.py` exposing a `render()` function.
+2. Import and add it to the sidebar selector in `app.py`.
+3. Use `src/api/client.py` for any backend call rather than `requests` directly,
+   so error handling and base URLs stay consistent.

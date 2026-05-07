@@ -1,40 +1,51 @@
 # Test Harness
 
-This directory holds cross-service test assets that complement the per-service unit/integration suites found under `services/<name>/tests/`.
+Cross-service test assets. The unified `docker-compose.yml` exposes one profile
+per test type and `scripts/cli.py test` is a thin wrapper that runs the right
+profile. The full pipeline (linting, formatting, unit, integration, e2e, build)
+is mirrored by `.github/workflows/ci-cd.yml`.
+
+> Authoritative testing guide: [`docs/TESTING.md`](../docs/TESTING.md).
 
 ## Layout
 
 ```
 tests/
-├── e2e/          # End-to-end workflow tests (pytest + Dockerfile)
-├── load/         # Locust scenarios for performance checks
+├── unit/           # Fast, isolated unit tests (pytest)
+├── integration/    # Tests against running services
+├── e2e/            # End-to-end workflow tests (full docker stack)
+├── load/           # Locust scenarios (no CLI wrapper yet)
+├── conftest.py     # Shared pytest fixtures
+├── Dockerfile.test # Image used by every test-* compose service
+├── requirements.txt
 └── README.md
 ```
 
-## Running Tests
+## Running tests
 
-Prefer the unified CLI so the same containers run locally and in CI:
-
-```bash
-./scripts/cli.py test --type unit        # All unit suites
-./scripts/cli.py test --type integration # Integration suites (require Ollama + AI Engine with embedded LanceDB)
-./scripts/cli.py test --type e2e         # Full workflow
-./scripts/cli.py test --type performance # Locust load scenarios
-```
-
-Add `--skip-cleanup` to keep containers alive for debugging or `--skip-artifacts` during rapid iteration.
-
-Invoke Docker Compose directly when you need to iterate on a single service:
+Prefer the CLI so the same containers run locally and in CI:
 
 ```bash
-docker compose --profile test-unit up --build --abort-on-container-exit analyzer-unit-test
-docker compose --profile test-integration up --build --abort-on-container-exit clustering-integration-test
+./scripts/cli.py test --type unit
+./scripts/cli.py test --type integration   # boots the default stack first
+./scripts/cli.py test --type e2e           # boots the default stack first
 ```
+
+Or invoke `docker compose` directly when you need to iterate on a single
+profile:
+
+```bash
+docker compose --profile test-unit up --build --abort-on-container-exit test-unit
+docker compose --profile test-integration up --build --abort-on-container-exit test-integration
+docker compose --profile test-e2e up --build --abort-on-container-exit test-e2e
+```
+
+There is no `--type performance` or `--type all` in `cli.py` today; run the
+load suite manually from `tests/load/` if you need it.
 
 ## Artefacts
 
-- `coverage/` – aggregated coverage data (ignored from git)
-- `test-results/` – JUnit XML from container runs
-- `test-reports/` – HTML reports produced by the aggregator
+- `coverage/` — HTML coverage report (mounted from `test-unit`)
+- `test-results/` — JUnit XML produced by integration and e2e runs
 
-All are produced automatically by the scripts and CI pipeline.
+Both are gitignored and recreated on every run.

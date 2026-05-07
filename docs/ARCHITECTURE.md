@@ -18,7 +18,7 @@ The Tab Organizer is a microservice-based system that processes web content thro
 
 ### Key Architectural Principles
 - **Microservice Architecture**: 4 core services with clear separation of concerns
-- **Multi-Provider AI**: Support for local (Ollama) and cloud AI providers (OpenAI, Anthropic, DeepSeek, Gemini)
+- **Multi-Provider AI**: Support for local (Ollama) and cloud AI providers (OpenRouter, OpenAI, Anthropic, DeepSeek, Gemini). OpenRouter is the docker-compose default; Ollama is the `.env.example` default for fully local runs.
 - **Parallel Processing**: Non-blocking authentication and scraping workflows
 - **Container-First Design**: All development, testing, and deployment in Docker
 - **Event-Driven Communication**: Asynchronous processing with proper orchestration
@@ -172,7 +172,7 @@ sequenceDiagram
 **Purpose**: AI services for embeddings, clustering, and chatbot
 
 **Responsibilities**:
-- Multi-provider LLM support (Ollama, OpenAI, Anthropic, DeepSeek, Gemini)
+- Multi-provider LLM support (OpenRouter, Ollama, OpenAI, Anthropic, DeepSeek, Gemini)
 - Embedding generation with configurable models
 - UMAP + HDBSCAN clustering pipeline
 - RAG-based chatbot with LanceDB vector search (native LanceDB query/search APIs)
@@ -283,8 +283,8 @@ graph TB
 - **AI Models**: Ollama (local) or cloud providers
 
 ### AI & Machine Learning
-- **LLM Providers**: Ollama, OpenAI, Anthropic Claude, DeepSeek, Google Gemini
-- **Embedding Models**: nomic-embed-text, all-minilm, mxbai-embed-large
+- **LLM Providers**: OpenRouter, Ollama, OpenAI, Anthropic Claude, DeepSeek, Google Gemini
+- **Embedding Models**: `nvidia/llama-nemotron-embed-vl-1b-v2:free` (OpenRouter, 1024-dim, default), `nomic-embed-text` (Ollama, 768-dim), `text-embedding-3-small` (OpenAI, 1536-dim), `text-embedding-004` (Gemini, 768-dim)
 - **Clustering**: UMAP + HDBSCAN
 - **Content Processing**: BeautifulSoup, trafilatura
 
@@ -343,38 +343,50 @@ graph TB
 |----------|--------|-------------|
 | `/api/v1/sessions` | POST | Create new session |
 | `/api/v1/sessions` | GET | List all sessions |
-| `/api/v1/sessions/{id}` | GET | Get session details |
+| `/api/v1/sessions/{session_id}` | GET | Get session details |
+| `/api/v1/sessions/{session_id}` | DELETE | Delete a session |
 | `/api/v1/urls` | POST | Add URLs to session |
 | `/api/v1/urls/{session_id}` | GET | Get session URLs |
 | `/api/v1/scrape` | POST | Start scraping |
-| `/api/v1/scrape/status/{session_id}` | GET | Get scrape status |
+| `/api/v1/scrape/status/{session_id}` | GET | Get scrape status (proxy to browser-engine) |
 | `/api/v1/cluster` | POST | Start clustering |
+| `/api/v1/clusters/{session_id}` | GET | Get clustering result |
 | `/api/v1/export` | POST | Export session |
-| `/health` | GET | Health check |
+| `/api/v1/auth/pending` | GET | List domains awaiting credentials |
+| `/api/v1/auth/credentials` | POST | Submit credentials for a pending domain |
+| `/api/v1/callback/scrape-complete` | POST | Internal callback used by browser-engine when scraping finishes |
+| `/api/v1/health` | GET | Health check |
 
 ### AI Engine (Port 8090)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/health` | GET | Health check (also reports LanceDB readiness) |
+| `/providers` | GET | Get provider/model info |
+| `/providers/switch` | POST | Hot-swap LLM/embedding providers |
 | `/embed` | POST | Generate embeddings |
-| `/cluster` | POST | Cluster URLs |
-| `/chat` | POST | Chat with content |
-| `/search` | POST | Search content |
-| `/index` | POST | Index documents |
-| `/providers` | GET | Get provider info |
-| `/providers/switch` | POST | Switch providers |
-| `/health` | GET | Health check |
+| `/generate` | POST | Generic LLM completion |
+| `/cluster` | POST | UMAP + HDBSCAN + LLM cluster labeling |
+| `/index` | POST | Index documents into LanceDB |
+| `/chat` | POST | RAG chat over indexed content |
+| `/search` | POST | Vector search over indexed content |
+| `/summarize/{session_id}` | GET | Summarize a session's content |
+| `/documents/{session_id}` | DELETE | Drop a session's indexed documents |
 
 ### Browser Engine (Port 8083)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/health` | GET | Health check |
 | `/scrape` | POST | Start batch scraping |
 | `/scrape/single` | POST | Scrape single URL |
 | `/scrape/status/{session_id}` | GET | Get scrape status |
-| `/auth/pending` | GET | Get pending auth requests |
+| `/detect-auth` | POST | Probe a URL to detect auth requirements |
+| `/auth/pending` | GET | All pending auth requests across sessions |
+| `/auth/pending/{session_id}` | GET | Pending auth requests for a session |
+| `/auth/pending/{domain}` | DELETE | Drop a pending auth request |
 | `/auth/credentials` | POST | Submit credentials |
-| `/health` | GET | Health check |
+| `/auth/expire` | POST | Force-expire a stored credential |
 
 ## Deployment Architecture
 

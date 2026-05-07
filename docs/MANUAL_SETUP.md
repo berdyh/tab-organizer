@@ -4,11 +4,12 @@ This guide explains how to run the Tab Organizer project without Docker, using P
 
 ## Prerequisites
 
-- Python 3.12+ 
+- Python 3.12+
 - [uv](https://github.com/astral-sh/uv) (recommended) or pip
-- PostgreSQL (optional, for persistent storage)
-- Redis (optional, for caching)
-- Node.js 18+ (only if you want to modify the web UI)
+
+The web UI is a Streamlit (Python) app — no Node.js required. The default
+storage layer is LanceDB on disk; PostgreSQL/Redis are not currently wired into
+any service.
 
 ## Option 1: Using uv (Recommended)
 
@@ -136,12 +137,21 @@ Edit `.env` file:
 
 ```bash
 # AI Provider Configuration
+# Local: ollama. Cloud: openrouter, openai, anthropic, deepseek, gemini.
 AI_PROVIDER=ollama
 EMBEDDING_PROVIDER=ollama
 LLM_MODEL=llama3.2:3b
 EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIMENSIONS=768
 
-# Service URLs (for manual setup)
+# API keys (set whatever provider you picked above)
+OPENROUTER_API_KEY=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPSEEK_API_KEY=
+GOOGLE_API_KEY=
+
+# Service URLs (for manual setup, when each service runs on localhost)
 BACKEND_URL=http://localhost:8080
 AI_ENGINE_URL=http://localhost:8090
 BROWSER_ENGINE_URL=http://localhost:8083
@@ -149,12 +159,6 @@ OLLAMA_HOST=http://localhost:11434
 
 # Embedded vector store (LanceDB on local disk)
 VECTOR_DB_PATH=./data/lancedb
-
-# Database (optional, defaults to SQLite)
-DATABASE_URL=sqlite:///./tab_organizer.db
-
-# Redis (optional, for caching)
-REDIS_URL=redis://localhost:6379
 ```
 
 ## Development Workflow
@@ -233,37 +237,15 @@ uv run safety check
 
 ### Performance Tips
 
-1. **Use PostgreSQL for production**
-   ```bash
-   # Install PostgreSQL
-   sudo apt-get install postgresql postgresql-contrib
-   
-   # Create database
-   sudo -u postgres createdb tab_organizer
-   
-   # Update .env
-   DATABASE_URL=postgresql://user:pass@localhost/tab_organizer
-   ```
-
-2. **Enable Redis for caching**
-   ```bash
-   # Install Redis
-   sudo apt-get install redis-server
-   
-   # Start Redis
-   sudo systemctl start redis
-   
-   # Update .env
-   REDIS_URL=redis://localhost:6379
-   ```
-
-3. **Configure Ollama for better performance**
+1. **Configure Ollama for better performance**
    ```bash
    # Set Ollama environment variables
    export OLLAMA_MAX_LOADED_MODELS=2
    export OLLAMA_NUM_PARALLEL=2
    export OLLAMA_MAX_QUEUE=512
    ```
+
+2. **Tune scraping concurrency** via `MAX_CONCURRENT_SCRAPES` and `SCRAPE_TIMEOUT` in `.env`.
 
 ## Production Deployment
 
@@ -273,8 +255,8 @@ For production deployment without Docker, consider:
 2. **Configure reverse proxy** (nginx, apache)
 3. **Set up SSL certificates**
 4. **Configure monitoring and logging**
-5. **Use PostgreSQL instead of SQLite**
-6. **Enable Redis for caching**
+5. **Back up `VECTOR_DB_PATH`** — the LanceDB directory holds all indexed content
+6. **Set a strong `CREDENTIAL_ENCRYPTION_KEY`** — required by the browser-engine for encrypted credential storage
 
 ### Example systemd service for Backend Core
 

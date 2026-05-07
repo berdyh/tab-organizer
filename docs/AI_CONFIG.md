@@ -5,10 +5,12 @@ This guide explains the centralized AI model configuration system that makes it 
 ## Overview
 
 The Tab Organizer uses a centralized configuration system located in `config/ai_models.yaml` that defines:
-- Available AI providers (Ollama, OpenAI, Anthropic, DeepSeek, Gemini)
+- Available AI providers (OpenRouter, Ollama, OpenAI, Anthropic, DeepSeek, Gemini)
 - All supported models with their metadata
 - Default configurations for each provider
 - Use case recommendations
+
+OpenRouter is the docker-compose default (one API key, many models). Ollama is the `.env.example` default for running fully offline. The other providers are wired in the same registry and can be swapped at runtime.
 
 ## Configuration Structure
 
@@ -18,16 +20,26 @@ Defines each AI provider with their capabilities and default models:
 
 ```yaml
 providers:
-  openai:
+  openrouter:
     type: cloud
-    base_url: "https://api.openai.com/v1"
-    api_key_env: "OPENAI_API_KEY"
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
     supports:
       llm: true
       embeddings: true
     default_models:
-      llm: "gpt-5.1"
-      embedding: "text-embedding-3-small"
+      llm: "openai/gpt-4o-mini"
+      embedding: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+
+  ollama:
+    type: local
+    base_url: "http://localhost:11434"
+    supports:
+      llm: true
+      embeddings: true
+    default_models:
+      llm: "llama3.2:3b"
+      embedding: "nomic-embed-text"
 ```
 
 ### Models Section
@@ -36,13 +48,11 @@ Contains detailed information about each model:
 
 ```yaml
 models:
-  claude-sonnet-4-5-20250929:
+  claude-3-5-sonnet-latest:
     provider: anthropic
     type: llm
-    description: "Balanced Claude 3.5 Sonnet"
+    description: "Anthropic balanced model"
     context_length: 200000
-    input_price: "3/1M tokens"
-    output_price: "15/1M tokens"
     recommended: true
 ```
 
@@ -52,13 +62,17 @@ Provides recommended configurations for different use cases:
 
 ```yaml
 defaults:
+  provider: "openrouter"
   use_cases:
     reasoning:
-      provider: "anthropic"
-      model: Model name (e.g., 'claude-sonnet-4-5-20250929')
+      provider: "openrouter"
+      model: "openai/gpt-4o-mini"
     coding:
-      provider: "deepseek"
-      model: "deepseek-coder"
+      provider: "anthropic"
+      model: "claude-3-5-sonnet-latest"
+    embeddings:
+      provider: "openrouter"
+      model: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
 ```
 
 ## Using the Configuration System
@@ -75,7 +89,7 @@ ai_config = get_ai_config()
 models = ai_config.get_provider_models("openai", "llm")
 
 # Get model information
-model_info = ai_config.get_model_info("gpt-5.1")
+model_info = ai_config.get_model_info("openai/gpt-4o-mini")
 
 # Get use case recommendation
 recommendation = ai_config.get_use_case_config("reasoning")
@@ -100,12 +114,15 @@ info = client.get_provider_info()
 
 ```bash
 # Interactive setup using config
-./scripts/init.py --provider claude
+./scripts/init.py --provider openrouter   # or ollama, anthropic, openai, deepseek, gemini
 
 # The script will automatically:
 # 1. Load models from config
 # 2. Present choices with descriptions
-# 3. Configure environment variables
+# 3. Configure environment variables in .env
+
+# Or use the CLI wrapper, which copies .env.example, builds images, and pulls Ollama models:
+./scripts/cli.py init --build --models
 ```
 
 ## Adding New Models
@@ -165,12 +182,12 @@ models:
 
 The system uses these environment variables:
 
-- `AI_PROVIDER`: Default AI provider (ollama, openai, anthropic, deepseek, gemini)
+- `AI_PROVIDER`: Default AI provider (openrouter, ollama, openai, anthropic, deepseek, gemini)
 - `EMBEDDING_PROVIDER`: Default embedding provider
 - `LLM_MODEL`: Override default LLM model
 - `EMBEDDING_MODEL`: Override default embedding model
-- `EMBEDDING_DIMENSIONS`: Override embedding dimensions
-- `{PROVIDER}_API_KEY`: API key for cloud providers
+- `EMBEDDING_DIMENSIONS`: Override embedding dimensions (must match the model)
+- `OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` / `GOOGLE_API_KEY`: API keys for cloud providers
 
 ## Model Metadata
 

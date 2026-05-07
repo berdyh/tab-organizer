@@ -7,8 +7,8 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 - **URL Deduplication**: Set-like storage with automatic normalization and tracking parameter removal
 - **Parallel Authentication**: Non-blocking scraping that continues for public sites while waiting for credentials
 - **AI-Powered Clustering**: UMAP + HDBSCAN clustering with LLM-generated labels
-- **Multi-Provider AI**: Support for Ollama, OpenAI, Anthropic Claude, DeepSeek, and Google Gemini
-- **RAG Chatbot**: Query your scraped content using natural language
+- **Multi-Provider AI**: Support for OpenRouter (default), Ollama, OpenAI, Anthropic Claude, DeepSeek, and Google Gemini
+- **RAG Chatbot**: Query your scraped content using natural language (LanceDB native search)
 - **Export Options**: Markdown, JSON, HTML, Obsidian-compatible formats
 
 ## Architecture
@@ -69,11 +69,16 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 
 2. **Configure AI provider** (edit `.env`):
    ```bash
-   # For local models (default)
+   # OpenRouter (docker-compose default — single key for many models)
+   AI_PROVIDER=openrouter
+   EMBEDDING_PROVIDER=openrouter
+   OPENROUTER_API_KEY=sk-or-...
+
+   # Local-only via Ollama (.env.example default)
    AI_PROVIDER=ollama
    EMBEDDING_PROVIDER=ollama
 
-   # For cloud providers
+   # Mix and match
    AI_PROVIDER=anthropic
    ANTHROPIC_API_KEY=sk-ant-...
    EMBEDDING_PROVIDER=openai
@@ -130,22 +135,28 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AI_PROVIDER` | `ollama` | LLM provider (ollama/openai/anthropic/deepseek/gemini) |
-| `EMBEDDING_PROVIDER` | `ollama` | Embedding provider |
-| `LLM_MODEL` | `llama3.2:3b` | Model name for chat/analysis |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | Model for embeddings |
-| `EMBEDDING_DIMENSIONS` | `768` | Embedding vector size |
-| `MAX_CONCURRENT_SCRAPES` | `10` | Parallel scraping limit |
-| `SCRAPE_TIMEOUT` | `30` | Scrape timeout in seconds |
-| `RESPECT_ROBOTS` | `true` | Honor robots.txt |
+| Variable | docker-compose default | `.env.example` default | Description |
+|----------|-----------------------|------------------------|-------------|
+| `AI_PROVIDER` | `openrouter` | `ollama` | LLM provider (openrouter/ollama/openai/anthropic/deepseek/gemini) |
+| `EMBEDDING_PROVIDER` | `openrouter` | `ollama` | Embedding provider |
+| `LLM_MODEL` | `openai/gpt-4o-mini` | `llama3.2` | Model name for chat/analysis |
+| `EMBEDDING_MODEL` | `nvidia/llama-nemotron-embed-vl-1b-v2:free` | `nomic-embed-text` | Model for embeddings |
+| `EMBEDDING_DIMENSIONS` | `1024` | `768` | Embedding vector size (must match the embedding model) |
+| `VECTOR_DB_PATH` | `/data/lancedb` | — | LanceDB on-disk directory (mounted from `lancedb-data` volume) |
+| `OLLAMA_HOST` | `http://ollama:11434` | `http://ollama:11434` | Ollama URL |
+| `MAX_CONCURRENT_SCRAPES` | `10` | `10` | Parallel scraping limit |
+| `SCRAPE_TIMEOUT` | `30` | `30` | Scrape timeout in seconds |
+| `RESPECT_ROBOTS` | `true` | `true` | Honor robots.txt |
+| `CREDENTIAL_ENCRYPTION_KEY` | — | — | Fernet key for encrypted credential storage (browser-engine) |
+
+If `EMBEDDING_PROVIDER` and `EMBEDDING_DIMENSIONS` are mismatched the AI Engine will refuse to write to the LanceDB table — keep them in sync.
 
 ### API Keys
 
 For cloud providers, set the appropriate API key:
 
 ```bash
+OPENROUTER_API_KEY=sk-or-...
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 DEEPSEEK_API_KEY=...
@@ -238,33 +249,50 @@ tab-organizer/
 |----------|--------|-------------|
 | `/api/v1/sessions` | POST | Create session |
 | `/api/v1/sessions` | GET | List sessions |
-| `/api/v1/sessions/{id}` | GET | Get session stats |
+| `/api/v1/sessions/{session_id}` | GET | Get session stats |
+| `/api/v1/sessions/{session_id}` | DELETE | Delete session |
 | `/api/v1/urls` | POST | Add URLs |
 | `/api/v1/urls/{session_id}` | GET | Get URLs |
 | `/api/v1/scrape` | POST | Start scraping |
+| `/api/v1/scrape/status/{session_id}` | GET | Scrape status (proxied from browser-engine) |
 | `/api/v1/cluster` | POST | Start clustering |
+| `/api/v1/clusters/{session_id}` | GET | Get cluster results |
 | `/api/v1/export` | POST | Export session |
+| `/api/v1/auth/pending` | GET | List domains awaiting credentials |
+| `/api/v1/auth/credentials` | POST | Submit credentials for a pending domain |
+| `/api/v1/callback/scrape-complete` | POST | Internal callback used by browser-engine |
+| `/api/v1/health` | GET | Health check |
 
 ### AI Engine (Port 8090)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/providers` | GET | Provider/model info |
+| `/providers/switch` | POST | Hot-swap LLM/embedding provider |
 | `/embed` | POST | Generate embeddings |
-| `/cluster` | POST | Cluster URLs |
-| `/chat` | POST | Chat with content |
-| `/search` | POST | Search content |
-| `/providers` | GET | Get provider info |
-| `/providers/switch` | POST | Switch providers |
+| `/generate` | POST | Generic LLM completion |
+| `/cluster` | POST | Run UMAP + HDBSCAN + LLM labeling |
+| `/index` | POST | Index documents into LanceDB |
+| `/chat` | POST | RAG chat over indexed content |
+| `/search` | POST | Vector search over indexed content |
+| `/summarize/{session_id}` | GET | Generate a session summary |
+| `/documents/{session_id}` | DELETE | Drop indexed documents for a session |
 
 ### Browser Engine (Port 8083)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/health` | GET | Health check |
 | `/scrape` | POST | Start batch scraping |
 | `/scrape/single` | POST | Scrape single URL |
 | `/scrape/status/{session_id}` | GET | Get scrape status |
-| `/auth/pending` | GET | Get pending auth |
+| `/detect-auth` | POST | Probe a URL to detect auth requirements |
+| `/auth/pending` | GET | List all domains awaiting credentials |
+| `/auth/pending/{session_id}` | GET | Pending auth requests for one session |
+| `/auth/pending/{domain}` | DELETE | Drop a pending auth request |
 | `/auth/credentials` | POST | Submit credentials |
+| `/auth/expire` | POST | Force-expire a stored credential |
 
 ## Contributing
 

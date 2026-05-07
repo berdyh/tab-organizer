@@ -2,198 +2,27 @@
 
 ## Table of Contents
 1. [Development Workflow](#development-workflow)
-2. [Implementation Status](#implementation-status)
-3. [Development Setup](#development-setup)
-4. [Service Development Guidelines](#service-development-guidelines)
-5. [Testing Strategy](#testing-strategy)
-6. [Code Quality Standards](#code-quality-standards)
-7. [Git Workflow](#git-workflow)
-8. [Debugging and Troubleshooting](#debugging-and-troubleshooting)
-9. [Contributing Guidelines](#contributing-guidelines)
-10. [Deployment](#deployment)
+2. [Development Setup](#development-setup)
+3. [Service Development Guidelines](#service-development-guidelines)
+4. [Testing Strategy](#testing-strategy)
+5. [Code Quality Standards](#code-quality-standards)
+6. [Git Workflow](#git-workflow)
+7. [Debugging and Troubleshooting](#debugging-and-troubleshooting)
+8. [Contributing Guidelines](#contributing-guidelines)
+9. [Deployment](#deployment)
 
 ## Development Workflow
 
-This project follows a spec-driven development methodology with incremental implementation and comprehensive containerized testing at each stage.
-
 ### Key Development Principles
 - **Container-First Development**: All development, testing, and deployment occurs within Docker containers
-- **Parallel Development**: Tasks are structured to allow parallel development of independent services
-- **Test-Driven Development**: Each task includes comprehensive testing requirements
-- **Incremental Delivery**: Each completed task delivers working functionality
-- **Microservice Architecture**: Independent, scalable services with clear boundaries
+- **Microservice Architecture**: Independent, scalable services with clear boundaries (`backend-core`, `ai-engine`, `browser-engine`, `web-ui`)
+- **Test-Driven Development**: Each PR ships with the unit/integration/e2e suites green
+- **Incremental Delivery**: Small, focused PRs over big-bang merges
 
-### Development Timeline
-
-```mermaid
-gantt
-    title Implementation Timeline
-    dateFormat  YYYY-MM-DD
-    section Phase 1: Foundation
-    Docker Setup           :done, p1-1, 2024-01-01, 2024-01-07
-    Smart Model Management :active, p1-2, 2024-01-08, 2024-01-21
-    
-    section Phase 2: Core Services
-    URL Input Service      :done, p2-1, 2024-01-15, 2024-01-28
-    Authentication Service :done, p2-2, 2024-01-22, 2024-02-04
-    Web Scraper Service    :active, p2-3, 2024-01-29, 2024-02-18
-    
-    section Phase 3: AI Processing
-    Content Analysis       :p3-1, 2024-02-05, 2024-02-25
-    Clustering Service     :p3-2, 2024-02-12, 2024-03-04
-    
-    section Phase 4: User Interface
-    Web UI Development     :p4-1, 2024-02-19, 2024-03-11
-    Chatbot Integration    :p4-2, 2024-02-26, 2024-03-18
-    
-    section Phase 5: Integration
-    Export System          :p5-1, 2024-03-05, 2024-03-25
-    API Gateway            :p5-2, 2024-03-12, 2024-04-01
-    
-    section Phase 6: Finalization
-    Monitoring & Logging   :p6-1, 2024-03-19, 2024-04-08
-    Documentation & Testing:p6-2, 2024-03-26, 2024-04-15
-```
-
-## Implementation Status
-
-### ✅ Completed Tasks (40% Complete)
-
-#### 1. Core Infrastructure Setup
-- [x] **Docker Compose configuration** for 4 core services
-- [x] **LanceDB embedded vector store** with persistent on-disk storage and table management
-- [x] **Ollama LLM service** with model management and hot-swapping
-- [x] **Backend Core** with API Gateway, session management, and URL storage
-- [x] **Inter-service communication** and Docker networking
-- [x] **Logging and monitoring** infrastructure with structured logs
-
-#### 2. URL Input Service (Complete)
-- [x] **FastAPI service** for multi-format URL input processing
-- [x] **File upload endpoints** (text, JSON, CSV, Excel) with validation
-- [x] **URL validation and format detection** utilities
-- [x] **Metadata extraction** (domain, path, parameters)
-- [x] **Unit tests** for URL parsing and validation
-- [x] **Batch processing** for large URL lists
-
-#### 3. Authentication Service (Complete)
-- [x] **Authentication detection** algorithms for various auth types
-- [x] **Secure credential storage** with AES-256 encryption
-- [x] **Interactive authentication** workflows with popup handling
-- [x] **Session management** and credential storage
-- [x] **OAuth 2.0 support** and domain authentication mapping
-- [x] **Integration tests** for authentication flows
-
-#### 4. Smart Model Management System (Complete)
-- [x] **Hardware detection** and model recommendation system
-- [x] **Smart LLM chooser** with automatic hardware analysis
-- [x] **Task-specific recommendations** (reasoning, code, multilingual, multimodal)
-- [x] **Dynamic model downloading** and installation
-- [x] **Intelligent fallback chains** for resource constraints
-- [x] **Hot model switching** without service restart
-- [x] **Performance monitoring** and resource tracking
-
-#### 5. Content Analysis Foundation (Complete)
-- [x] **Configurable embedding generation** system
-- [x] **Multiple model support** (nomic-embed-text, all-minilm, mxbai-embed-large)
-- [x] **Ollama integration** with multiple LLM models
-- [x] **LanceDB embedded vector store** integration
-- [x] **Model switching** and configuration management
-- [x] **Hardware detection** for optimal model selection
-
-#### 6. Clustering System Foundation (Complete)
-- [x] **UMAP dimensionality reduction** with model-aware optimization
-- [x] **Configurable UMAP parameters** based on embedding model
-- [x] **Batch processing** for large embedding datasets
-- [x] **Visualization generation** for 2D/3D cluster plots
-- [x] **Automatic parameter tuning** based on embedding characteristics
-- [x] **Unit tests** for dimensionality reduction accuracy
-
-### 🚧 In Progress (6.7% of Total)
-
-#### 7. Web Scraper Service with Parallel Authentication Workflow
-- [x] **FastAPI scraper service** with Scrapy framework in Docker container
-- [x] **Parallel processing architecture** - separate authenticated and non-authenticated URLs into different queues
-- [ ] **URL classifier** to identify authentication requirements and route to appropriate processing queues
-- [ ] **Content extraction** with multiple parsing strategies (Beautiful Soup, trafilatura)
-- [ ] **Rate limiting and respectful crawling** mechanisms with robots.txt compliance
-- [ ] **Duplicate detection** using content hashing and parallel worker pools
-- [ ] **Error handling and retry logic** with exponential backoff for failed requests
-- [ ] **Support for different content types** (HTML, PDF) and content quality assessment
-- [ ] **Real-time status tracking** for parallel scraping and authentication tasks
-- [ ] **Containerized integration tests** with authentication service and comprehensive error logging
-
-**Current Sprint Goal**: Complete Web Scraper Service with Parallel Authentication Workflow
-**Estimated Completion**: 2024-02-18
-**Progress**: 20% complete
-
-### 📋 Upcoming Tasks (53.3% Remaining)
-
-#### 8. Advanced Clustering and Similarity Analysis
-- [ ] **HDBSCAN clustering** with parameter optimization
-- [ ] **Cluster validation** and quality metrics
-- [ ] **Hierarchical clustering** visualization
-- [ ] **Vector similarity search** using embeddings
-- [ ] **Recommendation algorithms** based on user behavior
-- [ ] **Content-based filtering** and collaborative filtering
-- [ ] **Performance tests** for search efficiency
-
-#### 9. Web UI and User Interaction System
-- [ ] **React/Vue.js web interface** containerized with Docker
-- [ ] **URL management system**: add, delete, edit, organize URLs in collections
-- [ ] **Advanced search interface** with semantic search, keyword search, and filtering
-- [ ] **Real-time status display** for URLs (pending, scraping, completed, failed, authentication required)
-- [ ] **Content preview capabilities** with metadata display and cluster assignments
-- [ ] **Session management UI** for creating, switching, comparing, and managing analysis sessions
-- [ ] **Chatbot system** using local LLM models for natural language content queries
-- [ ] **Semantic search integration** for answering questions about scraped content
-
-#### 10. Export and Integration System
-- [ ] **Multi-format export system** (Notion, Obsidian, Word, Markdown)
-- [ ] **Template-based export** using Jinja2 engine
-- [ ] **Customizable export templates** and filters
-- [ ] **Batch export** for large datasets
-- [ ] **API endpoints** for programmatic export
-- [ ] **Export progress tracking** and monitoring
-
-#### 11. Session Management and Persistence
-- [ ] **Session lifecycle management** (creation, management, cleanup)
-- [ ] **Session persistence** with metadata storage
-- [ ] **Incremental clustering** for new content
-- [ ] **Session comparison** and evolution tracking
-- [ ] **Session sharing** and collaboration features
-- [ ] **Backup/restore functionality** with model configurations
-
-#### 12. API Gateway and Service Orchestration
-- [ ] **Centralized API gateway** with service discovery
-- [ ] **Request routing** and load balancing
-- [ ] **Authentication and authorization** middleware
-- [ ] **Rate limiting** and monitoring capabilities
-- [ ] **Circuit breaker patterns** and graceful degradation
-- [ ] **Job queue management** for long-running operations
-
-#### 13. Data Pipeline Visualization and Documentation
-- [ ] **Mermaid diagrams** for complete system architecture and data flow
-- [ ] **Interactive pipeline visualization** dashboard showing real-time processing status
-- [ ] **Service interaction diagrams** with API endpoints and data models
-- [ ] **Capacity planning visualizations** and resource allocation diagrams
-- [ ] **Troubleshooting tools** with pipeline bottleneck identification
-- [ ] **Auto-generated architecture documentation** from code and configuration
-
-#### 14. Comprehensive Testing and CI/CD
-- [ ] **Docker-based testing environments** for all services with proper isolation
-- [ ] **Containerized unit tests**, integration tests, and end-to-end tests
-- [ ] **Docker Compose** for orchestrating test environments with test data management
-- [ ] **Containerized CI/CD pipeline** with automated testing and deployment
-- [ ] **Containerized load testing** and performance benchmarking
-- [ ] **Container-based debugging** capabilities with proper logging and monitoring
-
-#### 15. Monitoring, Logging, and Performance Optimization
-- [ ] **Centralized logging** with structured logs across all containerized services
-- [ ] **Performance monitoring** and metrics collection for containerized microservices
-- [ ] **Health checks** and service monitoring with Docker health checks
-- [ ] **Alerting and notification system** for container and service failures
-- [ ] **Resource usage monitoring** for containers and AI model performance
-- [ ] **Distributed tracing** across microservices for request flow monitoring
+For day-to-day status (open work, recent changes, what's shipped) read
+`git log` and the PR queue rather than a doc — those are the authoritative
+sources. The current open improvement list lives in
+[`REPO_IMPROVEMENTS_REVIEW.md`](REPO_IMPROVEMENTS_REVIEW.md).
 
 ## Development Setup
 
@@ -207,17 +36,21 @@ gantt
 1. **Clone the repository**:
 ```bash
 git clone <repository-url>
-cd web-scraping-clustering-tool
+cd tab-organizer
 ```
 
 2. **Set up environment**:
 ```bash
-./scripts/init.py --provider ollama   # or --provider claude
+./scripts/init.py --provider ollama       # fully local
+# or
+./scripts/init.py --provider openrouter   # cloud, single API key
+# or
+./scripts/cli.py init --build --models    # copy .env.example, build images, pull Ollama models
 ```
 
 3. **Start development services**:
 ```bash
-./scripts/cli.py start
+./scripts/cli.py start --dev -d
 ```
 
 4. **Run tests**:
@@ -266,7 +99,8 @@ new-service:
   ports:
     - "808X:808X"
   networks:
-    - scraping_network
+    - tab-organizer-network
+  profiles: [default, dev]
 ```
 
 ## Testing Strategy
@@ -323,13 +157,11 @@ graph TB
 
 The unified `docker-compose.yml` exposes dedicated profiles for every test stage:
 
-- `test-unit` — spins up per-service unit runners (Python + Jest).
-- `test-integration` — provisions an ephemeral Ollama instance plus the AI Engine (with its embedded LanceDB) and integration runners.
-- `test-e2e` — boots API/UI facades and executes the pytest E2E suite.
-- `test-performance` — launches Locust against the test API gateway.
-- `test-report` — aggregates coverage artifacts when present.
+- `test-unit` — runs `pytest tests/unit` with coverage in an isolated container.
+- `test-integration` — runs `pytest tests/integration` against the live `default` stack (Ollama + backend-core + ai-engine + browser-engine).
+- `test-e2e` — runs `pytest tests/e2e` against the full stack including `web-ui`.
 
-Use `docker compose --profile <name> up ...` or the convenience wrappers in `scripts/cli.py test` to run the desired workflows.
+Use `./scripts/cli.py test --type {unit,integration,e2e}` (the wrapper that CI uses) or invoke `docker compose --profile <name> up ...` directly. Locust scenarios live under `tests/load/` and are driven manually — there is no `test-performance` profile yet.
 
 #### Unit Tests
 - **Framework**: pytest with async support running in dedicated test containers
@@ -471,19 +303,18 @@ test(analyzer): add unit tests for embedding generation
 ./scripts/cli.py logs
 
 # View specific service logs
-./scripts/cli.py logs url-input-service
+./scripts/cli.py logs --follow ai-engine
 
 # Follow logs in real-time
-docker compose logs -f url-input-service
+docker compose logs -f ai-engine
 ```
 
 ### Health Checks
 ```bash
-# Check all services
-curl http://localhost:8080/health
-
-# Check specific service
-curl http://localhost:8081/health
+curl http://localhost:8080/health   # backend-core
+curl http://localhost:8090/health   # ai-engine (also reports LanceDB readiness)
+curl http://localhost:8083/health   # browser-engine
+curl http://localhost:11434/        # ollama
 ```
 
 ### Common Issues
@@ -533,14 +364,14 @@ curl http://localhost:8081/health
 
 ### Development Deployment
 ```bash
-# Start all services
-./scripts/cli.py start
+# Start all services (dev profile, hot-reload friendly)
+./scripts/cli.py start --dev -d
 
 # Stop all services
 ./scripts/cli.py stop
 
-# Restart specific service
-docker compose restart url-input-service
+# Restart a specific service
+docker compose restart ai-engine
 ```
 
 ### Production Considerations
@@ -601,17 +432,9 @@ jobs:
       - name: Run dependency check
         run: docker run --rm -v $(pwd):/app owasp/dependency-check
 
-  performance:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Build performance test environment
-        run: docker compose --profile test-performance up -d --build test-ollama test-ai-engine test-api-gateway
-      - name: Run load tests
-        run: docker compose --profile test-performance up --abort-on-container-exit load-test-runner
-      - name: Tear down performance environment
-        run: docker compose --profile test-performance down -v
 ```
+
+The current pipeline lives in [`.github/workflows/ci-cd.yml`](../.github/workflows/ci-cd.yml) — refer to it for the authoritative job definitions.
 
 ## Risk Management
 
