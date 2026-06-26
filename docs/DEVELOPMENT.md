@@ -16,6 +16,7 @@
 ### Key Development Principles
 - **Container-First Development**: All development, testing, and deployment occurs within Docker containers
 - **Microservice Architecture**: Independent, scalable services with clear boundaries (`backend-core`, `ai-engine`, `browser-engine`, `web-ui`)
+- **Layered Module Context**: Start with [`MODULE_INDEX.md`](MODULE_INDEX.md), then the local `MODULE.md` card for the module/submodule you are changing
 - **Test-Driven Development**: Each PR ships with the unit/integration/e2e suites green
 - **Incremental Delivery**: Small, focused PRs over big-bang merges
 
@@ -69,7 +70,15 @@ embeddings on an embedding-capable provider and run the AI Engine on the host:
 ./scripts/cli.py test --type unit
 ```
 
+For focused module iteration, prefer the nearest local target before the full
+pipeline: `make test-backend`, `make test-ai`, `make test-browser`,
+`make test-web`, or `make test-ops`.
+
 ## Service Development Guidelines
+
+Before editing an existing service or submodule, read its local `MODULE.md`.
+Update that card in the same change when boundaries, connected modules, stub
+classifications, validation commands, or docs alignment rules change.
 
 ### Creating a New Service
 
@@ -153,15 +162,15 @@ graph TB
 
 | Service | Unit Tests | Integration Tests | E2E Tests | Performance Tests |
 |---------|------------|-------------------|-----------|-------------------|
-| API Gateway | 95% | Yes | Yes | Yes |
+| Backend Core | 95% | Yes | Yes | Yes |
 | URL Input | 90% | Yes | Yes | No |
-| Authentication | 95% | Yes | Yes | No |
+| Platform accounts/API tokens | 90% | Yes | Yes | No |
 | Web Scraper | 90% | Yes | Yes | Yes |
-| Content Analyzer | 90% | Yes | Yes | Yes |
+| AI Engine/RAG | 90% | Yes | Yes | Yes |
 | Clustering | 85% | Yes | Yes | Yes |
 | Export | 85% | Yes | Yes | No |
 | Session Manager | 90% | Yes | Yes | No |
-| Model Manager | 95% | Yes | Yes | Yes |
+| Provider/runtime config | 95% | Yes | Yes | Yes |
 | Web UI | 80% | Yes | Yes | Yes |
 
 ### Automated Testing Pipeline

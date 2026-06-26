@@ -43,7 +43,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 | Service | Port | Description |
 |---------|------|-------------|
 | **Web UI** | 8089 | Streamlit-based user interface |
-| **Backend Core** | 8080 | API Gateway, session management, URL storage |
+| **Backend Core** | 8080 | Backend API, session management, URL storage |
 | **AI Engine** | 8090 | Embeddings, clustering, chatbot (with embedded LanceDB) |
 | **Browser Engine** | 8083 | Web scraping, auth detection |
 | **Ollama** | 11434 | Local LLM inference (optional) |
@@ -72,7 +72,7 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
    # OpenRouter (docker-compose default — single key for many models)
    AI_PROVIDER=openrouter
    EMBEDDING_PROVIDER=openrouter
-   OPENROUTER_API_KEY=sk-or-...
+   OPENROUTER_API_KEY=<openrouter-api-key>
 
    # Local-only via Ollama (.env.example default)
    AI_PROVIDER=ollama
@@ -80,7 +80,7 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 
    # Mix and match
    AI_PROVIDER=anthropic
-   ANTHROPIC_API_KEY=sk-ant-...
+   ANTHROPIC_API_KEY=<anthropic-api-key>
    EMBEDDING_PROVIDER=openai
    OPENAI_API_KEY=sk-...
 
@@ -164,6 +164,7 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 | `EMBEDDING_DIMENSIONS` | model default | model default | Embedding vector size (must match the embedding model) |
 | `AI_ENGINE_URL` | `http://ai-engine:8090` | — | URL backend/browser/web containers use for the AI Engine; set to `http://host.docker.internal:8090` for `--host-ai` |
 | `AI_ENGINE_API_TOKEN` | — | — | Bearer token for protected AI Engine endpoints; generated locally by `start` and `host-ai` |
+| `BROWSER_ENGINE_API_TOKEN` | — | — | Optional explicit bearer token for Browser Engine control/auth endpoints; falls back to callback/AI token locally |
 | `BACKEND_CALLBACK_TOKEN` | — | — | Bearer token for browser-engine scrape callbacks into Backend Core; generated locally by `start` and `host-ai` |
 | `AI_ENGINE_ALLOW_UNAUTHENTICATED` | `false` | `false` | Development escape hatch for direct AI Engine calls without a token |
 | `BACKEND_DB_PATH` | `/data/backend/tab-organizer.sqlite3` | `./data/backend/tab-organizer.sqlite3` | SQLite database for sessions, URL records, callback metadata, clusters, and local platform data |
@@ -174,11 +175,12 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 | `MAX_CONCURRENT_SCRAPES` | `10` | `10` | Parallel scraping limit |
 | `SCRAPE_TIMEOUT` | `30` | `30` | Scrape timeout in seconds |
 | `RESPECT_ROBOTS` | `true` | `true` | Honor robots.txt |
+| `SCRAPE_ALLOW_PRIVATE_NETWORKS` | `false` | `false` | Opt-in escape hatch for scraping localhost/private-network targets |
 | `CREDENTIAL_ENCRYPTION_KEY` | — | — | Fernet key for encrypted credential storage (browser-engine) |
 
 `claude_code` and `codex_cli` are LLM-only providers that call the local `claude -p` or `codex exec` CLI using existing subscription login state. `codex_cli` is one-shot Codex CLI execution, not ACP mode, and is disabled by default for scraped-content prompts because `codex exec` is not a tool-free LLM-only mode. Use `codex_acp` when you want the app's LLM calls to go through an ACP Codex harness via `acpx`. ACP defaults to `deny-all` permissions for app-routed prompts; relax it only for trusted local experiments. Leave `LLM_MODEL` blank unless you need a provider-specific override, and keep `EMBEDDING_PROVIDER` on `ollama` or another embedding-capable provider. The stock Docker image does not install these CLIs, `acpx`, ACP adapters, or mount their auth state; use `./scripts/cli.py host-ai --provider claude_code` plus `./scripts/cli.py start -d --host-ai`, or build a custom image for Docker-based CLI/ACP routing.
 
-AI Engine generation, embedding, indexing, chat, search, clustering, summarization, document deletion, and provider-switch endpoints fail closed unless `AI_ENGINE_API_TOKEN` is configured. Use `./scripts/cli.py start` or `./scripts/cli.py host-ai` so the shared local token is generated and passed to all services.
+AI Engine generation, embedding, indexing, chat, search, clustering, summarization, document deletion, and provider-switch endpoints fail closed unless `AI_ENGINE_API_TOKEN` is configured. Browser Engine scrape/auth control endpoints also require a local service token. Use `./scripts/cli.py start` or `./scripts/cli.py host-ai` so the shared local token is generated and passed to all services.
 
 If `EMBEDDING_PROVIDER` and `EMBEDDING_DIMENSIONS` are mismatched the AI Engine will refuse to write to the LanceDB table — keep them in sync.
 
@@ -187,9 +189,9 @@ If `EMBEDDING_PROVIDER` and `EMBEDDING_DIMENSIONS` are mismatched the AI Engine 
 For cloud providers, set the appropriate API key:
 
 ```bash
-OPENROUTER_API_KEY=sk-or-...
+OPENROUTER_API_KEY=<openrouter-api-key>
 OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_API_KEY=<anthropic-api-key>
 DEEPSEEK_API_KEY=...
 GOOGLE_API_KEY=...
 ```
@@ -230,14 +232,18 @@ uv pip install -r tests/requirements.txt
 
 ## Project Structure
 
+Development boundaries are tracked in [docs/MODULE_INDEX.md](docs/MODULE_INDEX.md)
+and the local `MODULE.md` cards beside each service/submodule.
+
 ```
 tab-organizer/
 ├── services/
-│   ├── backend-core/          # API Gateway & Session Management
+│   ├── backend-core/          # Backend API & session management
 │   │   └── app/
 │   │       ├── api/           # FastAPI routes
 │   │       ├── url_input/     # URL store & deduplication
 │   │       ├── sessions/      # Session management
+│   │       ├── platform/      # Local accounts, B2B tokens, companies
 │   │       └── export/        # Export functionality
 │   │
 │   ├── ai-engine/             # AI Services
@@ -322,6 +328,11 @@ tab-organizer/
 | `/documents/{session_id}` | DELETE | Drop indexed documents for a session |
 
 ### Browser Engine (Port 8083)
+
+All Browser Engine endpoints below except `/health` require bearer auth using
+`BROWSER_ENGINE_API_TOKEN` or the local callback/AI token fallback. Scrape
+targets are limited to public `http`/`https` URLs unless
+`SCRAPE_ALLOW_PRIVATE_NETWORKS=true` is explicitly set for local diagnostics.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

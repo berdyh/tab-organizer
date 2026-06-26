@@ -1,5 +1,9 @@
 # Architecture Documentation
 
+For development boundaries, load [MODULE_INDEX.md](MODULE_INDEX.md) first, then
+the local `MODULE.md` card for the affected service/submodule. This document
+describes runtime architecture and cross-service contracts.
+
 ## Table of Contents
 1. [System Overview](#system-overview)
 2. [High-Level Architecture](#high-level-architecture)
@@ -150,7 +154,7 @@ sequenceDiagram
 ## Core Services
 
 ### 1. Backend Core (Port 8080)
-**Purpose**: API Gateway, session management, and URL storage
+**Purpose**: Backend API orchestration, session management, and URL storage
 
 **Responsibilities**:
 - Session lifecycle management
@@ -387,6 +391,11 @@ graph TB
 | `/documents/{session_id}` | DELETE | Drop a session's indexed documents |
 
 ### Browser Engine (Port 8083)
+
+All Browser Engine endpoints below except `/health` require bearer auth using
+`BROWSER_ENGINE_API_TOKEN` or the local callback/AI token fallback. Scrape
+targets are restricted to public `http`/`https` URLs unless
+`SCRAPE_ALLOW_PRIVATE_NETWORKS=true` is explicitly set for local diagnostics.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
