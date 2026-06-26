@@ -136,6 +136,60 @@ def test_service_env_replaces_blank_env_tokens_from_dotenv(monkeypatch):
     assert env["BACKEND_AGENT_API_TOKEN"] == "generated-token"
 
 
+def test_integration_test_waits_for_default_stack(monkeypatch):
+    calls = []
+    waits = []
+
+    monkeypatch.setattr(cli, "service_env_with_tokens", lambda: {})
+    monkeypatch.setattr(
+        cli,
+        "docker_compose",
+        lambda *args, profiles=None, env=None: calls.append(
+            {"args": args, "profiles": profiles, "env": env}
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "wait_for_default_stack",
+        lambda include_web_ui=False: waits.append(include_web_ui),
+    )
+
+    cli.cmd_test(argparse.Namespace(type="integration"))
+
+    assert calls[0]["args"] == ("up", "-d")
+    assert calls[0]["profiles"] == ["default"]
+    assert calls[0]["env"]["PLATFORM_MAINTAINER_SIGNUP_CODE"] == "local-maintainer"
+    assert calls[1]["args"] == ("run", "--rm", "test-integration")
+    assert calls[1]["profiles"] == ["default", "test-integration"]
+    assert waits == [False]
+
+
+def test_e2e_test_waits_for_web_ui(monkeypatch):
+    calls = []
+    waits = []
+
+    monkeypatch.setattr(cli, "service_env_with_tokens", lambda: {})
+    monkeypatch.setattr(
+        cli,
+        "docker_compose",
+        lambda *args, profiles=None, env=None: calls.append(
+            {"args": args, "profiles": profiles, "env": env}
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "wait_for_default_stack",
+        lambda include_web_ui=False: waits.append(include_web_ui),
+    )
+
+    cli.cmd_test(argparse.Namespace(type="e2e"))
+
+    assert calls[0]["args"] == ("up", "-d")
+    assert calls[1]["args"] == ("run", "--rm", "test-e2e")
+    assert calls[1]["profiles"] == ["default", "test-e2e"]
+    assert waits == [True]
+
+
 def test_backend_core_client_sends_agent_token_without_body_leak(monkeypatch):
     calls = []
 

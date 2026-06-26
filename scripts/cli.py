@@ -8,12 +8,21 @@ import os
 import secrets
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DOCKER_COMPOSE_FILE = PROJECT_ROOT / "docker-compose.yml"
 HOST_AI_TOKEN_FILE = PROJECT_ROOT / "data" / "host-ai-token"
+DEFAULT_STACK_HEALTHCHECKS = (
+    ("Backend Core", "http://localhost:8080/health"),
+    ("AI Engine", "http://localhost:8090/health"),
+    ("Browser Engine", "http://localhost:8083/health"),
+)
+WEB_UI_HEALTHCHECK = ("Web UI", "http://localhost:8089/_stcore/health")
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -102,6 +111,31 @@ def service_env_with_tokens() -> dict[str, str]:
     set_env_default_if_blank(env, "BACKEND_CALLBACK_TOKEN", token)
     set_env_default_if_blank(env, "BACKEND_AGENT_API_TOKEN", token)
     return env
+
+
+def wait_for_http_health(name: str, url: str, timeout_seconds: int = 60) -> None:
+    """Wait until a local service health endpoint accepts requests."""
+    deadline = time.monotonic() + timeout_seconds
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                if 200 <= response.status < 500:
+                    return
+                last_error = f"HTTP {response.status}"
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            last_error = str(error)
+        time.sleep(1)
+    raise RuntimeError(f"{name} did not become ready at {url}: {last_error}")
+
+
+def wait_for_default_stack(include_web_ui: bool = False) -> None:
+    """Wait for services that integration/e2e tests call immediately."""
+    healthchecks = list(DEFAULT_STACK_HEALTHCHECKS)
+    if include_web_ui:
+        healthchecks.append(WEB_UI_HEALTHCHECK)
+    for name, url in healthchecks:
+        wait_for_http_health(name, url)
 
 
 def cmd_start(args):
@@ -352,6 +386,7 @@ def cmd_test(args):
             test_env, "PLATFORM_MAINTAINER_SIGNUP_CODE", "local-maintainer"
         )
         docker_compose("up", "-d", profiles=["default"], env=test_env)
+        wait_for_default_stack(include_web_ui=test_type == "e2e")
         test_profiles = ["default", f"test-{test_type}"]
 
     docker_compose(
