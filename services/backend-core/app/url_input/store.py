@@ -180,6 +180,15 @@ class URLStore:
         """Get all URL records."""
         return list(self._urls.values())
 
+    def replace_records(self, records: list[URLRecord]) -> None:
+        """Replace store contents with pre-built records."""
+        self.clear()
+        for record in records:
+            self._urls[record.normalized] = record
+            self._original_to_normalized[record.original] = record.normalized
+            if record.content_hash:
+                self._content_hashes[record.content_hash] = record.normalized
+
     def count(self) -> int:
         """Get total count of URLs."""
         return len(self._urls)

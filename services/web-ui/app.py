@@ -4,7 +4,6 @@ import streamlit as st
 
 st.set_page_config(
     page_title="Tab Organizer",
-    page_icon="🗂️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -31,17 +30,18 @@ st.markdown(
 )
 
 # Sidebar navigation
-st.sidebar.title("🗂️ Tab Organizer")
+st.sidebar.title("Tab Organizer")
 st.sidebar.divider()
 
 page = st.sidebar.radio(
     "Navigation",
     options=[
-        "📥 URL Input",
-        "🔄 Scraping",
-        "🗂️ Clusters",
-        "💬 Chatbot",
-        "⚙️ Settings",
+        "URL Input",
+        "Scraping",
+        "Clusters",
+        "Chatbot",
+        "Platform",
+        "Settings",
     ],
     label_visibility="collapsed",
 )
@@ -60,20 +60,23 @@ else:
 from src.pages import (
     render_chatbot_page,
     render_clustering_page,
+    render_platform_page,
     render_scraping_page,
     render_settings_page,
     render_url_input_page,
 )
 
-if page == "📥 URL Input":
+if page == "URL Input":
     render_url_input_page()
-elif page == "🔄 Scraping":
+elif page == "Scraping":
     render_scraping_page()
-elif page == "🗂️ Clusters":
+elif page == "Clusters":
     render_clustering_page()
-elif page == "💬 Chatbot":
+elif page == "Chatbot":
     render_chatbot_page()
-elif page == "⚙️ Settings":
+elif page == "Platform":
+    render_platform_page()
+elif page == "Settings":
     render_settings_page()
 
 # Footer
