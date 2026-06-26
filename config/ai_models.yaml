@@ -44,6 +44,36 @@ providers:
       llm: "claude-3-5-sonnet-latest"
       embedding: null
 
+  claude_code:
+    type: local_cli
+    command_env: "CLAUDE_CODE_COMMAND"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "sonnet"
+      embedding: null
+
+  codex_cli:
+    type: local_cli
+    command_env: "CODEX_CLI_COMMAND"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "codex-default"
+      embedding: null
+
+  codex_acp:
+    type: local_acp
+    command_env: "CODEX_ACP_COMMAND"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "codex-acp-default"
+      embedding: null
+
   deepseek:
     type: cloud
     base_url: "https://api.deepseek.com"
@@ -96,6 +126,12 @@ models:
     description: "Balanced default LLM via OpenRouter"
     context_length: 128000
 
+  openrouter/auto:
+    provider: openrouter
+    type: llm
+    description: "OpenRouter automatic model routing"
+    context_length: 128000
+
   llama3.2:3b:
     provider: ollama
     type: llm
@@ -128,6 +164,36 @@ models:
     description: "Anthropic balanced model"
     context_length: 200000
 
+  sonnet:
+    provider: claude_code
+    type: llm
+    description: "Claude Code Sonnet alias via local subscription"
+    context_length: 200000
+
+  opus:
+    provider: claude_code
+    type: llm
+    description: "Claude Code Opus alias via local subscription"
+    context_length: 200000
+
+  codex-default:
+    provider: codex_cli
+    type: llm
+    description: "Codex CLI default model via local ChatGPT/Codex auth"
+    context_length: 128000
+
+  gpt-5:
+    provider: codex_cli
+    type: llm
+    description: "Codex CLI GPT-5 model via local ChatGPT/Codex auth"
+    context_length: 400000
+
+  codex-acp-default:
+    provider: codex_acp
+    type: llm
+    description: "Codex ACP harness via acpx; model is controlled by acpx/Codex config"
+    context_length: 128000
+
   deepseek-chat:
     provider: deepseek
     type: llm
@@ -157,8 +223,8 @@ defaults:
       provider: "openrouter"
       model: "openai/gpt-4o-mini"
     coding:
-      provider: "anthropic"
-      model: "claude-3-5-sonnet-latest"
+      provider: "claude_code"
+      model: "sonnet"
     embeddings:
       provider: "openrouter"
       model: "nvidia/llama-nemotron-embed-vl-1b-v2:free"

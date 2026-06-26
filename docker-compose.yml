@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend-core:
     build:
@@ -9,13 +7,22 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - AI_ENGINE_URL=http://ai-engine:8090
-      - BROWSER_ENGINE_URL=http://browser-engine:8083
+      - AI_ENGINE_URL=${AI_ENGINE_URL:-http://ai-engine:8090}
+      - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
+      - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
+      - BROWSER_ENGINE_URL=${BROWSER_ENGINE_URL:-http://browser-engine:8083}
+      - BACKEND_DB_PATH=/data/backend/tab-organizer.sqlite3
+      - BACKEND_PUBLIC_URL=${BACKEND_PUBLIC_URL:-http://localhost:8080}
+      - PLATFORM_MAINTAINER_SIGNUP_CODE=${PLATFORM_MAINTAINER_SIGNUP_CODE:-}
     depends_on:
       - ai-engine
       - browser-engine
+    volumes:
+      - backend-data:/data/backend
     networks:
       - tab-organizer-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     profiles: [default, dev]
 
@@ -29,9 +36,11 @@ services:
     environment:
       - AI_PROVIDER=${AI_PROVIDER:-openrouter}
       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openrouter}
-      - LLM_MODEL=${LLM_MODEL:-openai/gpt-4o-mini}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nvidia/llama-nemotron-embed-vl-1b-v2:free}
-      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-1024}
+      - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
+      - AI_ENGINE_ALLOW_UNAUTHENTICATED=${AI_ENGINE_ALLOW_UNAUTHENTICATED:-false}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-}
       - VECTOR_DB_PATH=/data/lancedb
       - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -39,6 +48,26 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      # The stock ai-engine image does not install Claude Code, Codex CLI, or acpx.
+      # Use CLI/ACP providers with a host-run AI engine or a custom image that
+      # includes the binaries/adapters and their authenticated state.
+      - AGENT_CLI_WORKDIR=${AGENT_CLI_WORKDIR:-/tmp/tab-organizer-agent-cli}
+      - AGENT_CLI_TIMEOUT=${AGENT_CLI_TIMEOUT:-300}
+      - CLAUDE_CODE_COMMAND=${CLAUDE_CODE_COMMAND:-claude}
+      - CLAUDE_CODE_TIMEOUT=${CLAUDE_CODE_TIMEOUT:-300}
+      - CLAUDE_CODE_DISABLE_TOOLS=${CLAUDE_CODE_DISABLE_TOOLS:-true}
+      - CLAUDE_CODE_EXTRA_ARGS=${CLAUDE_CODE_EXTRA_ARGS:-}
+      - CODEX_CLI_COMMAND=${CODEX_CLI_COMMAND:-codex}
+      - CODEX_CLI_TIMEOUT=${CODEX_CLI_TIMEOUT:-300}
+      - CODEX_CLI_SANDBOX=${CODEX_CLI_SANDBOX:-read-only}
+      - CODEX_CLI_ALLOW_UNTRUSTED_CONTEXT=${CODEX_CLI_ALLOW_UNTRUSTED_CONTEXT:-false}
+      - CODEX_CLI_EXTRA_ARGS=${CODEX_CLI_EXTRA_ARGS:-}
+      - CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND:-acpx}
+      - CODEX_ACP_TIMEOUT=${CODEX_ACP_TIMEOUT:-300}
+      - CODEX_ACP_PERMISSION_MODE=${CODEX_ACP_PERMISSION_MODE:-deny-all}
+      - CODEX_ACP_NON_INTERACTIVE_PERMISSIONS=${CODEX_ACP_NON_INTERACTIVE_PERMISSIONS:-fail}
+      - CODEX_ACP_QUEUE_TTL_SECONDS=${CODEX_ACP_QUEUE_TTL_SECONDS:-0.1}
+      - CODEX_ACP_SESSION_NAME=${CODEX_ACP_SESSION_NAME:-}
     depends_on:
       - ollama
     volumes:
@@ -57,13 +86,17 @@ services:
       - "8083:8083"
     environment:
       - BACKEND_URL=http://backend-core:8080
-      - AI_ENGINE_URL=http://ai-engine:8090
+      - AI_ENGINE_URL=${AI_ENGINE_URL:-http://ai-engine:8090}
+      - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
+      - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
       - MAX_CONCURRENT_SCRAPES=${MAX_CONCURRENT_SCRAPES:-10}
       - SCRAPE_TIMEOUT=${SCRAPE_TIMEOUT:-30}
       - RESPECT_ROBOTS=${RESPECT_ROBOTS:-true}
       - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY:-}
     networks:
       - tab-organizer-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     profiles: [default, dev]
 
@@ -76,12 +109,15 @@ services:
       - "8089:8089"
     environment:
       - BACKEND_URL=http://backend-core:8080
-      - AI_ENGINE_URL=http://ai-engine:8090
+      - AI_ENGINE_URL=${AI_ENGINE_URL:-http://ai-engine:8090}
+      - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
       - BROWSER_ENGINE_URL=http://browser-engine:8083
     depends_on:
       - backend-core
     networks:
       - tab-organizer-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     profiles: [default, dev]
 
@@ -106,6 +142,13 @@ services:
     volumes:
       - ./tests:/app/tests
       - ./services:/app/services
+      - ./config:/app/config
+      - ./scripts:/app/scripts:ro
+      - ./docs:/app/docs:ro
+      - ./.github:/app/.github:ro
+      - ./Makefile:/app/Makefile:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./.env.example:/app/.env.example:ro
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     networks:
@@ -126,6 +169,7 @@ services:
     volumes:
       - ./tests:/app/tests
       - ./services:/app/services
+      - ./config:/app/config
       - ./test-results:/app/test-results
     depends_on:
       - backend-core
@@ -165,5 +209,6 @@ networks:
     driver: bridge
 
 volumes:
+  backend-data:
   ollama-data:
   lancedb-data:

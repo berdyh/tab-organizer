@@ -2,7 +2,9 @@
 """Tab Organizer CLI - Unified management tool."""
 
 import argparse
+import asyncio
 import os
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -10,9 +12,18 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DOCKER_COMPOSE_FILE = PROJECT_ROOT / "docker-compose.yml"
+HOST_AI_TOKEN_FILE = PROJECT_ROOT / "data" / "host-ai-token"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def run_command(cmd: list[str], check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+def run_command(
+    cmd: list[str],
+    check: bool = True,
+    capture: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     """Run a shell command."""
     print(f"Running: {' '.join(cmd)}")
     return subprocess.run(
@@ -21,10 +32,15 @@ def run_command(cmd: list[str], check: bool = True, capture: bool = False) -> su
         check=check,
         capture_output=capture,
         text=True,
+        env=env,
     )
 
 
-def docker_compose(*args: str, profiles: list[str] = None) -> subprocess.CompletedProcess:
+def docker_compose(
+    *args: str,
+    profiles: list[str] = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     """Run docker compose command."""
     cmd = ["docker", "compose", "-f", str(DOCKER_COMPOSE_FILE)]
     
@@ -33,11 +49,61 @@ def docker_compose(*args: str, profiles: list[str] = None) -> subprocess.Complet
             cmd.extend(["--profile", profile])
     
     cmd.extend(args)
-    return run_command(cmd)
+    return run_command(cmd, env=env)
+
+
+def load_env_file() -> None:
+    """Load simple KEY=VALUE pairs from .env without overriding the shell."""
+    env_file = PROJECT_ROOT / ".env"
+    if not env_file.exists():
+        return
+
+    for raw_line in env_file.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key.strip(), value)
+
+
+def ensure_host_ai_token() -> str:
+    """Return a local shared token for container-to-host AI Engine calls."""
+    token = os.getenv("AI_ENGINE_API_TOKEN", "").strip()
+    if token:
+        return token
+
+    if HOST_AI_TOKEN_FILE.exists():
+        token = HOST_AI_TOKEN_FILE.read_text().strip()
+        if token:
+            return token
+
+    HOST_AI_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(32)
+    HOST_AI_TOKEN_FILE.write_text(f"{token}\n")
+    HOST_AI_TOKEN_FILE.chmod(0o600)
+    return token
+
+
+def set_env_default_if_blank(env: dict[str, str], key: str, value: str) -> None:
+    """Set an env default when a copied .env left the key blank."""
+    if not env.get(key, "").strip():
+        env[key] = value
+
+
+def service_env_with_tokens() -> dict[str, str]:
+    """Return compose env with shared service auth tokens populated."""
+    env = os.environ.copy()
+    token = ensure_host_ai_token()
+    set_env_default_if_blank(env, "AI_ENGINE_API_TOKEN", token)
+    set_env_default_if_blank(env, "BACKEND_CALLBACK_TOKEN", token)
+    return env
 
 
 def cmd_start(args):
     """Start all services."""
+    load_env_file()
+
     profiles = ["default"]
     if args.dev:
         profiles = ["dev"]
@@ -47,17 +113,113 @@ def cmd_start(args):
         extra_args.append("--build")
     if args.detach:
         extra_args.append("-d")
+
+    compose_env = service_env_with_tokens()
+    if args.host_ai:
+        compose_env["AI_ENGINE_URL"] = args.host_ai_url
+        extra_args.extend(["--scale", "ai-engine=0"])
     
-    docker_compose("up", *extra_args, profiles=profiles)
+    docker_compose("up", *extra_args, profiles=profiles, env=compose_env)
     
     if args.detach:
-        print("\n✅ Services started!")
+        print("\nServices started.")
         print("   Web UI:         http://localhost:8089")
         print("   Backend API:    http://localhost:8080")
-        print("   AI Engine:      http://localhost:8090")
+        if args.host_ai:
+            print(f"   AI Engine:      host-run at {args.host_ai_url}")
+        else:
+            print("   AI Engine:      http://localhost:8090")
         print("   Browser Engine: http://localhost:8083")
         print("   Ollama:         http://localhost:11434")
         print("   LanceDB:        embedded in AI Engine (volume: lancedb-data)")
+
+
+def cmd_host_ai(args):
+    """Run the AI engine on the host so it can use authenticated local CLIs."""
+    load_env_file()
+
+    env = os.environ.copy()
+    provider = args.provider or os.getenv("AI_PROVIDER") or "claude_code"
+    embedding_provider = (
+        args.embedding_provider or os.getenv("EMBEDDING_PROVIDER") or "ollama"
+    )
+    env["AI_PROVIDER"] = provider
+    env["EMBEDDING_PROVIDER"] = embedding_provider
+    env["AI_ENGINE_API_TOKEN"] = ensure_host_ai_token()
+    set_env_default_if_blank(env, "BACKEND_CALLBACK_TOKEN", env["AI_ENGINE_API_TOKEN"])
+    set_env_default_if_blank(
+        env, "VECTOR_DB_PATH", str(PROJECT_ROOT / "data" / "lancedb-host")
+    )
+    set_env_default_if_blank(
+        env,
+        "AGENT_CLI_WORKDIR",
+        str(PROJECT_ROOT / "data" / "agent-cli-workdir"),
+    )
+
+    if embedding_provider == "ollama":
+        ollama_host = args.ollama_host or env.get("OLLAMA_HOST", "")
+        if not ollama_host or "://ollama:" in ollama_host or "host.docker.internal" in ollama_host:
+            ollama_host = "http://localhost:11434"
+        env["OLLAMA_HOST"] = ollama_host
+    if args.llm_model:
+        env["LLM_MODEL"] = args.llm_model
+    if args.embedding_model:
+        env["EMBEDDING_MODEL"] = args.embedding_model
+    if args.claude_code_command:
+        env["CLAUDE_CODE_COMMAND"] = args.claude_code_command
+    if args.codex_cli_command:
+        env["CODEX_CLI_COMMAND"] = args.codex_cli_command
+    if args.codex_acp_command:
+        env["CODEX_ACP_COMMAND"] = args.codex_acp_command
+
+    print(
+        "Host AI engine mode uses your local CLI auth state. "
+        "Start Docker with './scripts/cli.py start -d --host-ai' in another terminal."
+    )
+    run_command(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "services.ai_engine.app.main:app",
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
+        ],
+        env=env,
+    )
+
+
+def cmd_check_provider(args):
+    """Run a local provider availability check and optional generation smoke."""
+    load_env_file()
+
+    from config.config_loader import get_ai_config
+    from services.ai_engine.app.core.llm_client import LLMClient, LLMConfig
+
+    ai_config = get_ai_config()
+    provider = args.provider or os.getenv("AI_PROVIDER") or "openrouter"
+    model = (
+        args.model
+        or os.getenv("LLM_MODEL")
+        or ai_config.get_default_model(provider, "llm")
+        or ""
+    )
+
+    probe_client = LLMClient(
+        LLMConfig(
+            provider="openrouter",
+            model=ai_config.get_default_model("openrouter", "llm") or "",
+        )
+    )
+    available = probe_client.is_provider_runtime_available(provider, "llm")
+    print(f"{provider}: {'available' if available else 'not available'}")
+
+    if args.generate:
+        client = LLMClient(LLMConfig(provider=provider, model=model))
+        result = asyncio.run(client.generate(args.prompt))
+        print(result)
 
 
 def cmd_stop(args):
@@ -67,14 +229,14 @@ def cmd_stop(args):
         extra_args.append("-v")
     
     docker_compose("down", *extra_args, profiles=["default", "dev"])
-    print("✅ Services stopped")
+    print("Services stopped")
 
 
 def cmd_restart(args):
     """Restart services."""
     services = args.services if args.services else []
     docker_compose("restart", *services, profiles=["default"])
-    print("✅ Services restarted")
+    print("Services restarted")
 
 
 def cmd_status(args):
@@ -97,15 +259,30 @@ def cmd_logs(args):
 def cmd_test(args):
     """Run tests."""
     test_type = args.type or "unit"
-    profile = f"test-{test_type}"
-    
+
     print(f"Running {test_type} tests...")
-    
+
+    if test_type == "all":
+        for suite in ("unit", "integration", "e2e"):
+            cmd_test(argparse.Namespace(type=suite))
+        return
+
     if test_type in ("integration", "e2e"):
-        # Start dependencies first
-        docker_compose("up", "-d", profiles=["default"])
-    
-    docker_compose("run", "--rm", f"test-{test_type}", profiles=[profile])
+        # Start dependencies first. Provide the maintainer bootstrap code only
+        # for local test runs; the published stack has no default maintainer code.
+        test_env = service_env_with_tokens()
+        set_env_default_if_blank(
+            test_env, "PLATFORM_MAINTAINER_SIGNUP_CODE", "local-maintainer"
+        )
+        docker_compose("up", "-d", profiles=["default"], env=test_env)
+
+    docker_compose(
+        "run",
+        "--rm",
+        f"test-{test_type}",
+        profiles=[f"test-{test_type}"],
+        env=service_env_with_tokens(),
+    )
 
 
 def cmd_models(args):
@@ -131,7 +308,7 @@ def cmd_init(args):
     if not env_file.exists() and env_example.exists():
         import shutil
         shutil.copy(env_example, env_file)
-        print("✅ Created .env from .env.example")
+        print("Created .env from .env.example")
     
     # Build images
     if args.build:
@@ -158,7 +335,7 @@ def cmd_init(args):
         run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "pull", default_llm], check=False)
         run_command(["docker", "exec", "tab-organizer-ollama", "ollama", "pull", default_embedding], check=False)
     
-    print("\n✅ Initialization complete!")
+    print("\nInitialization complete.")
     print("   Run './scripts/cli.py start -d' to start services")
 
 
@@ -184,7 +361,7 @@ def cmd_clean(args):
             image_ids = result.stdout.strip().split("\n")
             run_command(["docker", "rmi", "-f"] + image_ids, check=False)
     
-    print("✅ Cleanup complete")
+    print("Cleanup complete")
 
 
 def cmd_shell(args):
@@ -203,6 +380,8 @@ def main():
 Examples:
   %(prog)s init --build --models    Initialize project with images and models
   %(prog)s start -d                 Start all services in background
+  %(prog)s host-ai --provider claude_code
+  %(prog)s start -d --host-ai       Start Docker services wired to host AI
   %(prog)s start --build            Rebuild and start services
   %(prog)s stop                     Stop all services
   %(prog)s logs -f web-ui           Follow web-ui logs
@@ -218,7 +397,86 @@ Examples:
     start_parser.add_argument("--build", "-b", action="store_true", help="Build images before starting")
     start_parser.add_argument("--detach", "-d", action="store_true", help="Run in background")
     start_parser.add_argument("--dev", action="store_true", help="Use development profile")
+    start_parser.add_argument(
+        "--host-ai",
+        action="store_true",
+        help="Route backend/browser/web containers to a host-run AI engine",
+    )
+    start_parser.add_argument(
+        "--host-ai-url",
+        default="http://host.docker.internal:8090",
+        help="AI engine URL visible from containers when --host-ai is used",
+    )
     start_parser.set_defaults(func=cmd_start)
+
+    # host-ai
+    host_ai_parser = subparsers.add_parser(
+        "host-ai",
+        help="Run AI engine on the host for subscription CLI providers",
+    )
+    host_ai_parser.add_argument(
+        "--provider",
+        choices=["claude_code", "codex_cli", "codex_acp", "openrouter", "ollama"],
+        help="LLM provider to run in the host AI engine; defaults to AI_PROVIDER or claude_code",
+    )
+    host_ai_parser.add_argument("--llm-model", help="Override LLM_MODEL")
+    host_ai_parser.add_argument(
+        "--embedding-provider",
+        help="Embedding provider to pair with the LLM provider; defaults to EMBEDDING_PROVIDER or ollama",
+    )
+    host_ai_parser.add_argument("--embedding-model", help="Override EMBEDDING_MODEL")
+    host_ai_parser.add_argument(
+        "--ollama-host",
+        help="Host URL for Ollama embeddings in host-ai mode; defaults to http://localhost:11434 when .env points at Docker-only ollama",
+    )
+    host_ai_parser.add_argument(
+        "--claude-code-command",
+        help="Override CLAUDE_CODE_COMMAND, for example an absolute claude path",
+    )
+    host_ai_parser.add_argument(
+        "--codex-cli-command",
+        help="Override CODEX_CLI_COMMAND, for example an absolute codex path",
+    )
+    host_ai_parser.add_argument(
+        "--codex-acp-command",
+        help="Override CODEX_ACP_COMMAND, for example an absolute acpx path",
+    )
+    host_ai_parser.add_argument("--host", default="0.0.0.0", help="Bind host")
+    host_ai_parser.add_argument("--port", type=int, default=8090, help="Bind port")
+    host_ai_parser.set_defaults(func=cmd_host_ai)
+
+    # check-provider
+    check_parser = subparsers.add_parser(
+        "check-provider",
+        help="Check local LLM provider availability and optional smoke generation",
+    )
+    check_parser.add_argument(
+        "--provider",
+        choices=[
+            "openrouter",
+            "ollama",
+            "openai",
+            "anthropic",
+            "claude_code",
+            "codex_cli",
+            "codex_acp",
+            "deepseek",
+            "gemini",
+        ],
+        help="Provider to check; defaults to AI_PROVIDER",
+    )
+    check_parser.add_argument("--model", help="Override model for the check")
+    check_parser.add_argument(
+        "--generate",
+        action="store_true",
+        help="Run a real generation request after availability succeeds",
+    )
+    check_parser.add_argument(
+        "--prompt",
+        default="Reply with OK.",
+        help="Prompt used by --generate",
+    )
+    check_parser.set_defaults(func=cmd_check_provider)
     
     # stop
     stop_parser = subparsers.add_parser("stop", help="Stop services")
@@ -243,7 +501,7 @@ Examples:
     
     # test
     test_parser = subparsers.add_parser("test", help="Run tests")
-    test_parser.add_argument("--type", "-t", choices=["unit", "integration", "e2e"], help="Test type")
+    test_parser.add_argument("--type", "-t", choices=["unit", "integration", "e2e", "all"], help="Test type")
     test_parser.set_defaults(func=cmd_test)
     
     # models

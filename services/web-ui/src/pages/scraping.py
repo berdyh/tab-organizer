@@ -9,7 +9,7 @@ from ..api.client import SyncAPIClient
 
 def render_scraping_page():
     """Render the scraping status page."""
-    st.header("🔄 Scraping Status")
+    st.header("Scraping Status")
 
     # Initialize API client
     if "api_client" not in st.session_state:
@@ -25,18 +25,22 @@ def render_scraping_page():
     session_id = st.session_state.current_session_id
 
     # Scraping controls
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
 
     with col1:
-        if st.button("🚀 Start Scraping", key="start_scraping", type="primary"):
+        if st.button("Start Scraping", key="start_scraping", type="primary"):
             try:
-                result = api.start_scraping(session_id)
+                use_browser = st.session_state.get("scrape_use_browser", False)
+                result = api.start_scraping(session_id, use_browser=use_browser)
                 st.success(f"Started scraping {result.get('url_count', 0)} URLs")
                 st.session_state.scraping_active = True
             except Exception as e:
                 st.error(f"Failed to start scraping: {e}")
 
     with col2:
+        st.checkbox("Use browser", value=False, key="scrape_use_browser")
+
+    with col3:
         auto_refresh = st.checkbox("Auto-refresh", value=False, key="auto_refresh")
 
     st.divider()
@@ -62,19 +66,34 @@ def render_scraping_page():
             col1, col2, col3, col4 = st.columns(4)
 
             with col1:
-                st.metric("✅ Success", status.get("success", 0))
+                st.metric("Success", status.get("success", 0))
 
             with col2:
-                st.metric("❌ Failed", status.get("failed", 0))
+                st.metric("Failed", status.get("failed", 0))
 
             with col3:
-                st.metric("🔐 Auth Required", status.get("auth_required", 0))
+                st.metric("Auth Required", status.get("auth_required", 0))
 
             with col4:
-                st.metric("📊 Status", status.get("status", "unknown").title())
+                st.metric("Status", status.get("status", "unknown").title())
 
-            # Error display
-            if status.get("error"):
+            downstream_errors = status.get("downstream_errors") or []
+            if status.get("status") == "completed_with_downstream_errors":
+                if status.get("backend_callback_failed", 0) == 0:
+                    st.warning(
+                        "Scraping completed, but downstream AI indexing failed. "
+                        "Check Settings health before using chat, search, or clustering."
+                    )
+                else:
+                    st.error(
+                        "Scraping completed, but downstream callback or indexing "
+                        "operations failed."
+                    )
+                for error in downstream_errors[:3]:
+                    source = error.get("source", "downstream")
+                    message = error.get("message", "Unknown downstream error")
+                    st.caption(f"{source}: {message}")
+            elif status.get("error"):
                 st.error(f"Error: {status['error']}")
 
     except Exception as e:
@@ -83,7 +102,7 @@ def render_scraping_page():
     st.divider()
 
     # Authentication queue
-    st.subheader("🔐 Authentication Queue")
+    st.subheader("Authentication Queue")
 
     try:
         auth_data = api.get_pending_auth()
@@ -95,7 +114,7 @@ def render_scraping_page():
             st.warning(f"{len(pending)} sites require authentication")
 
             for request in pending:
-                with st.expander(f"🔒 {request['domain']}", expanded=True):
+                with st.expander(request["domain"], expanded=True):
                     st.write(f"**URL:** {request['url']}")
                     st.write(f"**Auth Type:** {request['auth_type']}")
 

@@ -7,7 +7,7 @@ from ..api.client import SyncAPIClient
 
 def render_clustering_page():
     """Render the clustering visualization page."""
-    st.header("🗂️ Tab Clusters")
+    st.header("Tab Clusters")
 
     # Initialize API client
     if "api_client" not in st.session_state:
@@ -26,7 +26,7 @@ def render_clustering_page():
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        if st.button("🔄 Generate Clusters", key="generate_clusters", type="primary"):
+        if st.button("Generate Clusters", key="generate_clusters", type="primary"):
             with st.spinner("Clustering URLs... This may take a moment."):
                 try:
                     result = api.start_clustering(session_id)
@@ -36,7 +36,7 @@ def render_clustering_page():
                     st.error(f"Clustering failed: {e}")
 
     with col2:
-        if st.button("📥 Load Existing Clusters", key="load_clusters"):
+        if st.button("Load Existing Clusters", key="load_clusters"):
             try:
                 result = api.get_clusters(session_id)
                 st.session_state.clusters = result.get("clusters", [])
@@ -96,23 +96,10 @@ def render_clusters_cards(clusters: list):
     for i, cluster in enumerate(clusters):
         with cols[i % 2]:
             with st.container():
-                st.markdown(
-                    f"""
-                    <div style="
-                        border: 1px solid #ddd;
-                        border-radius: 8px;
-                        padding: 16px;
-                        margin-bottom: 16px;
-                        background: #f9f9f9;
-                    ">
-                        <h4 style="margin: 0 0 8px 0;">🏷️ {cluster.get('name', f'Cluster {cluster.get("id", i)}')}</h4>
-                        <p style="color: #666; margin: 0;">
-                            {cluster.get('tab_count', len(cluster.get('urls', [])))} URLs
-                        </p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                cluster_name = cluster.get("name", f"Cluster {cluster.get('id', i)}")
+                url_count = cluster.get("tab_count", len(cluster.get("urls", [])))
+                st.write(f"**{cluster_name}**")
+                st.caption(f"{url_count} URLs")
 
                 with st.expander("View URLs"):
                     for url_data in cluster.get("urls", []):
@@ -126,11 +113,10 @@ def render_clusters_cards(clusters: list):
                             if isinstance(url_data, dict)
                             else url
                         )
-                        st.markdown(
-                            f"- [{title[:50]}...]({url})"
-                            if len(title) > 50
-                            else f"- [{title}]({url})"
+                        display_title = (
+                            f"{title[:50]}..." if len(title) > 50 else title
                         )
+                        st.write(f"- {display_title} ({url})")
 
                 # Subclusters
                 if cluster.get("subclusters"):
@@ -147,7 +133,7 @@ def render_clusters_list(clusters: list):
         cluster_name = cluster.get("name", f"Cluster {cluster.get('id', i)}")
         url_count = cluster.get("tab_count", len(cluster.get("urls", [])))
 
-        with st.expander(f"🏷️ {cluster_name} ({url_count} URLs)", expanded=i == 0):
+        with st.expander(f"{cluster_name} ({url_count} URLs)", expanded=i == 0):
             # URLs table
             urls = cluster.get("urls", [])
 
@@ -162,11 +148,7 @@ def render_clusters_list(clusters: list):
 
                     col1, col2 = st.columns([3, 1])
                     with col1:
-                        st.markdown(
-                            f"[{title[:60]}...]({url})"
-                            if len(title) > 60
-                            else f"[{title}]({url})"
-                        )
+                        st.write(f"{title[:60]}..." if len(title) > 60 else title)
                     with col2:
                         st.caption(url[:30] + "..." if len(url) > 30 else url)
 
@@ -186,7 +168,7 @@ def render_clusters_tree(clusters: list):
         cluster_name = cluster.get("name", f"Cluster {cluster.get('id', i)}")
         url_count = cluster.get("tab_count", len(cluster.get("urls", [])))
 
-        st.markdown(f"### 📁 {cluster_name}")
+        st.subheader(cluster_name)
         st.caption(f"{url_count} URLs")
 
         # URLs
@@ -199,18 +181,16 @@ def render_clusters_tree(clusters: list):
                 url = url_data
                 title = url_data
 
-            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;📄 [{title[:50]}]({url})")
+            st.write(f"- {title[:50]} ({url})")
 
         if len(urls) > 10:
-            st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;... and {len(urls) - 10} more")
+            st.caption(f"... and {len(urls) - 10} more")
 
         # Subclusters
         if cluster.get("subclusters"):
             for sub in cluster["subclusters"]:
                 sub_name = sub.get("name", "Subcluster")
                 sub_count = sub.get("tab_count", 0)
-                st.markdown(
-                    f"&nbsp;&nbsp;&nbsp;&nbsp;📂 **{sub_name}** ({sub_count} URLs)"
-                )
+                st.write(f"{sub_name} ({sub_count} URLs)")
 
         st.write("")

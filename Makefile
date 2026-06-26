@@ -52,7 +52,7 @@ test-service: ## Run tests for specific service (usage: make test-service SERVIC
 
 test-watch: ## Run tests in watch mode for development
 	@echo "$(BLUE)Running tests in watch mode...$(NC)"
-	@docker compose --profile dev up -d ollama backend-core ai-engine browser-engine web-ui
+	@./scripts/cli.py start -d --dev
 	@echo "$(GREEN)Development environment started. Tests will run on file changes.$(NC)"
 
 # ==================== COVERAGE ====================
@@ -78,7 +78,7 @@ dev: dev-up ## Start development environment (alias for dev-up)
 
 dev-up: ## Start development environment with hot-reload
 	@echo "$(BLUE)Starting development environment...$(NC)"
-	@docker compose --profile dev up -d ollama backend-core ai-engine browser-engine web-ui
+	@./scripts/cli.py start -d --dev
 	@echo "$(GREEN)Development environment started!$(NC)"
 	@echo "$(YELLOW)Services available at:$(NC)"
 	@echo "  - Backend Core: http://localhost:8080"
@@ -103,7 +103,7 @@ dev-restart: ## Restart development environment
 
 dev-rebuild: ## Rebuild and restart development environment
 	@echo "$(BLUE)Rebuilding development environment...$(NC)"
-	@docker compose --profile dev up -d --build ollama backend-core ai-engine browser-engine web-ui
+	@./scripts/cli.py start -d --build --dev
 	@echo "$(GREEN)Development environment rebuilt$(NC)"
 
 # ==================== PRODUCTION ====================
@@ -115,7 +115,7 @@ build: ## Build production Docker images
 
 up: ## Start production environment
 	@echo "$(BLUE)Starting production environment...$(NC)"
-	@docker compose up -d
+	@./scripts/cli.py start -d
 	@echo "$(GREEN)Production environment started!$(NC)"
 
 down: ## Stop production environment
