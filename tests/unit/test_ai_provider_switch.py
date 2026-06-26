@@ -31,6 +31,35 @@ def test_ai_engine_auth_dependency_requires_configured_token(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_search_route_honors_requested_top_k(monkeypatch):
+    class FakeChatbot:
+        async def search(self, query, session_id=None, top_k=5):
+            return [
+                {
+                    "query": query,
+                    "session_id": session_id,
+                    "top_k": top_k,
+                }
+            ]
+
+    monkeypatch.setattr(main, "chatbot", FakeChatbot())
+
+    response = await main.search(
+        main.ChatRequest(query="browser tabs", session_id="session", top_k=17)
+    )
+
+    assert response == {
+        "results": [
+            {
+                "query": "browser tabs",
+                "session_id": "session",
+                "top_k": 17,
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
 async def test_ai_health_reports_degraded_when_runtime_config_is_unavailable(monkeypatch):
     class FakeChatbot:
         db_uri = "/tmp/lancedb"

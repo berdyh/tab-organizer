@@ -1,5 +1,7 @@
 """Persistence regression coverage for the AI Engine's embedded LanceDB store."""
 
+import json
+
 import pytest
 
 lancedb = pytest.importorskip("lancedb")
@@ -11,7 +13,11 @@ from services.ai_engine.app.chatbot.rag import Document, RAGChatbot
 class FakeLLMClient:
     """Deterministic embedding client for LanceDB persistence tests."""
 
+    def __init__(self):
+        self.embedded_texts = []
+
     async def embed(self, texts):
+        self.embedded_texts.extend(texts)
         return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
 
     async def embed_single(self, text):
@@ -51,6 +57,35 @@ class SearchOnlyRAGChatbot(RAGChatbot):
                 "score": 1.0,
             }
         ]
+
+
+class KeywordLLMClient:
+    """Embedding client that makes chunks containing a keyword rank first."""
+
+    def __init__(self, keyword: str):
+        self.keyword = keyword
+        self.embedded_texts = []
+
+    async def embed(self, texts):
+        self.embedded_texts.extend(texts)
+        return [self._embedding_for(text) for text in texts]
+
+    async def embed_single(self, text):
+        return [1.0, 0.0, 0.0, 0.0]
+
+    def _embedding_for(self, text):
+        if self.keyword in text:
+            return [1.0, 0.0, 0.0, 0.0]
+        return [0.0, 1.0, 0.0, 0.0]
+
+
+def _rows_by_id(runtime: RAGChatbot) -> dict[str, dict]:
+    rows = runtime.table.to_pandas().to_dict("records")
+    return {row["id"]: row for row in rows}
+
+
+def _metadata_for(row: dict) -> dict:
+    return json.loads(row["metadata"])
 
 
 @pytest.mark.asyncio
@@ -102,14 +137,124 @@ async def test_lancedb_documents_persist_across_chatbot_instances(tmp_path):
         top_k=1,
     )
 
-    assert results == [
-        {
-            "url": "https://example.com/persisted",
-            "title": "Persisted page",
-            "content": "LanceDB keeps indexed documents on disk across restarts.",
-            "score": pytest.approx(1.0),
-        }
-    ]
+    assert len(results) == 1
+    assert results[0]["url"] == "https://example.com/persisted"
+    assert results[0]["title"] == "Persisted page"
+    assert (
+        results[0]["content"]
+        == "LanceDB keeps indexed documents on disk across restarts."
+    )
+    assert results[0]["score"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_index_documents_chunks_long_content_with_overlap_and_chunk_metadata(
+    tmp_path,
+):
+    session_id = "chunk-session"
+    content = "a" * 3600 + "b" * 400 + "c" * 900
+    llm = FakeLLMClient()
+    runtime = RAGChatbot(db_uri=str(tmp_path / "chunked-lancedb"), embedding_dim=4)
+    runtime.set_llm_client(llm)
+
+    indexed = await runtime.index_documents(
+        [
+            Document(
+                id="doc-1",
+                url="https://example.com/long",
+                title="Long page",
+                content=content,
+                metadata={"topic": "chunking"},
+            )
+        ],
+        session_id=session_id,
+    )
+
+    assert indexed == 2
+    assert llm.embedded_texts == [content[:4000], content[3600:]]
+
+    rows = _rows_by_id(runtime)
+    first_id = f"{session_id}:doc-1#chunk-0"
+    second_id = f"{session_id}:doc-1#chunk-1"
+    assert set(rows) == {first_id, second_id}
+    assert rows[first_id]["content"][-400:] == rows[second_id]["content"][:400]
+
+    first_metadata = _metadata_for(rows[first_id])
+    second_metadata = _metadata_for(rows[second_id])
+    assert first_metadata["topic"] == "chunking"
+    assert first_metadata["document_id"] == "doc-1"
+    assert first_metadata["chunk_index"] == 0
+    assert first_metadata["chunk_count"] == 2
+    assert first_metadata["chunk_start"] == 0
+    assert first_metadata["chunk_end"] == 4000
+    assert second_metadata["chunk_index"] == 1
+    assert second_metadata["chunk_start"] == 3600
+    assert second_metadata["chunk_end"] == len(content)
+
+
+@pytest.mark.asyncio
+async def test_index_documents_caps_chunks_per_tab(tmp_path):
+    session_id = "chunk-cap-session"
+    content = "x" * 80000
+    llm = FakeLLMClient()
+    runtime = RAGChatbot(db_uri=str(tmp_path / "chunk-cap-lancedb"), embedding_dim=4)
+    runtime.set_llm_client(llm)
+
+    indexed = await runtime.index_documents(
+        [
+            Document(
+                id="capped-doc",
+                url="https://example.com/capped",
+                title="Capped page",
+                content=content,
+            )
+        ],
+        session_id=session_id,
+    )
+
+    assert indexed == 20
+    assert len(llm.embedded_texts) == 20
+
+    rows = _rows_by_id(runtime)
+    assert len(rows) == 20
+    assert f"{session_id}:capped-doc#chunk-0" in rows
+    assert f"{session_id}:capped-doc#chunk-19" in rows
+    assert f"{session_id}:capped-doc#chunk-20" not in rows
+
+
+@pytest.mark.asyncio
+async def test_search_returns_chunk_metadata_without_losing_legacy_fields(tmp_path):
+    session_id = "search-chunk-session"
+    content = "a" * 4500 + "needle" + "z" * 100
+    runtime = RAGChatbot(db_uri=str(tmp_path / "search-chunk-lancedb"), embedding_dim=4)
+    runtime.set_llm_client(KeywordLLMClient("needle"))
+
+    await runtime.index_documents(
+        [
+            Document(
+                id="doc-needle",
+                url="https://example.com/needle",
+                title="Needle page",
+                content=content,
+                metadata={"topic": "rag"},
+            )
+        ],
+        session_id=session_id,
+    )
+
+    results = await runtime.search("needle", session_id=session_id, top_k=1)
+
+    assert len(results) == 1
+    result = results[0]
+    assert result["url"] == "https://example.com/needle"
+    assert result["title"] == "Needle page"
+    assert result["content"] == content[3600:]
+    assert result["score"] == pytest.approx(1.0)
+    assert result["id"] == f"{session_id}:doc-needle#chunk-1"
+    assert result["chunk_index"] == 1
+    assert result["metadata"]["topic"] == "rag"
+    assert result["metadata"]["document_id"] == "doc-needle"
+    assert result["metadata"]["chunk_count"] == 2
 
 
 @pytest.mark.asyncio

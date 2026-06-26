@@ -57,6 +57,7 @@ class ClusterRequest(BaseModel):
 class ChatRequest(BaseModel):
     query: str
     session_id: Optional[str] = None
+    top_k: int = 5
 
 
 class IndexRequest(BaseModel):
@@ -349,6 +350,7 @@ async def chat(request: ChatRequest, _auth=Depends(_require_ai_engine_auth)):
             result = await chatbot.chat(
                 query=request.query,
                 session_id=request.session_id,
+                top_k=request.top_k,
             )
         return result
     except Exception as e:
@@ -362,6 +364,7 @@ async def search(request: ChatRequest, _auth=Depends(_require_ai_engine_auth)):
             results = await chatbot.search(
                 query=request.query,
                 session_id=request.session_id,
+                top_k=request.top_k,
             )
         return {"results": results}
     except Exception as e:
