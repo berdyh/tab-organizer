@@ -10,7 +10,7 @@ The scraper is implemented in `services/browser-engine` as an **orchestrated age
 ## End-to-End Flow
 
 1. Backend sends `POST /scrape` to browser-engine.
-2. Browser-engine initializes a progress state (`total/completed/success/failed/auth_required`).
+2. Browser-engine initializes a progress state (`total/completed/success/failed/auth_required`) plus downstream callback/indexing counters.
 3. `scrape_urls_background()` runs and calls `scraper.scrape_batch()`.
 4. For each URL result, callback posts `callback/scrape-complete` to backend-core.
 5. Backend updates URL status and metadata in session store.
@@ -41,7 +41,7 @@ This enables **parallel progress**: protected sites wait, public sites continue.
 
 - Clean separation of concerns.
 - Non-blocking background architecture.
-- Explicit status telemetry (`/scrape/status/{session_id}`).
+- Explicit status telemetry (`/scrape/status/{session_id}`), including downstream backend callback and AI indexing failures.
 - FastAPI-friendly integration with backend and AI services.
 
 ## Risks / Gaps
@@ -50,14 +50,14 @@ This enables **parallel progress**: protected sites wait, public sites continue.
 2. **No retry policy**: transient network failures are not retried with backoff.
 3. **Limited observability**: no structured tracing/correlation IDs.
 4. **Per-domain locking only**: no richer policy (e.g., captcha escalation, SSO handshake strategy).
-5. **Single-pass indexing**: failed indexing to AI engine is silently ignored.
+5. **Single-pass indexing**: failed AI indexing is reported as a downstream error but is not retried automatically.
 
 ## Recommended Enhancements
 
 1. Persist scrape task state + auth queue in Redis/SQLite.
 2. Add retry budget with exponential backoff and jitter.
 3. Add structured logs and request correlation IDs.
-4. Add dead-letter queue for failed callbacks/indexing.
+4. Add retry/dead-letter handling for failed callbacks/indexing after the visible downstream error path.
 5. Add explicit scraping policies per domain (rate limits, browser-only domains, auth strategy).
 6. Capture per-URL timeline events for UI debugging.
 

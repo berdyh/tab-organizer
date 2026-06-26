@@ -7,7 +7,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 - **URL Deduplication**: Set-like storage with automatic normalization and tracking parameter removal
 - **Parallel Authentication**: Non-blocking scraping that continues for public sites while waiting for credentials
 - **AI-Powered Clustering**: UMAP + HDBSCAN clustering with LLM-generated labels
-- **Multi-Provider AI**: Support for OpenRouter (default), Ollama, OpenAI, Anthropic Claude, DeepSeek, and Google Gemini
+- **Multi-Provider AI**: Support for OpenRouter (default), Ollama, OpenAI, Anthropic Claude, Codex CLI/ACP, DeepSeek, and Google Gemini
 - **RAG Chatbot**: Query your scraped content using natural language (LanceDB native search)
 - **Export Options**: Markdown, JSON, HTML, Obsidian-compatible formats
 
@@ -83,12 +83,24 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
    ANTHROPIC_API_KEY=sk-ant-...
    EMBEDDING_PROVIDER=openai
    OPENAI_API_KEY=sk-...
+
+   # Local subscription LLMs from host CLI auth
+   AI_PROVIDER=codex_acp
+   EMBEDDING_PROVIDER=ollama
+   CODEX_ACP_COMMAND=acpx
    ```
 
 3. **Start services**:
    ```bash
    ./scripts/cli.py init --build --models
    ./scripts/cli.py start -d
+   ```
+
+   For local subscription CLI routing, run the AI Engine on the host and point
+   the Docker services at it:
+   ```bash
+   ./scripts/cli.py host-ai --provider claude_code
+   ./scripts/cli.py start -d --host-ai
    ```
 
 4. **Open the UI**: http://localhost:8089
@@ -100,9 +112,16 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 ```bash
 # Start/Stop
 ./scripts/cli.py start -d          # Start in background
+./scripts/cli.py start -d --host-ai # Route containers to host-run AI engine
 ./scripts/cli.py start --build     # Rebuild and start
 ./scripts/cli.py stop              # Stop all services
 ./scripts/cli.py stop -v           # Stop and remove volumes
+
+# Local subscription LLM routing
+./scripts/cli.py host-ai --provider claude_code
+./scripts/cli.py host-ai --provider codex_cli
+./scripts/cli.py host-ai --provider codex_acp
+./scripts/cli.py check-provider --provider codex_acp --generate
 
 # Management
 ./scripts/cli.py status            # Show service status
@@ -110,6 +129,7 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 ./scripts/cli.py restart           # Restart services
 
 # Testing
+./scripts/cli.py test --type all          # Run all test suites
 ./scripts/cli.py test --type unit         # Run unit tests
 ./scripts/cli.py test --type integration  # Run integration tests
 ./scripts/cli.py test --type e2e          # Run end-to-end tests
@@ -137,17 +157,28 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 
 | Variable | docker-compose default | `.env.example` default | Description |
 |----------|-----------------------|------------------------|-------------|
-| `AI_PROVIDER` | `openrouter` | `ollama` | LLM provider (openrouter/ollama/openai/anthropic/deepseek/gemini) |
+| `AI_PROVIDER` | `openrouter` | `ollama` | LLM provider (openrouter/ollama/openai/anthropic/claude_code/codex_cli/codex_acp/deepseek/gemini) |
 | `EMBEDDING_PROVIDER` | `openrouter` | `ollama` | Embedding provider |
-| `LLM_MODEL` | `openai/gpt-4o-mini` | `llama3.2` | Model name for chat/analysis |
-| `EMBEDDING_MODEL` | `nvidia/llama-nemotron-embed-vl-1b-v2:free` | `nomic-embed-text` | Model for embeddings |
-| `EMBEDDING_DIMENSIONS` | `1024` | `768` | Embedding vector size (must match the embedding model) |
+| `LLM_MODEL` | provider default | provider default | Model name for chat/analysis |
+| `EMBEDDING_MODEL` | provider default | provider default | Model for embeddings |
+| `EMBEDDING_DIMENSIONS` | model default | model default | Embedding vector size (must match the embedding model) |
+| `AI_ENGINE_URL` | `http://ai-engine:8090` | — | URL backend/browser/web containers use for the AI Engine; set to `http://host.docker.internal:8090` for `--host-ai` |
+| `AI_ENGINE_API_TOKEN` | — | — | Bearer token for protected AI Engine endpoints; generated locally by `start` and `host-ai` |
+| `BACKEND_CALLBACK_TOKEN` | — | — | Bearer token for browser-engine scrape callbacks into Backend Core; generated locally by `start` and `host-ai` |
+| `AI_ENGINE_ALLOW_UNAUTHENTICATED` | `false` | `false` | Development escape hatch for direct AI Engine calls without a token |
+| `BACKEND_DB_PATH` | `/data/backend/tab-organizer.sqlite3` | `./data/backend/tab-organizer.sqlite3` | SQLite database for sessions, URL records, callback metadata, clusters, and local platform data |
+| `BACKEND_PUBLIC_URL` | `http://localhost:8080` | `http://localhost:8080` | Public Backend Core base URL used in generated B2B first-call examples |
+| `PLATFORM_MAINTAINER_SIGNUP_CODE` | — | — | Local bootstrap code required when creating maintainer platform accounts |
 | `VECTOR_DB_PATH` | `/data/lancedb` | — | LanceDB on-disk directory (mounted from `lancedb-data` volume) |
 | `OLLAMA_HOST` | `http://ollama:11434` | `http://ollama:11434` | Ollama URL |
 | `MAX_CONCURRENT_SCRAPES` | `10` | `10` | Parallel scraping limit |
 | `SCRAPE_TIMEOUT` | `30` | `30` | Scrape timeout in seconds |
 | `RESPECT_ROBOTS` | `true` | `true` | Honor robots.txt |
 | `CREDENTIAL_ENCRYPTION_KEY` | — | — | Fernet key for encrypted credential storage (browser-engine) |
+
+`claude_code` and `codex_cli` are LLM-only providers that call the local `claude -p` or `codex exec` CLI using existing subscription login state. `codex_cli` is one-shot Codex CLI execution, not ACP mode, and is disabled by default for scraped-content prompts because `codex exec` is not a tool-free LLM-only mode. Use `codex_acp` when you want the app's LLM calls to go through an ACP Codex harness via `acpx`. ACP defaults to `deny-all` permissions for app-routed prompts; relax it only for trusted local experiments. Leave `LLM_MODEL` blank unless you need a provider-specific override, and keep `EMBEDDING_PROVIDER` on `ollama` or another embedding-capable provider. The stock Docker image does not install these CLIs, `acpx`, ACP adapters, or mount their auth state; use `./scripts/cli.py host-ai --provider claude_code` plus `./scripts/cli.py start -d --host-ai`, or build a custom image for Docker-based CLI/ACP routing.
+
+AI Engine generation, embedding, indexing, chat, search, clustering, summarization, document deletion, and provider-switch endpoints fail closed unless `AI_ENGINE_API_TOKEN` is configured. Use `./scripts/cli.py start` or `./scripts/cli.py host-ai` so the shared local token is generated and passed to all services.
 
 If `EMBEDDING_PROVIDER` and `EMBEDDING_DIMENSIONS` are mismatched the AI Engine will refuse to write to the LanceDB table — keep them in sync.
 
@@ -167,7 +198,7 @@ GOOGLE_API_KEY=...
 
 ```bash
 # Run all tests
-./scripts/cli.py test
+./scripts/cli.py test --type all
 
 # Run specific test types
 ./scripts/cli.py test --type unit
@@ -261,6 +292,17 @@ tab-organizer/
 | `/api/v1/auth/pending` | GET | List domains awaiting credentials |
 | `/api/v1/auth/credentials` | POST | Submit credentials for a pending domain |
 | `/api/v1/callback/scrape-complete` | POST | Internal callback used by browser-engine |
+| `/api/v1/platform/auth/signup` | POST | Create local platform account |
+| `/api/v1/platform/auth/login` | POST | Create platform session |
+| `/api/v1/platform/me` | GET | Current platform user profile |
+| `/api/v1/platform/companies/search` | GET | Authenticated company search |
+| `/api/v1/platform/companies/{company_id}` | GET | Authenticated company detail |
+| `/api/v1/platform/b2b/tokens` | GET/POST | List or create B2B API tokens |
+| `/api/v1/platform/b2b/tokens/{token_id}` | DELETE | Revoke a B2B API token |
+| `/api/v1/platform/b2b/first-call` | GET | B2B first API call guide |
+| `/api/v1/platform/v1/companies/search` | GET | Token-authenticated public company API |
+| `/api/v1/platform/dashboard` | GET | B2B dashboard counters and events |
+| `/api/v1/platform/maintainer/issues` | GET | Maintainer issue visibility |
 | `/api/v1/health` | GET | Health check |
 
 ### AI Engine (Port 8090)

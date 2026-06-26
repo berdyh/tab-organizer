@@ -235,6 +235,11 @@ uv run safety check
    ollama pull llama3.2:3b
    ```
 
+6. **Backend sessions disappear after restart**
+   - Set `BACKEND_DB_PATH` to a writable SQLite path, for example `./data/backend/tab-organizer.sqlite3`
+   - Docker Compose sets this automatically on the `backend-data` volume
+   - Set `PLATFORM_MAINTAINER_SIGNUP_CODE` before creating local maintainer accounts
+
 ### Performance Tips
 
 1. **Configure Ollama for better performance**
@@ -255,8 +260,9 @@ For production deployment without Docker, consider:
 2. **Configure reverse proxy** (nginx, apache)
 3. **Set up SSL certificates**
 4. **Configure monitoring and logging**
-5. **Back up `VECTOR_DB_PATH`** — the LanceDB directory holds all indexed content
-6. **Set a strong `CREDENTIAL_ENCRYPTION_KEY`** — required by the browser-engine for encrypted credential storage
+5. **Back up `BACKEND_DB_PATH`** — the SQLite database holds sessions, URL records, callback metadata, clusters, and local platform data
+6. **Back up `VECTOR_DB_PATH`** — the LanceDB directory holds all indexed content
+7. **Set a strong `CREDENTIAL_ENCRYPTION_KEY`** — required by the browser-engine for encrypted credential storage
 
 ### Example systemd service for Backend Core
 

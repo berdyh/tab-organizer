@@ -271,8 +271,10 @@ graph TB
 1. **Creation**: New session with unique ID
 2. **URL Storage**: Deduplicated URL collection
 3. **Processing**: Scraping and clustering workflows
-4. **Persistence**: Session data stored in LanceDB tables on disk (volume `lancedb-data`)
-5. **Export**: Session data exported in various formats
+4. **Backend persistence**: Backend sessions, URL records, scrape callback metadata, clusters, and local platform data are stored in SQLite when `BACKEND_DB_PATH` is set. Docker stores this at `/data/backend/tab-organizer.sqlite3` on the `backend-data` volume.
+5. **Runtime state**: Browser-engine scrape task status and target-site auth queue state are process-local in-memory state in the current implementation.
+6. **AI persistence**: AI Engine RAG documents are stored in LanceDB tables on disk (volume `lancedb-data`).
+7. **Export**: Session data exported in various formats
 
 ## Technology Stack
 
@@ -283,7 +285,7 @@ graph TB
 - **AI Models**: Ollama (local) or cloud providers
 
 ### AI & Machine Learning
-- **LLM Providers**: OpenRouter, Ollama, OpenAI, Anthropic Claude, DeepSeek, Google Gemini
+- **LLM Providers**: OpenRouter, Ollama, OpenAI, Anthropic Claude, Claude Code, Codex CLI, Codex ACP, DeepSeek, Google Gemini
 - **Embedding Models**: `nvidia/llama-nemotron-embed-vl-1b-v2:free` (OpenRouter, 1024-dim, default), `nomic-embed-text` (Ollama, 768-dim), `text-embedding-3-small` (OpenAI, 1536-dim), `text-embedding-004` (Gemini, 768-dim)
 - **Clustering**: UMAP + HDBSCAN
 - **Content Processing**: BeautifulSoup, trafilatura
@@ -322,7 +324,7 @@ graph TB
 ### Horizontal Scaling
 - Microservice architecture enables independent scaling
 - Docker Compose profiles for different deployment scenarios
-- Stateless services (except the AI Engine's LanceDB volume and Ollama's model cache)
+- Stateless services except backend SQLite state, the AI Engine's LanceDB volume, and Ollama's model cache
 
 ### Resource Optimization
 - Configurable AI provider selection
@@ -355,6 +357,17 @@ graph TB
 | `/api/v1/auth/pending` | GET | List domains awaiting credentials |
 | `/api/v1/auth/credentials` | POST | Submit credentials for a pending domain |
 | `/api/v1/callback/scrape-complete` | POST | Internal callback used by browser-engine when scraping finishes |
+| `/api/v1/platform/auth/signup` | POST | Create local platform account |
+| `/api/v1/platform/auth/login` | POST | Create platform session |
+| `/api/v1/platform/me` | GET | Current platform user profile |
+| `/api/v1/platform/companies/search` | GET | Authenticated company search |
+| `/api/v1/platform/companies/{company_id}` | GET | Authenticated company detail |
+| `/api/v1/platform/b2b/tokens` | GET/POST | List or create B2B API tokens |
+| `/api/v1/platform/b2b/tokens/{token_id}` | DELETE | Revoke a B2B API token |
+| `/api/v1/platform/b2b/first-call` | GET | B2B first API call guide |
+| `/api/v1/platform/v1/companies/search` | GET | Token-authenticated public company API |
+| `/api/v1/platform/dashboard` | GET | B2B dashboard counters and events |
+| `/api/v1/platform/maintainer/issues` | GET | Maintainer issue visibility |
 | `/api/v1/health` | GET | Health check |
 
 ### AI Engine (Port 8090)

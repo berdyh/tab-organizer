@@ -41,11 +41,22 @@ cd tab-organizer
 
 2. **Set up environment**:
 ```bash
-./scripts/init.py --provider ollama       # fully local
+./scripts/init.py --provider ollama       # supported init flow: local or Docker Ollama
 # or
-./scripts/init.py --provider openrouter   # cloud, single API key
+./scripts/init.py --provider claude --claude-embedding-provider openrouter
+# Anthropic Claude LLM with a separate embedding provider
 # or
 ./scripts/cli.py init --build --models    # copy .env.example, build images, pull Ollama models
+```
+
+`scripts/init.py` accepts `ollama`, `claude`, `openrouter`, `claude_code`,
+`codex_cli`, and `codex_acp`. For local subscription CLI providers, keep
+embeddings on an embedding-capable provider and run the AI Engine on the host:
+
+```bash
+./scripts/init.py --provider codex_acp --subscription-embedding-provider ollama
+./scripts/cli.py host-ai --provider codex_acp
+./scripts/cli.py start --dev -d --host-ai
 ```
 
 3. **Start development services**:
@@ -142,16 +153,16 @@ graph TB
 
 | Service | Unit Tests | Integration Tests | E2E Tests | Performance Tests |
 |---------|------------|-------------------|-----------|-------------------|
-| API Gateway | 95% | ✅ | ✅ | ✅ |
-| URL Input | 90% | ✅ | ✅ | ❌ |
-| Authentication | 95% | ✅ | ✅ | ❌ |
-| Web Scraper | 90% | ✅ | ✅ | ✅ |
-| Content Analyzer | 90% | ✅ | ✅ | ✅ |
-| Clustering | 85% | ✅ | ✅ | ✅ |
-| Export | 85% | ✅ | ✅ | ❌ |
-| Session Manager | 90% | ✅ | ✅ | ❌ |
-| Model Manager | 95% | ✅ | ✅ | ✅ |
-| Web UI | 80% | ✅ | ✅ | ✅ |
+| API Gateway | 95% | Yes | Yes | Yes |
+| URL Input | 90% | Yes | Yes | No |
+| Authentication | 95% | Yes | Yes | No |
+| Web Scraper | 90% | Yes | Yes | Yes |
+| Content Analyzer | 90% | Yes | Yes | Yes |
+| Clustering | 85% | Yes | Yes | Yes |
+| Export | 85% | Yes | Yes | No |
+| Session Manager | 90% | Yes | Yes | No |
+| Model Manager | 95% | Yes | Yes | Yes |
+| Web UI | 80% | Yes | Yes | Yes |
 
 ### Automated Testing Pipeline
 
