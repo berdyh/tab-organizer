@@ -227,6 +227,8 @@ class ScraperEngine:
         self.respect_robots = respect_robots
 
         self._browser: Optional[Browser] = None
+        self._playwright = None
+        self._browser_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._extractor = ContentExtractor()
         self._robots = RobotsChecker()
@@ -243,19 +245,34 @@ class ScraperEngine:
 
     async def _get_browser(self) -> Browser:
         """Get or create browser instance."""
-        if self._browser is None:
-            playwright = await async_playwright().start()
-            self._browser = await playwright.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
+        async with self._browser_lock:
+            if self._browser is None:
+                self._playwright = await async_playwright().start()
+                try:
+                    self._browser = await self._playwright.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    )
+                except Exception:
+                    await self._playwright.stop()
+                    self._playwright = None
+                    raise
         return self._browser
 
     async def close(self) -> None:
         """Close browser instance."""
-        if self._browser:
-            await self._browser.close()
+        async with self._browser_lock:
+            browser = self._browser
+            playwright = self._playwright
             self._browser = None
+            self._playwright = None
+
+            try:
+                if browser:
+                    await browser.close()
+            finally:
+                if playwright:
+                    await playwright.stop()
 
     async def scrape_url(
         self,
@@ -634,6 +651,7 @@ class ScraperEngine:
         urls: list[str],
         session_id: Optional[str] = None,
         callback: Optional[Callable[[ScrapeResult], Awaitable[None]]] = None,
+        use_browser: bool = False,
     ) -> list[ScrapeResult]:
         """
         Scrape multiple URLs in parallel.
@@ -645,7 +663,7 @@ class ScraperEngine:
 
         for url in urls:
             task = asyncio.create_task(
-                self._scrape_with_callback(url, session_id, callback)
+                self._scrape_with_callback(url, session_id, callback, use_browser)
             )
             tasks.append(task)
 
@@ -672,9 +690,14 @@ class ScraperEngine:
         url: str,
         session_id: Optional[str],
         callback: Optional[Callable[[ScrapeResult], Awaitable[None]]],
+        use_browser: bool = False,
     ) -> ScrapeResult:
         """Scrape URL and call callback with result."""
-        result = await self.scrape_url(url, session_id)
+        result = await self.scrape_url(
+            url,
+            session_id=session_id,
+            use_browser=use_browser,
+        )
 
         if callback:
             try:
