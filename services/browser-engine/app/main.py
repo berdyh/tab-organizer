@@ -1,11 +1,12 @@
 """Browser Engine Service - Main Application."""
 
 import asyncio
+import hmac
 import os
 from typing import Optional
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -68,6 +69,33 @@ class SingleScrapeRequest(BaseModel):
     use_browser: bool = False
 
 
+def _browser_engine_token() -> str:
+    """Resolve the token required for Browser Engine control endpoints."""
+    return (
+        os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
+        or os.getenv("BACKEND_CALLBACK_TOKEN", "").strip()
+        or os.getenv("AI_ENGINE_API_TOKEN", "").strip()
+    )
+
+
+def _require_browser_engine_auth(
+    authorization: Optional[str] = Header(default=None),
+):
+    """Require a shared bearer token for browser control/auth endpoints."""
+    expected = _browser_engine_token()
+    if not expected:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Browser Engine token is not configured; set "
+                "BROWSER_ENGINE_API_TOKEN or run scripts/cli.py start"
+            ),
+        )
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not hmac.compare_digest(token.strip(), expected):
+        raise HTTPException(status_code=401, detail="Invalid browser engine token")
+
+
 # Health check
 @app.get("/")
 async def root():
@@ -85,7 +113,11 @@ async def health():
 
 # Scraping endpoints
 @app.post("/scrape")
-async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTasks):
+async def start_scraping(
+    request: ScrapeRequest,
+    background_tasks: BackgroundTasks,
+    _auth=Depends(_require_browser_engine_auth),
+):
     """Start scraping URLs in the background."""
     session_id = request.session_id
 
@@ -311,7 +343,10 @@ async def scrape_urls_background(
 
 
 @app.post("/scrape/single")
-async def scrape_single(request: SingleScrapeRequest):
+async def scrape_single(
+    request: SingleScrapeRequest,
+    _auth=Depends(_require_browser_engine_auth),
+):
     """Scrape a single URL synchronously."""
     result = await scraper.scrape_url(
         url=request.url,
@@ -331,7 +366,10 @@ async def scrape_single(request: SingleScrapeRequest):
 
 
 @app.get("/scrape/status/{session_id}")
-async def get_scrape_status(session_id: str):
+async def get_scrape_status(
+    session_id: str,
+    _auth=Depends(_require_browser_engine_auth),
+):
     """Get scraping status for a session."""
     task_info = scraping_tasks.get(session_id)
     if not task_info:
@@ -346,13 +384,16 @@ async def get_scrape_status(session_id: str):
 
 # Auth endpoints
 @app.get("/auth/pending")
-async def get_pending_auth():
+async def get_pending_auth(_auth=Depends(_require_browser_engine_auth)):
     """Get all pending authentication requests."""
     return auth_queue.to_dict()
 
 
 @app.get("/auth/pending/{session_id}")
-async def get_pending_auth_for_session(session_id: str):
+async def get_pending_auth_for_session(
+    session_id: str,
+    _auth=Depends(_require_browser_engine_auth),
+):
     """Get pending auth requests for a session."""
     requests = auth_queue.get_pending_for_session(session_id)
     return {
@@ -372,7 +413,10 @@ async def get_pending_auth_for_session(session_id: str):
 
 
 @app.post("/auth/credentials")
-async def submit_credentials(request: CredentialsRequest):
+async def submit_credentials(
+    request: CredentialsRequest,
+    _auth=Depends(_require_browser_engine_auth),
+):
     """Submit credentials for a domain."""
     success = await auth_queue.provide_credentials(
         domain=request.domain,
@@ -389,7 +433,10 @@ async def submit_credentials(request: CredentialsRequest):
 
 
 @app.delete("/auth/pending/{domain}")
-async def cancel_auth_request(domain: str):
+async def cancel_auth_request(
+    domain: str,
+    _auth=Depends(_require_browser_engine_auth),
+):
     """Cancel a pending auth request."""
     success = await auth_queue.cancel_request(domain)
     if not success:
@@ -398,7 +445,10 @@ async def cancel_auth_request(domain: str):
 
 
 @app.post("/auth/expire")
-async def expire_old_requests(max_age_seconds: int = 3600):
+async def expire_old_requests(
+    max_age_seconds: int = 3600,
+    _auth=Depends(_require_browser_engine_auth),
+):
     """Expire old pending auth requests."""
     count = await auth_queue.expire_old_requests(max_age_seconds)
     return {"expired": count}
@@ -406,7 +456,11 @@ async def expire_old_requests(max_age_seconds: int = 3600):
 
 # Detection endpoint
 @app.post("/detect-auth")
-async def detect_auth(url: str, html: Optional[str] = None):
+async def detect_auth(
+    url: str,
+    html: Optional[str] = None,
+    _auth=Depends(_require_browser_engine_auth),
+):
     """Detect if a URL requires authentication."""
     result = auth_detector.detect(url=url, html=html)
     return {

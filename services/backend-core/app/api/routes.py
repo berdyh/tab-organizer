@@ -48,6 +48,16 @@ def _ai_engine_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _browser_engine_headers() -> dict[str, str]:
+    """Return bearer auth headers for Browser Engine control endpoints."""
+    token = (
+        os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
+        or os.getenv("BACKEND_CALLBACK_TOKEN", "").strip()
+        or os.getenv("AI_ENGINE_API_TOKEN", "").strip()
+    )
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def _backend_callback_token() -> str:
     """Resolve the bearer token used by browser-engine callbacks."""
     return (
@@ -554,6 +564,7 @@ async def trigger_scraping(
                     "urls": urls,
                     "use_browser": use_browser,
                 },
+                headers=_browser_engine_headers(),
                 timeout=30.0,
             )
     except Exception as e:
@@ -636,6 +647,7 @@ async def get_scrape_status(session_id: str):
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{_browser_engine_url()}/scrape/status/{session_id}",
+                headers=_browser_engine_headers(),
                 timeout=10.0,
             )
             if response.status_code == 404:
@@ -677,7 +689,9 @@ async def get_pending_auth():
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{_browser_engine_url()}/auth/pending", timeout=10.0
+                f"{_browser_engine_url()}/auth/pending",
+                headers=_browser_engine_headers(),
+                timeout=10.0,
             )
             return response.json()
     except Exception as e:
@@ -692,6 +706,7 @@ async def submit_credentials(domain: str, credentials: dict):
             response = await client.post(
                 f"{_browser_engine_url()}/auth/credentials",
                 json={"domain": domain, "credentials": credentials},
+                headers=_browser_engine_headers(),
                 timeout=10.0,
             )
             return response.json()
