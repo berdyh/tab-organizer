@@ -8,11 +8,11 @@ that card.
 
 | Module | Local card | Purpose | Main connections |
 | --- | --- | --- | --- |
-| Backend Core | `services/backend-core/MODULE.md` | API gateway, sessions, URL state, exports, platform accounts, orchestration | Web UI, AI Engine, Browser Engine |
-| AI Engine | `services/ai-engine/MODULE.md` | Provider runtime, embeddings, RAG, clustering, local CLI providers | Backend Core, Browser Engine, shared config, LanceDB/Ollama |
-| Browser Engine | `services/browser-engine/MODULE.md` | HTTP/browser scraping, auth detection, callbacks, downstream indexing | Backend Core, AI Engine |
+| Backend Core | `services/backend-core/MODULE.md` | API gateway, sessions, URL/tab state, agent tab APIs, exports, platform accounts, orchestration | Web UI, AI Engine, Browser Engine, Ops Tooling |
+| AI Engine | `services/ai-engine/MODULE.md` | Provider runtime, embeddings, chunked RAG, clustering, local CLI providers | Backend Core, Browser Engine, shared config, LanceDB/Ollama |
+| Browser Engine | `services/browser-engine/MODULE.md` | HTTP/browser scraping, CDP tab harvesting, auth detection, callbacks, downstream indexing | Backend Core, AI Engine, Ops Tooling |
 | Web UI | `services/web-ui/MODULE.md` | Streamlit app, page state, user workflows, API facade | Backend Core, AI Engine, Browser Engine |
-| Ops Tooling | `scripts/MODULE.md` | CLI lifecycle, host AI mode, init, Docker/test orchestration | Docker Compose, tests, all services |
+| Ops Tooling | `scripts/MODULE.md` | CLI lifecycle, host AI mode, tab CLI/MCP wrappers, init, Docker/test orchestration | Docker Compose, tests, all services |
 | Shared Config | `config/MODULE.md` | AI model/provider catalog and config loader | AI Engine, CLI/init, Web UI settings |
 | Test Harness | `tests/MODULE.md` | Unit, integration, E2E, load, and contract checks | All modules |
 
@@ -28,6 +28,10 @@ that card.
   cards are updated in the same change.
 - Treat local CLI provider execution, bearer tokens, maintainer signup, API
   tokens, scrape callbacks, and browser lifecycle as security-sensitive areas.
+- Protect Backend Core agent tab APIs with `BACKEND_AGENT_API_TOKEN`; do not
+  route agent browser-control calls through unauthenticated paths.
+- Keep CDP tab harvesting attach-only and local-endpoint-only until a browser
+  lifecycle module explicitly owns profile launch/cleanup behavior.
 
 ## Validation Ladder
 
@@ -49,3 +53,8 @@ Use the smallest relevant check first:
 | Browser callback best-effort failures | replace-with-contract | Browser Engine | Keep best-effort behavior explicit in the card and tests. |
 | Backend platform store monolith | isolate-for-later | Backend Core platform | Split by auth/tokens/companies/dashboard/issues in a behavior-preserving pass. |
 | Web platform page monolith | isolate-for-later | Web UI pages | Split render sections after page-level tests are green. |
+| Concept-diagram `ichrome` tab harvester | replace-with-contract | Browser Engine tabs | V1 contract is Playwright CDP attach through `CDPTabHarvester`; add `ichrome` only behind the tabs card and tests. |
+| Browser launch/profile management | isolate-for-later | Browser Engine tabs | Current implementation attaches to a user-started local Chrome/Chromium and never closes the profile. |
+| Textual TUI and rofi/fzf quick-pick | isolate-for-later | Ops Tooling | CLI/MCP wrappers are the active agent surface; richer local navigation UIs should stay behind `scripts/` boundaries. |
+| Full MCP SDK server package | replace-with-contract | Ops Tooling | Current contract is Python-callable wrappers plus JSON-lines stdio adapter; promote to SDK server only with MCP validation. |
+| BERTopic topic modeling | isolate-for-later | AI Engine clustering | Current cluster engine remains UMAP + HDBSCAN + LLM labels; add topic modeling behind the clustering submodule. |

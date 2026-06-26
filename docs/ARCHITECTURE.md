@@ -31,12 +31,14 @@ The Tab Organizer is a microservice-based system that processes web content thro
 
 ```mermaid
 graph TB
+    Agent[Agent CLI / MCP wrappers] --> Backend
     Client[Client/Browser] --> UI[Web UI :8089]
     
     UI --> Backend[Backend Core :8080]
     
     Backend --> AI[AI Engine :8090]
     Backend --> Browser[Browser Engine :8083]
+    Browser --> Chrome[Local Chrome / Chromium CDP :9222]
     
     AI --> LanceDB[(LanceDB - embedded vector store)]
     AI --> Ollama[Ollama LLM :11434]
@@ -87,6 +89,37 @@ flowchart TD
     N --> Q[HTML Export]
     N --> R[Obsidian Export]
 ```
+
+### Agent Tab Management Flow
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent CLI / MCP wrapper
+    participant BE as Backend Core
+    participant BR as Browser Engine
+    participant CH as Local Chrome CDP
+    participant AI as AI Engine
+    participant Q as LanceDB / SQLite FTS
+
+    Agent->>BE: POST /api/v1/tabs/import
+    BE->>BE: Create tab_import_job
+    BE->>BR: POST /tabs/import
+    BR->>CH: Attach over local CDP
+    BR->>BR: Extract readable tab content
+    BE->>BE: Store URL records + FTS rows
+    BE->>AI: POST /index
+    AI->>Q: Store bounded content chunks
+    Agent->>BE: POST /api/v1/search
+    BE->>Q: Merge vector + SQLite FTS results
+    Agent->>BE: POST /api/v1/tabs/open
+    BE->>BR: POST /tabs/open
+    BR->>CH: Open selected URLs
+```
+
+This path is the primary backend tool goal: agents can import thousands of open
+tabs, index the content, search across semantic and keyword stores, cluster a
+session, export it, and reopen selected tabs. Browser control is attach-only in
+v1 and requires a user-started local Chrome/Chromium debugging endpoint.
 
 ### Parallel Processing Architecture
 
@@ -159,6 +192,9 @@ sequenceDiagram
 **Responsibilities**:
 - Session lifecycle management
 - URL deduplication and storage
+- Agent-protected tab import/open/search APIs
+- Durable tab import job status
+- SQLite FTS metadata used with AI vector search
 - Export functionality (Markdown, JSON, HTML, Obsidian)
 - Orchestration of scraping and clustering workflows
 - Health monitoring
@@ -179,7 +215,7 @@ sequenceDiagram
 - Multi-provider LLM support (OpenRouter, Ollama, OpenAI, Anthropic, DeepSeek, Gemini)
 - Embedding generation with configurable models
 - UMAP + HDBSCAN clustering pipeline
-- RAG-based chatbot with LanceDB vector search (native LanceDB query/search APIs)
+- RAG-based chatbot with bounded chunk indexing and LanceDB vector search
 - Dynamic provider switching
 
 **Key Components**:
@@ -195,12 +231,14 @@ sequenceDiagram
 
 **Responsibilities**:
 - HTTP-based content scraping
+- Local CDP attach for live tab inventory, readable extraction, and tab opening
 - Authentication detection and credential management
 - Parallel processing of public and authenticated URLs
 - Content extraction and cleaning
 - Robots.txt compliance
 
 **Key Components**:
+- `app/tabs/cdp.py` - Local CDP tab harvester/open helper
 - `app/scraper/engine.py` - Scraping engine
 - `app/auth/detector.py` - Authentication detection
 - `app/auth/queue.py` - Authentication queue management
@@ -275,7 +313,7 @@ graph TB
 1. **Creation**: New session with unique ID
 2. **URL Storage**: Deduplicated URL collection
 3. **Processing**: Scraping and clustering workflows
-4. **Backend persistence**: Backend sessions, URL records, scrape callback metadata, clusters, and local platform data are stored in SQLite when `BACKEND_DB_PATH` is set. Docker stores this at `/data/backend/tab-organizer.sqlite3` on the `backend-data` volume.
+4. **Backend persistence**: Backend sessions, URL records, tab import jobs, SQLite FTS rows, scrape callback metadata, clusters, and local platform data are stored in SQLite when `BACKEND_DB_PATH` is set. Docker stores this at `/data/backend/tab-organizer.sqlite3` on the `backend-data` volume.
 5. **Runtime state**: Browser-engine scrape task status and target-site auth queue state are process-local in-memory state in the current implementation.
 6. **AI persistence**: AI Engine RAG documents are stored in LanceDB tables on disk (volume `lancedb-data`).
 7. **Export**: Session data exported in various formats
@@ -303,6 +341,7 @@ graph TB
 - **Template Engine**: Jinja2
 - **Export Formats**: Markdown, JSON, HTML, Obsidian
 - **Vector Search**: LanceDB native search/query APIs powering the RAG chatbot
+- **Keyword Search**: SQLite FTS5 metadata rows powering hybrid tab search
 
 ## Security Considerations
 
@@ -316,6 +355,8 @@ graph TB
 - Service-to-service communication within Docker network
 - Health check endpoints for monitoring
 - No external API calls for local mode
+- Backend Core agent tab endpoints require `BACKEND_AGENT_API_TOKEN`
+- Browser CDP tab endpoints only accept local debugging endpoints in v1
 
 ### Data Privacy
 - Optional local processing (Ollama mode)
@@ -345,6 +386,8 @@ graph TB
 
 ### Backend Core (Port 8080)
 
+The tab-management endpoints require bearer auth with `BACKEND_AGENT_API_TOKEN`.
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/sessions` | POST | Create new session |
@@ -355,6 +398,10 @@ graph TB
 | `/api/v1/urls/{session_id}` | GET | Get session URLs |
 | `/api/v1/scrape` | POST | Start scraping |
 | `/api/v1/scrape/status/{session_id}` | GET | Get scrape status (proxy to browser-engine) |
+| `/api/v1/tabs/import` | POST | Start agent-protected browser tab import |
+| `/api/v1/tabs/import/{job_id}` | GET | Get tab import job status |
+| `/api/v1/tabs/open` | POST | Open URLs or a session in an attached browser |
+| `/api/v1/search` | POST | Hybrid semantic/keyword search across indexed tabs |
 | `/api/v1/cluster` | POST | Start clustering |
 | `/api/v1/clusters/{session_id}` | GET | Get clustering result |
 | `/api/v1/export` | POST | Export session |
@@ -384,7 +431,7 @@ graph TB
 | `/embed` | POST | Generate embeddings |
 | `/generate` | POST | Generic LLM completion |
 | `/cluster` | POST | UMAP + HDBSCAN + LLM cluster labeling |
-| `/index` | POST | Index documents into LanceDB |
+| `/index` | POST | Index documents into LanceDB with bounded chunks |
 | `/chat` | POST | RAG chat over indexed content |
 | `/search` | POST | Vector search over indexed content |
 | `/summarize/{session_id}` | GET | Summarize a session's content |
@@ -403,6 +450,8 @@ targets are restricted to public `http`/`https` URLs unless
 | `/scrape` | POST | Start batch scraping |
 | `/scrape/single` | POST | Scrape single URL |
 | `/scrape/status/{session_id}` | GET | Get scrape status |
+| `/tabs/import` | POST | Import tabs from a local CDP endpoint |
+| `/tabs/open` | POST | Open URLs in a local CDP-attached browser |
 | `/detect-auth` | POST | Probe a URL to detect auth requirements |
 | `/auth/pending` | GET | All pending auth requests across sessions |
 | `/auth/pending/{session_id}` | GET | Pending auth requests for a session |

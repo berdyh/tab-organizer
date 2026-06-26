@@ -5,10 +5,12 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 ## Features
 
 - **URL Deduplication**: Set-like storage with automatic normalization and tracking parameter removal
+- **Live Browser Tab Import**: Attach to a local Chrome/Chromium CDP endpoint, import open tabs, extract readable content, and index it
 - **Parallel Authentication**: Non-blocking scraping that continues for public sites while waiting for credentials
 - **AI-Powered Clustering**: UMAP + HDBSCAN clustering with LLM-generated labels
 - **Multi-Provider AI**: Support for OpenRouter (default), Ollama, OpenAI, Anthropic Claude, Codex CLI/ACP, DeepSeek, and Google Gemini
 - **RAG Chatbot**: Query your scraped content using natural language (LanceDB native search)
+- **Agent/CLI Access**: Protected CLI and MCP-oriented wrappers for importing, searching, clustering, opening, and exporting tabs
 - **Export Options**: Markdown, JSON, HTML, Obsidian-compatible formats
 
 ## Architecture
@@ -134,6 +136,14 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 ./scripts/cli.py test --type integration  # Run integration tests
 ./scripts/cli.py test --type e2e          # Run end-to-end tests
 
+# Browser tab management
+./scripts/cli.py tabs import --cdp-url http://localhost:9222
+./scripts/cli.py tabs status <job_id>
+./scripts/cli.py tabs search "vector database notes" --mode hybrid --limit 10
+./scripts/cli.py tabs cluster <session_id>
+./scripts/cli.py tabs open --session-id <session_id>
+./scripts/cli.py tabs export <session_id> --format markdown
+
 # Ollama Models
 ./scripts/cli.py models --list            # List installed models
 ./scripts/cli.py models --pull llama3.2:3b   # Pull a model
@@ -150,6 +160,26 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 3. **Cluster**: Generate AI-powered clusters on the Clusters page
 4. **Chat**: Ask questions about your content on the Chatbot page
 5. **Export**: Download organized tabs in your preferred format
+
+### Live Browser Tab Workflow
+
+Start Chrome or Chromium with a local debugging endpoint:
+
+```bash
+chromium --remote-debugging-port=9222
+```
+
+Then import and search the open tabs:
+
+```bash
+./scripts/cli.py start -d
+./scripts/cli.py tabs import --cdp-url http://localhost:9222 --session-name "Live tabs"
+./scripts/cli.py tabs status <job_id>
+./scripts/cli.py tabs search "what was I reading about embeddings?"
+```
+
+The first implementation is attach-only: it connects to a user-started local
+browser, never closes that browser/profile, and rejects non-local CDP endpoints.
 
 ## Configuration
 
@@ -181,7 +211,7 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 
 `claude_code` and `codex_cli` are LLM-only providers that call the local `claude -p` or `codex exec` CLI using existing subscription login state. `codex_cli` is one-shot Codex CLI execution, not ACP mode, and is disabled by default for scraped-content prompts because `codex exec` is not a tool-free LLM-only mode. Use `codex_acp` when you want the app's LLM calls to go through an ACP Codex harness via `acpx`. ACP defaults to `deny-all` permissions for app-routed prompts; relax it only for trusted local experiments. Leave `LLM_MODEL` blank unless you need a provider-specific override, and keep `EMBEDDING_PROVIDER` on `ollama` or another embedding-capable provider. The stock Docker image does not install these CLIs, `acpx`, ACP adapters, or mount their auth state; use `./scripts/cli.py host-ai --provider claude_code` plus `./scripts/cli.py start -d --host-ai`, or build a custom image for Docker-based CLI/ACP routing.
 
-AI Engine generation, embedding, indexing, chat, search, clustering, summarization, document deletion, and provider-switch endpoints fail closed unless `AI_ENGINE_API_TOKEN` is configured. Browser Engine scrape/auth control endpoints and Backend Core agent tab-management endpoints also require local service tokens. Use `./scripts/cli.py start` or `./scripts/cli.py host-ai` so the shared local token is generated and passed to all services.
+AI Engine generation, embedding, indexing, chat, search, clustering, summarization, document deletion, and provider-switch endpoints fail closed unless `AI_ENGINE_API_TOKEN` is configured. Browser Engine scrape/auth control endpoints and Backend Core agent tab-management endpoints also require local service tokens. Use `./scripts/cli.py start`; for host-run AI, run `./scripts/cli.py host-ai` and `./scripts/cli.py start -d --host-ai` so the shared local token is generated and passed to the services.
 
 If `EMBEDDING_PROVIDER` and `EMBEDDING_DIMENSIONS` are mismatched the AI Engine will refuse to write to the LanceDB table — keep them in sync.
 
@@ -257,6 +287,7 @@ tab-organizer/
 │   ├── browser-engine/        # Web Scraping
 │   │   └── app/
 │   │       ├── auth/          # Auth detection & queue
+│   │       ├── tabs/          # CDP tab import/open
 │   │       ├── scraper/       # Scraping engine
 │   │       └── extraction/    # Content extraction
 │   │
@@ -266,7 +297,8 @@ tab-organizer/
 │           └── pages/         # UI pages
 │
 ├── scripts/
-│   └── cli.py                 # Management CLI
+│   ├── cli.py                 # Management CLI
+│   └── mcp/                   # Local MCP-oriented tab wrappers
 │
 ├── tests/
 │   ├── unit/                  # Unit tests
@@ -283,6 +315,8 @@ tab-organizer/
 
 ### Backend Core (Port 8080)
 
+The tab-management endpoints require bearer auth with `BACKEND_AGENT_API_TOKEN`.
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/sessions` | POST | Create session |
@@ -293,6 +327,10 @@ tab-organizer/
 | `/api/v1/urls/{session_id}` | GET | Get URLs |
 | `/api/v1/scrape` | POST | Start scraping |
 | `/api/v1/scrape/status/{session_id}` | GET | Scrape status (proxied from browser-engine) |
+| `/api/v1/tabs/import` | POST | Start agent-protected browser tab import |
+| `/api/v1/tabs/import/{job_id}` | GET | Get tab import job status |
+| `/api/v1/tabs/open` | POST | Open URLs or a session in an attached browser |
+| `/api/v1/search` | POST | Hybrid semantic/keyword search across indexed tabs |
 | `/api/v1/cluster` | POST | Start clustering |
 | `/api/v1/clusters/{session_id}` | GET | Get cluster results |
 | `/api/v1/export` | POST | Export session |
@@ -322,7 +360,7 @@ tab-organizer/
 | `/embed` | POST | Generate embeddings |
 | `/generate` | POST | Generic LLM completion |
 | `/cluster` | POST | Run UMAP + HDBSCAN + LLM labeling |
-| `/index` | POST | Index documents into LanceDB |
+| `/index` | POST | Index documents into LanceDB with bounded chunks |
 | `/chat` | POST | RAG chat over indexed content |
 | `/search` | POST | Vector search over indexed content |
 | `/summarize/{session_id}` | GET | Generate a session summary |
@@ -341,6 +379,8 @@ targets are limited to public `http`/`https` URLs unless
 | `/scrape` | POST | Start batch scraping |
 | `/scrape/single` | POST | Scrape single URL |
 | `/scrape/status/{session_id}` | GET | Get scrape status |
+| `/tabs/import` | POST | Import tabs from a local CDP endpoint |
+| `/tabs/open` | POST | Open URLs in a local CDP-attached browser |
 | `/detect-auth` | POST | Probe a URL to detect auth requirements |
 | `/auth/pending` | GET | List all domains awaiting credentials |
 | `/auth/pending/{session_id}` | GET | Pending auth requests for one session |
