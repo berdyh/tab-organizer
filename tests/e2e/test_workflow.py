@@ -11,6 +11,15 @@ BROWSER_URL = os.getenv("BROWSER_ENGINE_URL", "http://localhost:8083")
 TERMINAL_URL_STATUSES = {"scraped", "failed", "auth_required"}
 
 
+def browser_headers() -> dict[str, str]:
+    token = (
+        os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
+        or os.getenv("BACKEND_CALLBACK_TOKEN", "").strip()
+        or os.getenv("AI_ENGINE_API_TOKEN", "").strip()
+    )
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 @pytest.fixture
 def client():
     """Create HTTP client."""
@@ -62,7 +71,10 @@ class TestCompleteWorkflow:
             status = None
 
             while time.time() - start_time < max_wait:
-                status_resp = client.get(f"{BROWSER_URL}/scrape/status/{session_id}")
+                status_resp = client.get(
+                    f"{BROWSER_URL}/scrape/status/{session_id}",
+                    headers=browser_headers(),
+                )
                 if status_resp.status_code == 200:
                     status = status_resp.json()
                     if status.get("status") in {
@@ -187,7 +199,7 @@ class TestAuthWorkflow:
     def test_auth_queue_workflow(self, client):
         """Test authentication queue functionality."""
         # Check initial pending auth
-        pending_resp = client.get(f"{BROWSER_URL}/auth/pending")
+        pending_resp = client.get(f"{BROWSER_URL}/auth/pending", headers=browser_headers())
         assert pending_resp.status_code == 200
         initial_count = pending_resp.json()["pending_count"]
         

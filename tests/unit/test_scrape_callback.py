@@ -8,21 +8,32 @@ from services.backend_core.app.api.routes import (
     ClusterRequest,
     ScrapeRequest,
     _ai_engine_headers,
+    _browser_engine_headers,
     _require_backend_callback_auth,
     get_pending_auth,
     get_scrape_status,
+    add_urls,
     scrape_complete_callback,
     session_manager,
     start_clustering,
     submit_credentials,
     trigger_scraping,
+    URLInput,
 )
+from services.backend_core.app.url_input.store import URLStore
 
 
 def test_ai_engine_headers_use_configured_token(monkeypatch):
     monkeypatch.setenv("AI_ENGINE_API_TOKEN", "shared-token")
 
     assert _ai_engine_headers() == {"Authorization": "Bearer shared-token"}
+
+
+def test_browser_engine_headers_prefer_callback_token(monkeypatch):
+    monkeypatch.setenv("AI_ENGINE_API_TOKEN", "ai-token")
+    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "callback-token")
+
+    assert _browser_engine_headers() == {"Authorization": "Bearer callback-token"}
 
 
 def test_backend_callback_auth_requires_shared_token(monkeypatch):
@@ -49,6 +60,40 @@ def test_scrape_request_accepts_browser_mode():
     request = ScrapeRequest(session_id="session-1", use_browser=True)
 
     assert request.use_browser is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://example.com/file",
+        "http://localhost/admin",
+        "http://127.0.0.1:8080/health",
+        "http://172.16.0.10/private",
+        "http://ai-engine:8090/health",
+    ],
+)
+def test_url_store_rejects_unsafe_scrape_urls(url):
+    store = URLStore()
+
+    with pytest.raises(ValueError):
+        store.add(url)
+
+
+def test_backend_add_urls_reports_unsafe_scrape_url_as_bad_request():
+    session = session_manager.create_session("Unsafe URL Regression")
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            add_urls(
+                URLInput(
+                    session_id=session.id,
+                    urls=["http://127.0.0.1:8080/internal"],
+                )
+            )
+
+        assert exc_info.value.status_code == 400
+    finally:
+        session_manager.delete_session(session.id)
 
 
 @pytest.mark.asyncio

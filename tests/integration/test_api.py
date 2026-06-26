@@ -11,6 +11,15 @@ BROWSER_URL = os.getenv("BROWSER_ENGINE_URL", "http://localhost:8083")
 SCRAPE_TERMINAL_STATUSES = {"success", "failed", "timeout", "blocked", "auth_required"}
 
 
+def browser_headers() -> dict[str, str]:
+    token = (
+        os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
+        or os.getenv("BACKEND_CALLBACK_TOKEN", "").strip()
+        or os.getenv("AI_ENGINE_API_TOKEN", "").strip()
+    )
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 @pytest.fixture
 def client():
     """Create HTTP client."""
@@ -183,7 +192,7 @@ class TestBrowserEngineAPI:
     
     def test_get_pending_auth(self, client):
         """Test getting pending auth requests."""
-        response = client.get(f"{BROWSER_URL}/auth/pending")
+        response = client.get(f"{BROWSER_URL}/auth/pending", headers=browser_headers())
         assert response.status_code == 200
         data = response.json()
         assert "pending" in data
@@ -199,6 +208,7 @@ class TestBrowserEngineAPI:
         response = client.post(
             f"{BROWSER_URL}/scrape/single",
             json={"url": public_url},
+            headers=browser_headers(),
         )
 
         assert response.status_code == 200

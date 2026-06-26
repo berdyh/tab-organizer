@@ -52,8 +52,16 @@ def _install_framework_stubs() -> None:
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
+    def Header(default=None):
+        return default
+
+    def Depends(dependency):
+        return dependency
+
     fastapi_module.BackgroundTasks = BackgroundTasks
+    fastapi_module.Depends = Depends
     fastapi_module.FastAPI = FastAPI
+    fastapi_module.Header = Header
     fastapi_module.HTTPException = HTTPException
     cors_module.CORSMiddleware = CORSMiddleware
     pydantic_module.BaseModel = BaseModel
@@ -112,6 +120,45 @@ def test_service_token_headers_support_callback_token_fallback(monkeypatch):
     assert browser_main._service_token_headers(
         "BACKEND_CALLBACK_TOKEN", "AI_ENGINE_API_TOKEN"
     ) == {"Authorization": "Bearer ai-token"}
+
+
+def test_browser_engine_auth_requires_shared_token(monkeypatch):
+    monkeypatch.delenv("BROWSER_ENGINE_API_TOKEN", raising=False)
+    monkeypatch.delenv("AI_ENGINE_API_TOKEN", raising=False)
+    monkeypatch.delenv("BACKEND_CALLBACK_TOKEN", raising=False)
+
+    with pytest.raises(browser_main.HTTPException) as unconfigured:
+        browser_main._require_browser_engine_auth(None)
+    assert unconfigured.value.status_code == 401
+
+    monkeypatch.setenv("AI_ENGINE_API_TOKEN", "shared-token")
+    with pytest.raises(browser_main.HTTPException) as missing:
+        browser_main._require_browser_engine_auth(None)
+    assert missing.value.status_code == 401
+
+    with pytest.raises(browser_main.HTTPException) as wrong:
+        browser_main._require_browser_engine_auth("Bearer wrong")
+    assert wrong.value.status_code == 401
+
+    assert browser_main._require_browser_engine_auth("Bearer shared-token") is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "http://localhost:8080/health",
+        "http://127.0.0.1:8080/health",
+        "http://10.0.0.2/private",
+        "http://backend-core:8080/health",
+        "http://host.docker.internal:8080/health",
+    ],
+)
+def test_browser_engine_rejects_unsafe_scrape_urls(url):
+    with pytest.raises(browser_main.HTTPException) as exc_info:
+        browser_main._validate_scrape_urls([url])
+
+    assert exc_info.value.status_code == 400
 
 
 class FakeScraper:
@@ -593,3 +640,24 @@ async def test_scraper_batch_passes_use_browser_to_each_url():
             "use_browser": True,
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_scraper_batch_preserves_callback_failure_metadata():
+    class StaticScraper(ScraperEngine):
+        async def scrape_url(self, url, session_id=None, use_browser=False):
+            return ScrapeResult(url=url, status="success", content="ok")
+
+    async def failing_callback(result):
+        raise RuntimeError("callback sink unavailable")
+
+    scraper = StaticScraper(respect_robots=False)
+
+    results = await scraper.scrape_batch(
+        ["https://example.com"],
+        session_id="session-callback-error",
+        callback=failing_callback,
+    )
+
+    assert results[0].status == "success"
+    assert results[0].metadata["callback_error"] == "callback sink unavailable"
