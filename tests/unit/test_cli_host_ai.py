@@ -292,6 +292,11 @@ def test_tabs_cli_subcommands_dispatch_to_mcp_wrappers(monkeypatch, capsys):
         "tab_open",
         record("open", {"opened": [{"url": "https://example.com"}]}),
     )
+    monkeypatch.setattr(
+        cli.mcp_tabs,
+        "tab_export",
+        record("export", {"content": "# Export"}),
+    )
 
     parser = cli.build_parser()
     commands = [
@@ -319,6 +324,7 @@ def test_tabs_cli_subcommands_dispatch_to_mcp_wrappers(monkeypatch, capsys):
         ],
         ["tabs", "cluster", "sess_1"],
         ["tabs", "open", "https://example.com", "--cdp-url", "http://localhost:9222"],
+        ["tabs", "export", "sess_1", "--format", "markdown"],
     ]
 
     for command in commands:
@@ -333,6 +339,7 @@ def test_tabs_cli_subcommands_dispatch_to_mcp_wrappers(monkeypatch, capsys):
         "search",
         "cluster",
         "open",
+        "export",
     ]
     assert calls[0]["kwargs"] == {
         "cdp_url": "http://localhost:9222",
@@ -351,6 +358,10 @@ def test_tabs_cli_subcommands_dispatch_to_mcp_wrappers(monkeypatch, capsys):
         "urls": ["https://example.com"],
         "session_id": None,
         "cdp_url": "http://localhost:9222",
+    }
+    assert calls[5]["kwargs"] == {
+        "session_id": "sess_1",
+        "export_format": "markdown",
     }
     assert "agent-token-value" not in output
     assert json.loads(output.splitlines()[0]) == {"job_id": "job_1", "status": "queued"}

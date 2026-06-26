@@ -289,6 +289,15 @@ def cmd_tabs_open(args):
     )
 
 
+def cmd_tabs_export(args):
+    """Export organized tabs for a Backend Core session."""
+    run_backend_tab_tool(
+        mcp_tabs.tab_export,
+        session_id=args.session_id,
+        export_format=args.format,
+    )
+
+
 def cmd_stop(args):
     """Stop all services."""
     extra_args = []
@@ -628,6 +637,19 @@ Examples:
         help="Local Chrome DevTools Protocol URL",
     )
     tabs_open_parser.set_defaults(func=cmd_tabs_open)
+
+    tabs_export_parser = tab_subparsers.add_parser(
+        "export",
+        help="Export organized tabs for a session",
+    )
+    tabs_export_parser.add_argument("session_id", help="Backend Core session ID")
+    tabs_export_parser.add_argument(
+        "--format",
+        choices=["markdown", "json", "html", "obsidian"],
+        default="markdown",
+        help="Export format",
+    )
+    tabs_export_parser.set_defaults(func=cmd_tabs_export)
     
     # stop
     stop_parser = subparsers.add_parser("stop", help="Stop services")
