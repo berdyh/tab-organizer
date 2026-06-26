@@ -12,6 +12,8 @@ from playwright.async_api import Browser, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 
+from services.url_safety import validate_scrape_url
+
 
 @dataclass
 class ScrapeResult:
@@ -288,6 +290,11 @@ class ScraperEngine:
             session_id: Session ID for auth queue
             use_browser: Use Playwright instead of httpx
         """
+        try:
+            validate_scrape_url(url)
+        except ValueError as error:
+            return ScrapeResult(url=url, status="failed", error=str(error))
+
         async with self._semaphore:
             # Check robots.txt
             if self.respect_robots:
@@ -702,7 +709,7 @@ class ScraperEngine:
         if callback:
             try:
                 await callback(result)
-            except Exception:
-                pass
+            except Exception as error:
+                result.metadata = {**result.metadata, "callback_error": str(error)}
 
         return result

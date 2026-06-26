@@ -489,7 +489,12 @@ def add_urls(request: URLInput):
     else:
         session = session_manager.get_or_create_current_session()
 
-    added, duplicates, _ = session_manager.add_urls_to_session(session.id, request.urls)
+    try:
+        added, duplicates, _ = session_manager.add_urls_to_session(
+            session.id, request.urls
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
 
     return URLInputResponse(
         session_id=session.id,

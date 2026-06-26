@@ -9,11 +9,13 @@ services:
     environment:
       - AI_ENGINE_URL=${AI_ENGINE_URL:-http://ai-engine:8090}
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
+      - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
       - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
       - BROWSER_ENGINE_URL=${BROWSER_ENGINE_URL:-http://browser-engine:8083}
       - BACKEND_DB_PATH=/data/backend/tab-organizer.sqlite3
       - BACKEND_PUBLIC_URL=${BACKEND_PUBLIC_URL:-http://localhost:8080}
       - PLATFORM_MAINTAINER_SIGNUP_CODE=${PLATFORM_MAINTAINER_SIGNUP_CODE:-}
+      - SCRAPE_ALLOW_PRIVATE_NETWORKS=${SCRAPE_ALLOW_PRIVATE_NETWORKS:-false}
     depends_on:
       - ai-engine
       - browser-engine
@@ -88,10 +90,12 @@ services:
       - BACKEND_URL=http://backend-core:8080
       - AI_ENGINE_URL=${AI_ENGINE_URL:-http://ai-engine:8090}
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
+      - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
       - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
       - MAX_CONCURRENT_SCRAPES=${MAX_CONCURRENT_SCRAPES:-10}
       - SCRAPE_TIMEOUT=${SCRAPE_TIMEOUT:-30}
       - RESPECT_ROBOTS=${RESPECT_ROBOTS:-true}
+      - SCRAPE_ALLOW_PRIVATE_NETWORKS=${SCRAPE_ALLOW_PRIVATE_NETWORKS:-false}
       - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY:-}
     networks:
       - tab-organizer-network
@@ -111,6 +115,7 @@ services:
       - BACKEND_URL=http://backend-core:8080
       - AI_ENGINE_URL=${AI_ENGINE_URL:-http://ai-engine:8090}
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
+      - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
       - BROWSER_ENGINE_URL=http://browser-engine:8083
     depends_on:
       - backend-core
@@ -166,6 +171,9 @@ services:
       - AI_ENGINE_URL=http://ai-engine:8090
       - BROWSER_ENGINE_URL=http://browser-engine:8083
       - OLLAMA_HOST=http://ollama:11434
+      - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
+      - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
+      - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
     volumes:
       - ./tests:/app/tests
       - ./services:/app/services
@@ -191,6 +199,9 @@ services:
       - BACKEND_URL=http://backend-core:8080
       - AI_ENGINE_URL=http://ai-engine:8090
       - BROWSER_ENGINE_URL=http://browser-engine:8083
+      - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
+      - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
+      - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
     volumes:
       - ./tests:/app/tests
       - ./test-results:/app/test-results

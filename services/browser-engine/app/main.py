@@ -10,6 +10,8 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from services.url_safety import validate_scrape_url
+
 from .auth.detector import AuthDetector
 from .auth.queue import AuthQueue
 from .scraper.engine import ScraperEngine
@@ -96,6 +98,15 @@ def _require_browser_engine_auth(
         raise HTTPException(status_code=401, detail="Invalid browser engine token")
 
 
+def _validate_scrape_urls(urls: list[str]) -> None:
+    """Reject unsafe outbound scrape targets before network dispatch."""
+    for url in urls:
+        try:
+            validate_scrape_url(url)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+
 # Health check
 @app.get("/")
 async def root():
@@ -120,6 +131,7 @@ async def start_scraping(
 ):
     """Start scraping URLs in the background."""
     session_id = request.session_id
+    _validate_scrape_urls(request.urls)
 
     # Track scraping task
     scraping_tasks[session_id] = _new_scrape_task_info(len(request.urls))
@@ -348,6 +360,7 @@ async def scrape_single(
     _auth=Depends(_require_browser_engine_auth),
 ):
     """Scrape a single URL synchronously."""
+    _validate_scrape_urls([request.url])
     result = await scraper.scrape_url(
         url=request.url,
         session_id=request.session_id,
@@ -462,6 +475,7 @@ async def detect_auth(
     _auth=Depends(_require_browser_engine_auth),
 ):
     """Detect if a URL requires authentication."""
+    _validate_scrape_urls([url])
     result = auth_detector.detect(url=url, html=html)
     return {
         "url": url,

@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+from services.url_safety import normalize_scrape_url
+
 
 @dataclass
 class URLRecord:
@@ -59,13 +61,13 @@ class URLStore:
 
     def normalize(self, url: str) -> str:
         """Convert URL to canonical form."""
-        url = url.strip()
+        url = normalize_scrape_url(url)
 
         # Parse URL
-        parsed = urlparse(url.lower())
+        parsed = urlparse(url)
 
         # Ensure scheme
-        scheme = parsed.scheme or "https"
+        scheme = parsed.scheme
 
         # Clean netloc (remove www. prefix for consistency)
         netloc = parsed.netloc
