@@ -1,15 +1,8 @@
 #!/bin/bash
-# Quick test script to verify fixes
+set -euo pipefail
 
-echo "Running tests..."
-CI=true npm run test:ci --passWithNoTests 2>&1 | tee test_output.log
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-# Check exit code
-if [ $? -eq 0 ]; then
-    echo "Tests passed"
-    exit 0
-else
-    echo "Tests failed"
-    tail -100 test_output.log
-    exit 1
-fi
+cd "$REPO_ROOT"
+exec make test-web

@@ -1,8 +1,14 @@
 #!/bin/bash
-# Run a single test to see detailed output
+set -euo pipefail
 
-echo "Building Docker image..."
-docker build -f Dockerfile.test -t web-ui-test . > /dev/null 2>&1
+if [ "$#" -eq 0 ]; then
+    echo "Usage: $0 <pytest-args>"
+    echo "Example: $0 tests/unit/test_web_ui_platform.py -q"
+    exit 2
+fi
 
-echo "Running tests..."
-docker run --rm -v $(pwd):/app -v /app/node_modules web-ui-test 2>&1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+cd "$REPO_ROOT"
+exec docker compose --profile test-unit run --rm test-unit pytest "$@"
