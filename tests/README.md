@@ -31,6 +31,16 @@ Prefer the CLI so the same containers run locally and in CI:
 ./scripts/cli.py test --type e2e           # boots the default stack first
 ```
 
+Use module-local Make targets for fast iteration inside a boundary:
+
+```bash
+make test-backend
+make test-ai
+make test-browser
+make test-web
+make test-ops
+```
+
 Or invoke `docker compose` directly when you need to iterate on a single
 profile:
 
@@ -43,8 +53,9 @@ AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token PLA
 ```
 
 `./scripts/cli.py test --type all` runs unit, integration, and e2e in sequence.
-There is no `--type performance` in `cli.py` today; run the load suite manually
-from `tests/load/` if you need it.
+There is no `--type performance` in `cli.py` today. `make test-performance`
+prints the manual load-test entrypoint; run the load suite from `tests/load/`
+when you need it.
 
 ## Artefacts
 

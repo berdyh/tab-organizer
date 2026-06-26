@@ -35,7 +35,8 @@ test-e2e: ## Run end-to-end tests
 
 test-performance: ## Run performance and load tests
 	@echo "$(BLUE)Running performance tests...$(NC)"
-	@./scripts/cli.py test --type performance
+	@echo "$(YELLOW)Performance/load tests are manual today. Start the app stack, then run:$(NC)"
+	@echo "  locust -f tests/load/locustfile.py"
 
 test-all: ## Run all tests (unit, integration, e2e)
 	@echo "$(BLUE)Running all tests...$(NC)"
@@ -49,6 +50,42 @@ test-service: ## Run tests for specific service (usage: make test-service SERVIC
 	@echo "$(BLUE)Running tests for $(SERVICE)...$(NC)"
 	@echo "$(YELLOW)Note: Tests are organized by type (unit/integration/e2e), not by service$(NC)"
 	@docker compose --profile test-unit up --build --abort-on-container-exit test-unit
+
+test-backend: ## Run focused Backend Core unit tests
+	@echo "$(BLUE)Running Backend Core focused tests...$(NC)"
+	@docker compose --profile test-unit run --rm test-unit pytest \
+		tests/unit/test_platform_backend.py \
+		tests/unit/test_backend_callback_persistence.py \
+		tests/unit/test_session_persistence.py \
+		tests/unit/test_scrape_callback.py \
+		tests/unit/test_url_store.py -q
+
+test-ai: ## Run focused AI Engine unit tests
+	@echo "$(BLUE)Running AI Engine focused tests...$(NC)"
+	@docker compose --profile test-unit run --rm test-unit pytest \
+		tests/unit/test_ai_provider_switch.py \
+		tests/unit/test_subscription_cli_providers.py \
+		tests/unit/test_rag_lancedb_persistence.py \
+		tests/unit/test_clustering.py -q
+
+test-browser: ## Run focused Browser Engine unit tests
+	@echo "$(BLUE)Running Browser Engine focused tests...$(NC)"
+	@docker compose --profile test-unit run --rm test-unit pytest \
+		tests/unit/test_browser_engine_callbacks.py \
+		tests/unit/test_auth_detector.py -q
+
+test-web: ## Run focused Web UI unit tests
+	@echo "$(BLUE)Running Web UI focused tests...$(NC)"
+	@docker compose --profile test-unit run --rm test-unit pytest \
+		tests/unit/test_web_ui_platform.py \
+		tests/unit/test_web_ui_text.py -q
+
+test-ops: ## Run focused CLI/config/runtime unit tests
+	@echo "$(BLUE)Running Ops Tooling focused tests...$(NC)"
+	@docker compose --profile test-unit run --rm test-unit pytest \
+		tests/unit/test_cli_host_ai.py \
+		tests/unit/test_init_script.py \
+		tests/unit/test_runtime_auth_config.py -q
 
 test-watch: ## Run tests in watch mode for development
 	@echo "$(BLUE)Running tests in watch mode...$(NC)"
