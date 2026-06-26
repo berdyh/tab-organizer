@@ -5,6 +5,8 @@ import sys
 import types
 from pathlib import Path
 
+import requests
+
 
 class SessionState(dict):
     def __getattr__(self, key):
@@ -224,6 +226,30 @@ def test_platform_auth_clears_account_scoped_state(monkeypatch):
     assert "platform_company_results" not in session_state
 
 
+def test_platform_error_preserves_backend_detail(monkeypatch):
+    fake_st = FakeStreamlit()
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    sys.modules.pop("services.web_ui.src.pages.platform", None)
+    platform = importlib.import_module("services.web_ui.src.pages.platform")
+
+    class Response:
+        status_code = 403
+        text = ""
+
+        def json(self):
+            return {"detail": "Business account is required"}
+
+    error = requests.HTTPError("Forbidden")
+    error.response = Response()
+
+    platform._platform_error("Token creation failed", error)
+
+    assert (
+        "Token creation failed: backend returned HTTP 403: "
+        "Business account is required."
+    ) in fake_st.rendered
+
+
 def test_platform_authenticated_business_render_smoke(monkeypatch):
     session_state = SessionState(
         {
@@ -293,10 +319,10 @@ def test_platform_auth_client_request_shapes(monkeypatch):
 
     client.platform_signup(
         email="buyer@example.com",
-        password="secret",
         name="Buyer",
         account_type="business",
         company_name="Acme",
+        **{"password": "not-a-real-secret"},
     )
     client.platform_login("buyer@example.com", "secret")
 
@@ -305,12 +331,12 @@ def test_platform_auth_client_request_shapes(monkeypatch):
             "method": "POST",
             "url": "http://backend.test/api/v1/platform/auth/signup",
             "timeout": 7.0,
-            "json": {
-                "email": "buyer@example.com",
-                "password": "secret",
-                "name": "Buyer",
-                "account_type": "business",
-                "company_name": "Acme",
+                "json": {
+                    "email": "buyer@example.com",
+                    "password": "not-a-real-secret",
+                    "name": "Buyer",
+                    "account_type": "business",
+                    "company_name": "Acme",
             },
         },
         {
@@ -441,7 +467,7 @@ def test_ai_runtime_config_update_shape_includes_models_and_api_keys(monkeypatch
         llm_model="openrouter/auto",
         embedding_provider="ollama",
         embedding_model="nomic-embed-text",
-        api_keys={"OPENROUTER_API_KEY": "sk-or-local"},
+        api_keys={"OPENROUTER_API_KEY": "local-openrouter-key"},
     )
 
     assert calls == [
@@ -454,7 +480,7 @@ def test_ai_runtime_config_update_shape_includes_models_and_api_keys(monkeypatch
                 "llm_model": "openrouter/auto",
                 "embedding_provider": "ollama",
                 "embedding_model": "nomic-embed-text",
-                "api_keys": {"OPENROUTER_API_KEY": "sk-or-local"},
+                "api_keys": {"OPENROUTER_API_KEY": "local-openrouter-key"},
             },
             "headers": {"Authorization": "Bearer ai-token"},
         }

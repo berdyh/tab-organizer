@@ -127,16 +127,50 @@ def _first_text(
 def _platform_error(prefix: str, error: Exception) -> None:
     response = getattr(error, "response", None)
     status_code = getattr(response, "status_code", None)
+    detail = _response_error_detail(response)
     if isinstance(error, (requests.ConnectionError, requests.Timeout)):
         st.warning(f"{prefix}: platform service is unavailable.")
         return
     if status_code in {404, 405}:
-        st.warning(f"{prefix}: the backend endpoint is not available.")
+        message = "the backend endpoint is not available"
+        if detail:
+            message = f"{message} ({detail})"
+        st.warning(f"{prefix}: {message}.")
         return
     if isinstance(error, requests.HTTPError) and status_code:
-        st.warning(f"{prefix}: backend returned HTTP {status_code}.")
+        message = f"backend returned HTTP {status_code}"
+        if detail:
+            message = f"{message}: {detail}"
+        st.warning(f"{prefix}: {message}.")
         return
     st.warning(f"{prefix}: {error}")
+
+
+def _response_error_detail(response: Any) -> str:
+    """Extract a short user-facing detail from a backend error response."""
+    if response is None:
+        return ""
+
+    payload = None
+    try:
+        payload = response.json()
+    except (AttributeError, ValueError):
+        payload = None
+
+    detail = ""
+    if isinstance(payload, dict):
+        value = payload.get("detail") or payload.get("message") or payload.get("error")
+        detail = str(value) if value else ""
+    elif payload is not None:
+        detail = str(payload)
+
+    if not detail:
+        text = getattr(response, "text", "")
+        detail = str(text).strip()
+
+    if len(detail) > 240:
+        return f"{detail[:237]}..."
+    return detail
 
 
 def _store_auth_response(response: dict[str, Any]) -> bool:
