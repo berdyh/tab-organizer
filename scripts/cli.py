@@ -259,6 +259,8 @@ def cmd_logs(args):
 def cmd_test(args):
     """Run tests."""
     test_type = args.type or "unit"
+    test_env = service_env_with_tokens()
+    test_profiles = [f"test-{test_type}"]
 
     print(f"Running {test_type} tests...")
 
@@ -270,18 +272,18 @@ def cmd_test(args):
     if test_type in ("integration", "e2e"):
         # Start dependencies first. Provide the maintainer bootstrap code only
         # for local test runs; the published stack has no default maintainer code.
-        test_env = service_env_with_tokens()
         set_env_default_if_blank(
             test_env, "PLATFORM_MAINTAINER_SIGNUP_CODE", "local-maintainer"
         )
         docker_compose("up", "-d", profiles=["default"], env=test_env)
+        test_profiles = ["default", f"test-{test_type}"]
 
     docker_compose(
         "run",
         "--rm",
         f"test-{test_type}",
-        profiles=[f"test-{test_type}"],
-        env=service_env_with_tokens(),
+        profiles=test_profiles,
+        env=test_env,
     )
 
 
