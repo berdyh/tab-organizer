@@ -54,6 +54,7 @@ test-service: ## Run tests for specific service (usage: make test-service SERVIC
 test-backend: ## Run focused Backend Core unit tests
 	@echo "$(BLUE)Running Backend Core focused tests...$(NC)"
 	@docker compose --profile test-unit run --rm test-unit pytest \
+		tests/unit/test_backend_tab_workflows.py \
 		tests/unit/test_platform_backend.py \
 		tests/unit/test_backend_callback_persistence.py \
 		tests/unit/test_session_persistence.py \

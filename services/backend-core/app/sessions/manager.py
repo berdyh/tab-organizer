@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -27,12 +28,40 @@ class Session:
     status: str = "active"  # active, archived, deleted
 
 
+@dataclass
+class TabImportJob:
+    """Durable state for a live-browser tab import."""
+
+    id: str
+    session_id: str
+    cdp_url: str
+    status: str = "queued"
+    total: int = 0
+    imported: int = 0
+    indexed: int = 0
+    failed: int = 0
+    error: Optional[str] = None
+    metadata: dict = field(default_factory=dict)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+
+
+ACTIVE_TAB_IMPORT_STATUSES = {"queued", "running"}
+TERMINAL_TAB_IMPORT_STATUSES = {
+    "completed",
+    "completed_with_errors",
+    "failed",
+    "cancelled",
+}
+
+
 class SessionManager:
     """Manage multiple sessions."""
 
     def __init__(self, db_path: Optional[str] = None):
         self._lock = threading.RLock()
         self._sessions: dict[str, Session] = {}
+        self._tab_import_jobs: dict[str, TabImportJob] = {}
         self._current_session_id: Optional[str] = None
         self._db_path = db_path if db_path is not None else os.getenv("BACKEND_DB_PATH")
         if self._db_path:
@@ -93,6 +122,31 @@ class SessionManager:
                     key TEXT PRIMARY KEY,
                     value TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS tab_import_jobs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    cdp_url TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    total INTEGER NOT NULL,
+                    imported INTEGER NOT NULL,
+                    indexed INTEGER NOT NULL,
+                    failed INTEGER NOT NULL,
+                    error TEXT,
+                    metadata TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                );
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS tab_search_fts USING fts5(
+                    session_id UNINDEXED,
+                    normalized UNINDEXED,
+                    url UNINDEXED,
+                    domain UNINDEXED,
+                    title,
+                    content
+                );
                 """
             )
 
@@ -107,6 +161,9 @@ class SessionManager:
             state_row = conn.execute(
                 "SELECT value FROM session_state WHERE key = 'current_session_id'"
             ).fetchone()
+            job_rows = conn.execute(
+                "SELECT * FROM tab_import_jobs ORDER BY updated_at DESC"
+            ).fetchall()
 
         urls_by_session: dict[str, list[URLRecord]] = {}
         for row in url_rows:
@@ -136,6 +193,22 @@ class SessionManager:
                 created_at=self._parse_datetime(row["created_at"]) or datetime.utcnow(),
                 updated_at=self._parse_datetime(row["updated_at"]) or datetime.utcnow(),
                 url_store=store,
+            )
+
+        for row in job_rows:
+            self._tab_import_jobs[row["id"]] = TabImportJob(
+                id=row["id"],
+                session_id=row["session_id"],
+                cdp_url=row["cdp_url"],
+                status=row["status"],
+                total=row["total"],
+                imported=row["imported"],
+                indexed=row["indexed"],
+                failed=row["failed"],
+                error=row["error"],
+                metadata=self._loads_json(row["metadata"], {}),
+                created_at=self._parse_datetime(row["created_at"]) or datetime.utcnow(),
+                updated_at=self._parse_datetime(row["updated_at"]) or datetime.utcnow(),
             )
 
         if state_row:
@@ -190,6 +263,77 @@ class SessionManager:
             ),
         )
 
+    def _upsert_search_record(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        record: URLRecord,
+    ) -> None:
+        """Update the SQLite FTS row for a scraped URL record."""
+        conn.execute(
+            "DELETE FROM tab_search_fts WHERE session_id = ? AND normalized = ?",
+            (session_id, record.normalized),
+        )
+        if record.status != "scraped":
+            return
+
+        title = str(record.metadata.get("title") or "")
+        content = str(record.metadata.get("content") or "")
+        if not title and not content:
+            return
+
+        domain = self._domain_for_url(record.normalized)
+        conn.execute(
+            """
+            INSERT INTO tab_search_fts (
+                session_id, normalized, url, domain, title, content
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, record.normalized, record.original, domain, title, content),
+        )
+
+    def _save_tab_import_job(self, job: TabImportJob) -> None:
+        if not self._db_path:
+            return
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tab_import_jobs (
+                    id, session_id, cdp_url, status, total, imported, indexed, failed,
+                    error, metadata, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    cdp_url = excluded.cdp_url,
+                    status = excluded.status,
+                    total = excluded.total,
+                    imported = excluded.imported,
+                    indexed = excluded.indexed,
+                    failed = excluded.failed,
+                    error = excluded.error,
+                    metadata = excluded.metadata,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    job.id,
+                    job.session_id,
+                    job.cdp_url,
+                    job.status,
+                    job.total,
+                    job.imported,
+                    job.indexed,
+                    job.failed,
+                    job.error,
+                    self._dumps_json(job.metadata),
+                    job.created_at.isoformat(),
+                    job.updated_at.isoformat(),
+                ),
+            )
+
     def _save_url_record(
         self, conn: sqlite3.Connection, session_id: str, record: URLRecord
     ) -> None:
@@ -221,12 +365,15 @@ class SessionManager:
                 record.created_at.isoformat(),
             ),
         )
+        self._upsert_search_record(conn, session_id, record)
 
     def _delete_session_from_db(self, session_id: str) -> None:
         if not self._db_path:
             return
         with self._connect() as conn:
             conn.execute("DELETE FROM url_records WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM tab_search_fts WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM tab_import_jobs WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._save_state(conn)
 
@@ -396,6 +543,144 @@ class SessionManager:
                     self._save_session(session)
             return updated
 
+    def create_tab_import_job(self, session_id: str, cdp_url: str) -> TabImportJob:
+        """Create a queued import job unless an equivalent active job exists."""
+        with self._lock:
+            if session_id not in self._sessions:
+                raise ValueError("Session not found")
+
+            for job in self._tab_import_jobs.values():
+                if (
+                    job.session_id == session_id
+                    and job.cdp_url == cdp_url
+                    and job.status in ACTIVE_TAB_IMPORT_STATUSES
+                ):
+                    raise ValueError("An active import already exists for this session")
+
+            job = TabImportJob(
+                id=str(uuid.uuid4()),
+                session_id=session_id,
+                cdp_url=cdp_url,
+            )
+            self._tab_import_jobs[job.id] = job
+            self._save_tab_import_job(job)
+            return job
+
+    def update_tab_import_job(
+        self,
+        job_id: str,
+        *,
+        status: Optional[str] = None,
+        total: Optional[int] = None,
+        imported: Optional[int] = None,
+        indexed: Optional[int] = None,
+        failed: Optional[int] = None,
+        error: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> Optional[TabImportJob]:
+        """Update durable tab import job state."""
+        with self._lock:
+            job = self._tab_import_jobs.get(job_id)
+            if not job:
+                return None
+            if status is not None:
+                allowed = ACTIVE_TAB_IMPORT_STATUSES | TERMINAL_TAB_IMPORT_STATUSES
+                if status not in allowed:
+                    raise ValueError(f"Unsupported tab import status: {status}")
+                job.status = status
+            if total is not None:
+                job.total = max(0, int(total))
+            if imported is not None:
+                job.imported = max(0, int(imported))
+            if indexed is not None:
+                job.indexed = max(0, int(indexed))
+            if failed is not None:
+                job.failed = max(0, int(failed))
+            if error is not None:
+                job.error = error
+            if metadata:
+                job.metadata = {**job.metadata, **metadata}
+            job.updated_at = datetime.utcnow()
+            self._save_tab_import_job(job)
+            return job
+
+    def get_tab_import_job(self, job_id: str) -> Optional[TabImportJob]:
+        """Return a tab import job by id."""
+        return self._tab_import_jobs.get(job_id)
+
+    def search_indexed_tabs(
+        self,
+        session_id: str,
+        query: str,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Search persisted tab title/content with SQLite FTS or memory fallback."""
+        cleaned_query = self._fts_query(query)
+        if not cleaned_query:
+            return []
+        limit = min(max(int(limit), 1), 50)
+
+        if not self._db_path:
+            return self._search_indexed_tabs_in_memory(session_id, cleaned_query, limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT url, title, content, domain, bm25(tab_search_fts) AS rank
+                FROM tab_search_fts
+                WHERE session_id = ? AND tab_search_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (session_id, cleaned_query, limit),
+            ).fetchall()
+
+        return [
+            {
+                "url": row["url"],
+                "title": row["title"],
+                "content": row["content"],
+                "domain": row["domain"],
+                "score": 1.0 / float(index + 1),
+                "source": "keyword",
+            }
+            for index, row in enumerate(rows)
+        ]
+
+    def _search_indexed_tabs_in_memory(
+        self,
+        session_id: str,
+        query: str,
+        limit: int,
+    ) -> list[dict]:
+        session = self._sessions.get(session_id)
+        if not session:
+            return []
+        terms = [term.lower() for term in query.split()]
+        results = []
+        for record in session.url_store.get_all():
+            haystack = " ".join(
+                [
+                    record.original,
+                    str(record.metadata.get("title") or ""),
+                    str(record.metadata.get("content") or ""),
+                ]
+            ).lower()
+            if all(term in haystack for term in terms):
+                results.append(
+                    {
+                        "url": record.original,
+                        "title": str(record.metadata.get("title") or record.original),
+                        "content": str(record.metadata.get("content") or ""),
+                        "domain": self._domain_for_url(record.normalized),
+                        "score": 1.0 / float(len(results) + 1),
+                        "source": "keyword",
+                    }
+                )
+            if len(results) >= limit:
+                break
+        return results
+
     def get_session_stats(self, session_id: str) -> Optional[dict]:
         """Get statistics for a session."""
         session = self._sessions.get(session_id)
@@ -432,3 +717,15 @@ class SessionManager:
         if not session:
             session = self.create_session()
         return session
+
+    @staticmethod
+    def _fts_query(query: str) -> str:
+        """Convert user text into a safe FTS query."""
+        terms = re.findall(r"[\w.-]+", query or "")
+        return " ".join(term for term in terms if term.strip())
+
+    @staticmethod
+    def _domain_for_url(url: str) -> str:
+        from urllib.parse import urlparse
+
+        return urlparse(url).netloc.lower()
