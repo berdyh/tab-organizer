@@ -16,6 +16,7 @@ env:
   COMPOSE_DOCKER_CLI_BUILD: 1
   AI_ENGINE_API_TOKEN: local-test-token
   BACKEND_CALLBACK_TOKEN: local-test-token
+  BACKEND_AGENT_API_TOKEN: local-test-token
   PLATFORM_MAINTAINER_SIGNUP_CODE: local-maintainer
 
 jobs:

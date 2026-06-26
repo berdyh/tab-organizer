@@ -11,6 +11,7 @@ def test_ci_cross_service_jobs_export_local_service_tokens():
 
     assert "AI_ENGINE_API_TOKEN: local-test-token" in workflow
     assert "BACKEND_CALLBACK_TOKEN: local-test-token" in workflow
+    assert "BACKEND_AGENT_API_TOKEN: local-test-token" in workflow
     assert "PLATFORM_MAINTAINER_SIGNUP_CODE: local-maintainer" in workflow
 
 
@@ -29,4 +30,5 @@ def test_direct_compose_docs_show_required_local_service_tokens():
     for text in (testing_doc, test_readme):
         assert "AI_ENGINE_API_TOKEN=local-test-token" in text
         assert "BACKEND_CALLBACK_TOKEN=local-test-token" in text
+        assert "BACKEND_AGENT_API_TOKEN=local-test-token" in text
         assert "PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer" in text

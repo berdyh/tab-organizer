@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import json
 import os
 import secrets
 import subprocess
@@ -16,6 +17,8 @@ HOST_AI_TOKEN_FILE = PROJECT_ROOT / "data" / "host-ai-token"
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.mcp import tabs as mcp_tabs
 
 
 def run_command(
@@ -97,6 +100,7 @@ def service_env_with_tokens() -> dict[str, str]:
     token = ensure_host_ai_token()
     set_env_default_if_blank(env, "AI_ENGINE_API_TOKEN", token)
     set_env_default_if_blank(env, "BACKEND_CALLBACK_TOKEN", token)
+    set_env_default_if_blank(env, "BACKEND_AGENT_API_TOKEN", token)
     return env
 
 
@@ -220,6 +224,69 @@ def cmd_check_provider(args):
         client = LLMClient(LLMConfig(provider=provider, model=model))
         result = asyncio.run(client.generate(args.prompt))
         print(result)
+
+
+def print_backend_result(result: dict) -> None:
+    """Print Backend Core JSON without exposing configured tokens."""
+    text = json.dumps(result, sort_keys=True)
+    print(mcp_tabs.redact_configured_secrets(text))
+
+
+def run_backend_tab_tool(tool, *args, **kwargs) -> None:
+    """Run a Backend Core tab tool and print a redacted JSON result."""
+    load_env_file()
+    set_env_default_if_blank(
+        os.environ,
+        mcp_tabs.AGENT_TOKEN_ENV,
+        ensure_host_ai_token(),
+    )
+    try:
+        print_backend_result(tool(*args, **kwargs))
+    except Exception as error:
+        message = mcp_tabs.redact_configured_secrets(str(error))
+        print(f"Error: {message}", file=sys.stderr)
+        raise SystemExit(1) from error
+
+
+def cmd_tabs_import(args):
+    """Import currently open browser tabs through Backend Core."""
+    run_backend_tab_tool(
+        mcp_tabs.tab_import_from_browser,
+        cdp_url=args.cdp_url,
+        session_id=args.session_id,
+        session_name=args.session_name,
+    )
+
+
+def cmd_tabs_status(args):
+    """Show a browser tab import job status."""
+    run_backend_tab_tool(mcp_tabs.tab_import_status, args.job_id)
+
+
+def cmd_tabs_search(args):
+    """Search indexed browser tabs through Backend Core."""
+    run_backend_tab_tool(
+        mcp_tabs.tab_search,
+        query=args.query,
+        session_id=args.session_id,
+        limit=args.limit,
+        mode=args.mode,
+    )
+
+
+def cmd_tabs_cluster(args):
+    """Cluster indexed browser tabs through Backend Core."""
+    run_backend_tab_tool(mcp_tabs.tab_cluster, args.session_id)
+
+
+def cmd_tabs_open(args):
+    """Open URLs in the attached local browser through Backend Core."""
+    run_backend_tab_tool(
+        mcp_tabs.tab_open,
+        urls=args.urls,
+        session_id=args.session_id,
+        cdp_url=args.cdp_url,
+    )
 
 
 def cmd_stop(args):
@@ -374,7 +441,8 @@ def cmd_shell(args):
     ], check=False)
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser."""
     parser = argparse.ArgumentParser(
         description="Tab Organizer CLI - Unified management tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -388,6 +456,7 @@ Examples:
   %(prog)s stop                     Stop all services
   %(prog)s logs -f web-ui           Follow web-ui logs
   %(prog)s test --type unit         Run unit tests
+  %(prog)s tabs search "query"      Search indexed browser tabs
   %(prog)s models --pull <model>   Pull a model
         """,
     )
@@ -479,6 +548,86 @@ Examples:
         help="Prompt used by --generate",
     )
     check_parser.set_defaults(func=cmd_check_provider)
+
+    # tabs
+    tabs_parser = subparsers.add_parser(
+        "tabs",
+        help="Import, search, cluster, and open browser tabs via Backend Core",
+    )
+    tab_subparsers = tabs_parser.add_subparsers(
+        dest="tab_command",
+        help="Tab commands",
+        required=True,
+    )
+
+    tabs_import_parser = tab_subparsers.add_parser(
+        "import",
+        help="Import currently open browser tabs from a local CDP endpoint",
+    )
+    tabs_import_parser.add_argument(
+        "--cdp-url",
+        default=mcp_tabs.DEFAULT_CDP_URL,
+        help="Local Chrome DevTools Protocol URL",
+    )
+    tabs_import_parser.add_argument(
+        "--session-id",
+        help="Existing Backend Core session ID to import into",
+    )
+    tabs_import_parser.add_argument(
+        "--session-name",
+        help="Name for a new Backend Core session when no session ID is provided",
+    )
+    tabs_import_parser.set_defaults(func=cmd_tabs_import)
+
+    tabs_status_parser = tab_subparsers.add_parser(
+        "status",
+        help="Show a tab import job status",
+    )
+    tabs_status_parser.add_argument("job_id", help="Backend Core tab import job ID")
+    tabs_status_parser.set_defaults(func=cmd_tabs_status)
+
+    tabs_search_parser = tab_subparsers.add_parser(
+        "search",
+        help="Search indexed browser tabs",
+    )
+    tabs_search_parser.add_argument("query", help="Search query")
+    tabs_search_parser.add_argument("--session-id", help="Restrict search to a session")
+    tabs_search_parser.add_argument(
+        "--mode",
+        choices=["hybrid", "semantic", "keyword"],
+        default="hybrid",
+        help="Search mode",
+    )
+    tabs_search_parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum result count",
+    )
+    tabs_search_parser.set_defaults(func=cmd_tabs_search)
+
+    tabs_cluster_parser = tab_subparsers.add_parser(
+        "cluster",
+        help="Cluster indexed tabs for a session",
+    )
+    tabs_cluster_parser.add_argument("session_id", help="Backend Core session ID")
+    tabs_cluster_parser.set_defaults(func=cmd_tabs_cluster)
+
+    tabs_open_parser = tab_subparsers.add_parser(
+        "open",
+        help="Open URLs in the attached local browser",
+    )
+    tabs_open_parser.add_argument("urls", nargs="*", help="URLs to open")
+    tabs_open_parser.add_argument(
+        "--session-id",
+        help="Open all URLs from an existing Backend Core session",
+    )
+    tabs_open_parser.add_argument(
+        "--cdp-url",
+        default=mcp_tabs.DEFAULT_CDP_URL,
+        help="Local Chrome DevTools Protocol URL",
+    )
+    tabs_open_parser.set_defaults(func=cmd_tabs_open)
     
     # stop
     stop_parser = subparsers.add_parser("stop", help="Stop services")
@@ -527,7 +676,12 @@ Examples:
     shell_parser = subparsers.add_parser("shell", help="Open shell in container")
     shell_parser.add_argument("service", choices=["backend", "ai", "browser", "ui", "ollama"])
     shell_parser.set_defaults(func=cmd_shell)
-    
+
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     
     if not args.command:

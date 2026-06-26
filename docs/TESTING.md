@@ -64,11 +64,11 @@ docker compose --profile test-unit up --build --abort-on-container-exit test-uni
 Start infrastructure and services (LanceDB is embedded inside `ai-engine`):
 
 ```bash
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-integration up -d ollama
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-integration up -d --build backend-core ai-engine browser-engine
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-integration run --rm test-integration
 ```
 
@@ -77,11 +77,11 @@ AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token PLA
 Start full stack:
 
 ```bash
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-e2e up -d ollama
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-e2e up -d --build backend-core ai-engine browser-engine web-ui
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-e2e run --rm test-e2e
 ```
 

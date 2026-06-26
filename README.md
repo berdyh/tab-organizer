@@ -166,6 +166,7 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 | `AI_ENGINE_API_TOKEN` | — | — | Bearer token for protected AI Engine endpoints; generated locally by `start` and `host-ai` |
 | `BROWSER_ENGINE_API_TOKEN` | — | — | Optional explicit bearer token for Browser Engine control/auth endpoints; falls back to callback/AI token locally |
 | `BACKEND_CALLBACK_TOKEN` | — | — | Bearer token for browser-engine scrape callbacks into Backend Core; generated locally by `start` and `host-ai` |
+| `BACKEND_AGENT_API_TOKEN` | — | — | Bearer token for local agent/CLI tab-management endpoints; generated locally by `start` |
 | `AI_ENGINE_ALLOW_UNAUTHENTICATED` | `false` | `false` | Development escape hatch for direct AI Engine calls without a token |
 | `BACKEND_DB_PATH` | `/data/backend/tab-organizer.sqlite3` | `./data/backend/tab-organizer.sqlite3` | SQLite database for sessions, URL records, callback metadata, clusters, and local platform data |
 | `BACKEND_PUBLIC_URL` | `http://localhost:8080` | `http://localhost:8080` | Public Backend Core base URL used in generated B2B first-call examples |
@@ -180,7 +181,7 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 
 `claude_code` and `codex_cli` are LLM-only providers that call the local `claude -p` or `codex exec` CLI using existing subscription login state. `codex_cli` is one-shot Codex CLI execution, not ACP mode, and is disabled by default for scraped-content prompts because `codex exec` is not a tool-free LLM-only mode. Use `codex_acp` when you want the app's LLM calls to go through an ACP Codex harness via `acpx`. ACP defaults to `deny-all` permissions for app-routed prompts; relax it only for trusted local experiments. Leave `LLM_MODEL` blank unless you need a provider-specific override, and keep `EMBEDDING_PROVIDER` on `ollama` or another embedding-capable provider. The stock Docker image does not install these CLIs, `acpx`, ACP adapters, or mount their auth state; use `./scripts/cli.py host-ai --provider claude_code` plus `./scripts/cli.py start -d --host-ai`, or build a custom image for Docker-based CLI/ACP routing.
 
-AI Engine generation, embedding, indexing, chat, search, clustering, summarization, document deletion, and provider-switch endpoints fail closed unless `AI_ENGINE_API_TOKEN` is configured. Browser Engine scrape/auth control endpoints also require a local service token. Use `./scripts/cli.py start` or `./scripts/cli.py host-ai` so the shared local token is generated and passed to all services.
+AI Engine generation, embedding, indexing, chat, search, clustering, summarization, document deletion, and provider-switch endpoints fail closed unless `AI_ENGINE_API_TOKEN` is configured. Browser Engine scrape/auth control endpoints and Backend Core agent tab-management endpoints also require local service tokens. Use `./scripts/cli.py start` or `./scripts/cli.py host-ai` so the shared local token is generated and passed to all services.
 
 If `EMBEDDING_PROVIDER` and `EMBEDDING_DIMENSIONS` are mismatched the AI Engine will refuse to write to the LanceDB table — keep them in sync.
 

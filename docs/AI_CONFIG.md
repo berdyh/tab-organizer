@@ -241,6 +241,7 @@ The system uses these environment variables:
 - `AGENT_CLI_WORKDIR`: Working directory for local agent CLI calls, defaults to `/tmp/tab-organizer-agent-cli`
 - `AI_ENGINE_API_TOKEN`: Bearer token required by generation, indexing, clustering, chat, search, summarization, document deletion, and provider-switch endpoints. `scripts/cli.py start` and `scripts/cli.py host-ai` generate `data/host-ai-token` automatically.
 - `BACKEND_CALLBACK_TOKEN`: Bearer token required for browser-engine scrape callbacks into backend-core. Defaults operationally to the same generated local token when started through `scripts/cli.py`.
+- `BACKEND_AGENT_API_TOKEN`: Bearer token required for local agent/CLI tab-management endpoints in backend-core. Defaults operationally to the same generated local token when started through `scripts/cli.py`.
 
 ### Subscription CLI Providers
 
