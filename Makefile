@@ -71,6 +71,7 @@ test-ai: ## Run focused AI Engine unit tests
 test-browser: ## Run focused Browser Engine unit tests
 	@echo "$(BLUE)Running Browser Engine focused tests...$(NC)"
 	@docker compose --profile test-unit run --rm test-unit pytest \
+		tests/unit/test_browser_tab_harvester.py \
 		tests/unit/test_browser_engine_callbacks.py \
 		tests/unit/test_auth_detector.py -q
 

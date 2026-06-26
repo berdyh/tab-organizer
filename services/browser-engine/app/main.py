@@ -15,6 +15,7 @@ from services.url_safety import validate_scrape_url
 from .auth.detector import AuthDetector
 from .auth.queue import AuthQueue
 from .scraper.engine import ScraperEngine
+from .tabs.cdp import CDPTabHarvester, DEFAULT_CDP_URL
 
 app = FastAPI(
     title="Tab Organizer - Browser Engine",
@@ -69,6 +70,17 @@ class SingleScrapeRequest(BaseModel):
     url: str
     session_id: Optional[str] = None
     use_browser: bool = False
+
+
+class TabImportRequest(BaseModel):
+    cdp_url: str = DEFAULT_CDP_URL
+    max_tabs: int = 2000
+    max_concurrent: int = 25
+
+
+class TabOpenRequest(BaseModel):
+    urls: list[str]
+    cdp_url: str = DEFAULT_CDP_URL
 
 
 def _browser_engine_token() -> str:
@@ -376,6 +388,54 @@ async def scrape_single(
         "error": result.error,
         "metadata": result.metadata,
     }
+
+
+@app.post("/tabs/import")
+async def import_tabs_from_browser(
+    request: TabImportRequest,
+    _auth=Depends(_require_browser_engine_auth),
+):
+    """Import live tabs from a user-started Chrome/Chromium CDP endpoint."""
+    if request.max_tabs < 1 or request.max_tabs > 2000:
+        raise HTTPException(status_code=400, detail="max_tabs must be between 1 and 2000")
+    if request.max_concurrent < 1 or request.max_concurrent > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="max_concurrent must be between 1 and 100",
+        )
+
+    try:
+        harvester = CDPTabHarvester(
+            cdp_url=request.cdp_url,
+            max_concurrent=request.max_concurrent,
+        )
+        result = await harvester.harvest(max_tabs=request.max_tabs)
+        return {"status": "completed", **result.to_dict()}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"Tab import failed: {error}")
+
+
+@app.post("/tabs/open")
+async def open_tabs_in_browser(
+    request: TabOpenRequest,
+    _auth=Depends(_require_browser_engine_auth),
+):
+    """Open URLs in the attached Chrome/Chromium instance."""
+    if not request.urls:
+        raise HTTPException(status_code=400, detail="At least one URL is required")
+    if len(request.urls) > 100:
+        raise HTTPException(status_code=400, detail="Cannot open more than 100 URLs")
+
+    try:
+        harvester = CDPTabHarvester(cdp_url=request.cdp_url)
+        opened = await harvester.open_urls(request.urls)
+        return {"status": "completed", "opened": opened}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"Tab open failed: {error}")
 
 
 @app.get("/scrape/status/{session_id}")

@@ -1,8 +1,32 @@
 """Contracts for importing live Chromium tabs through CDP."""
 
+import sys
+import types
+
 import pytest
 
 from services.browser_engine.app.tabs.cdp import CDPTabHarvester, validate_cdp_url
+
+
+def _install_playwright_stub() -> None:
+    """Let route tests import browser-engine code without browser binaries."""
+    playwright_module = types.ModuleType("playwright")
+    async_api = types.ModuleType("playwright.async_api")
+    async_api.Browser = object
+    async_api.Page = object
+    async_api.TimeoutError = TimeoutError
+    async_api.async_playwright = lambda: None
+    playwright_module.async_api = async_api
+    sys.modules["playwright"] = playwright_module
+    sys.modules["playwright.async_api"] = async_api
+
+
+try:
+    import playwright.async_api  # noqa: F401
+except ModuleNotFoundError:
+    _install_playwright_stub()
+
+from services.browser_engine.app import main as browser_main
 
 
 class FakePage:
@@ -140,3 +164,56 @@ async def test_harvester_opens_urls_in_attached_browser_without_new_profile():
     created_page = browser.contexts[0].created_pages[0]
     assert created_page.opened_urls == ["https://example.com/target"]
     assert browser.closed is False
+
+
+@pytest.mark.asyncio
+async def test_browser_import_tabs_endpoint_requires_auth_and_returns_documents(
+    monkeypatch,
+):
+    class FakeHarvester:
+        def __init__(self, cdp_url, max_concurrent):
+            self.cdp_url = cdp_url
+            self.max_concurrent = max_concurrent
+
+        async def harvest(self, max_tabs=None):
+            assert max_tabs == 2000
+            return type(
+                "Result",
+                (),
+                {
+                    "to_dict": lambda self: {
+                        "total": 1,
+                        "imported": 1,
+                        "failed": 0,
+                        "tabs": [
+                            {
+                                "id": "https://example.com/page",
+                                "url": "https://example.com/page",
+                                "title": "Example",
+                                "content": "Example content",
+                                "metadata": {"source": "cdp"},
+                            }
+                        ],
+                        "errors": [],
+                    }
+                },
+            )()
+
+    monkeypatch.setenv("BROWSER_ENGINE_API_TOKEN", "browser-token")
+    monkeypatch.setattr(browser_main, "CDPTabHarvester", FakeHarvester)
+
+    with pytest.raises(browser_main.HTTPException) as missing:
+        await browser_main.import_tabs_from_browser(
+            browser_main.TabImportRequest(cdp_url="http://localhost:9222"),
+            _auth=browser_main._require_browser_engine_auth(None),
+        )
+    assert missing.value.status_code == 401
+
+    result = await browser_main.import_tabs_from_browser(
+        browser_main.TabImportRequest(cdp_url="http://localhost:9222"),
+        _auth=browser_main._require_browser_engine_auth("Bearer browser-token"),
+    )
+
+    assert result["status"] == "completed"
+    assert result["imported"] == 1
+    assert result["tabs"][0]["url"] == "https://example.com/page"
