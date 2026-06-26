@@ -8,6 +8,7 @@ import time
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8080")
 AI_URL = os.getenv("AI_ENGINE_URL", "http://localhost:8090")
 BROWSER_URL = os.getenv("BROWSER_ENGINE_URL", "http://localhost:8083")
+TERMINAL_URL_STATUSES = {"scraped", "failed", "auth_required"}
 
 
 @pytest.fixture
@@ -28,46 +29,71 @@ class TestCompleteWorkflow:
         )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
-        
-        # 2. Add URLs
-        urls = [
-            "https://httpbin.org/html",
-            "https://httpbin.org/robots.txt",
-        ]
-        
-        url_resp = client.post(
-            f"{BACKEND_URL}/api/v1/urls",
-            json={"urls": urls, "session_id": session_id},
-        )
-        assert url_resp.status_code == 200
-        assert url_resp.json()["added"] == 2
-        
-        # 3. Get session stats
-        stats_resp = client.get(f"{BACKEND_URL}/api/v1/sessions/{session_id}")
-        assert stats_resp.status_code == 200
-        assert stats_resp.json()["total_urls"] == 2
-        
-        # 4. Start scraping
-        scrape_resp = client.post(
-            f"{BACKEND_URL}/api/v1/scrape",
-            json={"session_id": session_id},
-        )
-        assert scrape_resp.status_code == 200
-        
-        # 5. Wait for scraping to complete (with timeout)
-        max_wait = 60
-        start_time = time.time()
-        
-        while time.time() - start_time < max_wait:
-            status_resp = client.get(f"{BROWSER_URL}/scrape/status/{session_id}")
-            if status_resp.status_code == 200:
-                status = status_resp.json()
-                if status.get("status") == "completed":
-                    break
-            time.sleep(2)
-        
-        # 6. Clean up
-        client.delete(f"{BACKEND_URL}/api/v1/sessions/{session_id}")
+
+        try:
+            # 2. Add public non-Soliq URLs.
+            urls = [
+                "https://example.com/",
+                "https://www.iana.org/domains/reserved",
+            ]
+
+            url_resp = client.post(
+                f"{BACKEND_URL}/api/v1/urls",
+                json={"urls": urls, "session_id": session_id},
+            )
+            assert url_resp.status_code == 200
+            assert url_resp.json()["added"] == 2
+
+            # 3. Get session stats
+            stats_resp = client.get(f"{BACKEND_URL}/api/v1/sessions/{session_id}")
+            assert stats_resp.status_code == 200
+            assert stats_resp.json()["total_urls"] == 2
+
+            # 4. Start scraping
+            scrape_resp = client.post(
+                f"{BACKEND_URL}/api/v1/scrape",
+                json={"session_id": session_id},
+            )
+            assert scrape_resp.status_code == 200
+
+            # 5. Wait for a terminal browser-engine scrape status.
+            max_wait = 60
+            start_time = time.time()
+            status = None
+
+            while time.time() - start_time < max_wait:
+                status_resp = client.get(f"{BROWSER_URL}/scrape/status/{session_id}")
+                if status_resp.status_code == 200:
+                    status = status_resp.json()
+                    if status.get("status") in {
+                        "completed",
+                        "completed_with_downstream_errors",
+                        "failed",
+                    }:
+                        break
+                time.sleep(2)
+
+            assert status is not None, "Browser-engine scrape status was never created"
+            assert status.get("status") in {
+                "completed",
+                "completed_with_downstream_errors",
+            }, status
+            assert status.get("total") == len(urls)
+            assert status.get("completed") == len(urls)
+            assert status.get("backend_callback_failed", 0) == 0, status
+
+            url_status_resp = client.get(f"{BACKEND_URL}/api/v1/urls/{session_id}")
+            assert url_status_resp.status_code == 200
+            records = url_status_resp.json()
+            assert len(records) == len(urls)
+
+            statuses = {record["original"]: record["status"] for record in records}
+            assert set(statuses.values()) <= TERMINAL_URL_STATUSES
+            assert all(status != "pending" for status in statuses.values())
+            assert any(status == "scraped" for status in statuses.values()), statuses
+        finally:
+            # 6. Clean up
+            client.delete(f"{BACKEND_URL}/api/v1/sessions/{session_id}")
     
     def test_deduplication_workflow(self, client):
         """Test URL deduplication across multiple additions."""
