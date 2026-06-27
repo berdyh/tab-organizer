@@ -32,3 +32,20 @@ def test_direct_compose_docs_show_required_local_service_tokens():
         assert "BACKEND_CALLBACK_TOKEN=local-test-token" in text
         assert "BACKEND_AGENT_API_TOKEN=local-test-token" in text
         assert "PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer" in text
+
+
+def test_service_images_package_shared_url_safety_module():
+    compose = (ROOT / "docker-compose.yml").read_text()
+    backend_dockerfile = (ROOT / "services" / "backend-core" / "Dockerfile").read_text()
+    browser_dockerfile = (
+        ROOT / "services" / "browser-engine" / "Dockerfile"
+    ).read_text()
+
+    assert "dockerfile: services/backend-core/Dockerfile" in compose
+    assert "dockerfile: services/browser-engine/Dockerfile" in compose
+    assert "context: ./services/backend-core" not in compose
+    assert "context: ./services/browser-engine" not in compose
+
+    for dockerfile in (backend_dockerfile, browser_dockerfile):
+        assert "COPY services/__init__.py ./services/__init__.py" in dockerfile
+        assert "COPY services/url_safety.py ./services/url_safety.py" in dockerfile

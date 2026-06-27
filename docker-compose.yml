@@ -1,8 +1,8 @@
 services:
   backend-core:
     build:
-      context: ./services/backend-core
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/backend-core/Dockerfile
     container_name: tab-organizer-backend
     ports:
       - "8080:8080"
@@ -82,8 +82,8 @@ services:
 
   browser-engine:
     build:
-      context: ./services/browser-engine
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/browser-engine/Dockerfile
     container_name: tab-organizer-browser
     ports:
       - "8083:8083"
