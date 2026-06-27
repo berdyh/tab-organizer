@@ -7,6 +7,8 @@ import types
 import httpx
 import pytest
 
+from services import url_safety
+
 
 def _install_framework_stubs() -> None:
     """Provide minimal FastAPI/Pydantic stubs for direct function tests."""
@@ -162,9 +164,73 @@ def test_browser_engine_rejects_unsafe_scrape_urls(url):
 
 
 @pytest.mark.asyncio
-async def test_safe_httpx_get_rejects_unsafe_redirect_target():
+async def test_safe_httpx_get_connects_to_vetted_ip_with_host_and_sni(monkeypatch):
     from services.browser_engine.app.scraper import engine
 
+    monkeypatch.setattr(
+        url_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                url_safety.socket.AF_INET,
+                url_safety.socket.SOCK_STREAM,
+                6,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ],
+    )
+    calls = []
+
+    class CapturingClient:
+        async def get(self, url, follow_redirects=False, **_kwargs):
+            calls.append(
+                {
+                    "url": url,
+                    "follow_redirects": follow_redirects,
+                    "headers": _kwargs.get("headers"),
+                    "extensions": _kwargs.get("extensions"),
+                }
+            )
+            request = httpx.Request("GET", url)
+            return httpx.Response(200, request=request)
+
+    await engine._safe_httpx_get(
+        CapturingClient(),
+        "https://public-looking.test/page?q=1",
+        headers={"User-Agent": "TabOrganizer"},
+    )
+
+    assert calls == [
+        {
+            "url": "https://93.184.216.34/page?q=1",
+            "follow_redirects": False,
+            "headers": {
+                "User-Agent": "TabOrganizer",
+                "Host": "public-looking.test",
+            },
+            "extensions": {"sni_hostname": "public-looking.test"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_safe_httpx_get_rejects_unsafe_redirect_target(monkeypatch):
+    from services.browser_engine.app.scraper import engine
+
+    monkeypatch.setattr(
+        url_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                url_safety.socket.AF_INET,
+                url_safety.socket.SOCK_STREAM,
+                6,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ],
+    )
     calls = []
 
     class RedirectingClient:
@@ -178,9 +244,46 @@ async def test_safe_httpx_get_rejects_unsafe_redirect_target():
             )
 
     with pytest.raises(ValueError, match="private network"):
-        await engine._safe_httpx_get(RedirectingClient(), "https://example.com")
+        await engine._safe_httpx_get(
+            RedirectingClient(),
+            "https://public-looking.test/path",
+        )
 
-    assert calls == [{"url": "https://example.com", "follow_redirects": False}]
+    assert calls == [{"url": "https://93.184.216.34/path", "follow_redirects": False}]
+
+
+@pytest.mark.asyncio
+async def test_browser_mode_rejects_hostname_without_private_network_override(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        url_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                url_safety.socket.AF_INET,
+                url_safety.socket.SOCK_STREAM,
+                6,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ],
+    )
+    monkeypatch.delenv("SCRAPE_ALLOW_PRIVATE_NETWORKS", raising=False)
+    scraper = ScraperEngine(respect_robots=False)
+
+    async def fail_browser_launch():
+        raise AssertionError("browser should not launch")
+
+    scraper._get_browser = fail_browser_launch
+
+    result = await scraper.scrape_url(
+        "https://public-looking.test/path",
+        use_browser=True,
+    )
+
+    assert result.status == "failed"
+    assert "IP-literal URL" in result.error
 
 
 class FakeScraper:
