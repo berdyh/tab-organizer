@@ -744,7 +744,9 @@ async def import_tabs_background(job_id: str, cdp_url: str, max_tabs: int) -> No
 
         documents = _tab_documents_from_import_payload(payload)
         if documents:
-            session_manager.add_urls_to_session(job.session_id, [d["url"] for d in documents])
+            session_manager.add_urls_to_session(
+                job.session_id, [d["url"] for d in documents]
+            )
             for document in documents:
                 session_manager.update_url_status(
                     job.session_id,
@@ -786,7 +788,9 @@ async def import_tabs_from_browser(
 ):
     """Start importing tabs from an attached Chrome/Chromium instance."""
     if request.max_tabs < 1 or request.max_tabs > 2000:
-        raise HTTPException(status_code=400, detail="max_tabs must be between 1 and 2000")
+        raise HTTPException(
+            status_code=400, detail="max_tabs must be between 1 and 2000"
+        )
 
     if request.session_id:
         session = session_manager.get_session(request.session_id)

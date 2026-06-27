@@ -368,7 +368,9 @@ class LLMClient:
         """Check runtime availability in addition to static config support."""
         return self.get_provider_runtime_state(provider, capability)["available"]
 
-    def get_provider_runtime_state(self, provider: str, capability: str = "llm") -> dict:
+    def get_provider_runtime_state(
+        self, provider: str, capability: str = "llm"
+    ) -> dict:
         """Return runtime availability details for a configured provider."""
         state = {
             "capabilities": self.PROVIDERS.get(provider, {}),
@@ -400,9 +402,9 @@ class LLMClient:
                     "api_key_env": api_key_env,
                     "api_key_configured": configured,
                     "available": configured,
-                    "reason": None
-                    if configured
-                    else f"{api_key_env} is not configured",
+                    "reason": (
+                        None if configured else f"{api_key_env} is not configured"
+                    ),
                 }
             )
             return state
@@ -416,9 +418,11 @@ class LLMClient:
                     "available": available,
                     "command_env": command_env,
                     "command": command,
-                    "reason": None
-                    if available
-                    else f"{command} is not available or failed its preflight check",
+                    "reason": (
+                        None
+                        if available
+                        else f"{command} is not available or failed its preflight check"
+                    ),
                 }
             )
             return state

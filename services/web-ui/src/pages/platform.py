@@ -7,7 +7,6 @@ import streamlit as st
 
 from ..api.client import SyncAPIClient
 
-
 ACCOUNT_SCOPED_STATE_KEYS = (
     "platform_token",
     "platform_profile",
@@ -317,13 +316,13 @@ def _render_auth_panel(
                         password=password,
                         name=name,
                         account_type=account_type,
-                        company_name=company_name
-                        if account_type == "business"
-                        else None,
+                        company_name=(
+                            company_name if account_type == "business" else None
+                        ),
                         role="maintainer" if account_type == "maintainer" else None,
-                        maintainer_code=maintainer_code
-                        if account_type == "maintainer"
-                        else None,
+                        maintainer_code=(
+                            maintainer_code if account_type == "maintainer" else None
+                        ),
                     )
                     if _store_auth_response(response):
                         st.success("Account created")
@@ -655,9 +654,7 @@ def _render_first_call_runner(api: SyncAPIClient, session_token: str) -> None:
         if companies:
             st.write(f"First call returned {len(companies)} companies")
             for company in companies[:5]:
-                st.write(
-                    f"**{_first_text(company, 'name', default='Company')}**"
-                )
+                st.write(f"**{_first_text(company, 'name', default='Company')}**")
                 st.caption(_first_text(company, "domain", "industry", default=""))
         else:
             st.info("First API call returned no companies.")

@@ -235,10 +235,7 @@ async def update_runtime_config(
                 target_embedding_provider != llm_client.embedding_config.provider
                 or target_embedding_model != current_embedding_model
             )
-            if (
-                embedding_dimension_change_requested
-                and chatbot.has_indexed_documents()
-            ):
+            if embedding_dimension_change_requested and chatbot.has_indexed_documents():
                 raise ValueError(
                     "Cannot switch embedding provider or model while documents are "
                     "indexed; clear and reindex the vector store first"
@@ -323,7 +320,9 @@ async def cluster_urls(request: ClusterRequest, _auth=Depends(_require_ai_engine
 
 # Chatbot endpoints
 @app.post("/index")
-async def index_documents(request: IndexRequest, _auth=Depends(_require_ai_engine_auth)):
+async def index_documents(
+    request: IndexRequest, _auth=Depends(_require_ai_engine_auth)
+):
     try:
         documents = [
             Document(

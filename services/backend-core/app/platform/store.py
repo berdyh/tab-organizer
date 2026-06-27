@@ -69,8 +69,7 @@ class PlatformStore:
         conn = self._connect()
         close_after = bool(self._db_path)
         try:
-            conn.executescript(
-                """
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS platform_users (
                     id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
@@ -150,8 +149,7 @@ class PlatformStore:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY (user_id) REFERENCES platform_users(id)
                 );
-                """
-            )
+                """)
             self._seed_companies(conn)
             conn.commit()
         finally:
@@ -262,9 +260,7 @@ class PlatformStore:
                     now,
                 ),
             )
-            self._record_event_conn(
-                conn, user_id, "user.signup", {"role": role}, now
-            )
+            self._record_event_conn(conn, user_id, "user.signup", {"role": role}, now)
             conn.commit()
             return self._public_user(
                 conn.execute(
@@ -497,7 +493,9 @@ class PlatformStore:
             )
             conn.commit()
             return self._api_token(
-                conn.execute("SELECT * FROM api_tokens WHERE id = ?", (token_id,)).fetchone()
+                conn.execute(
+                    "SELECT * FROM api_tokens WHERE id = ?", (token_id,)
+                ).fetchone()
             )
         finally:
             if close_after:
@@ -822,9 +820,7 @@ class PlatformStore:
         return str(scope).strip().lower()
 
     @classmethod
-    def _normalize_api_token_scopes(
-        cls, scopes: Optional[list[str]]
-    ) -> list[str]:
+    def _normalize_api_token_scopes(cls, scopes: Optional[list[str]]) -> list[str]:
         if scopes is None:
             return ["companies:read"]
 

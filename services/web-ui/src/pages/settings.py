@@ -4,7 +4,6 @@ import streamlit as st
 
 from ..api.client import SyncAPIClient
 
-
 API_KEY_FIELDS = [
     ("OpenRouter", "OPENROUTER_API_KEY"),
     ("OpenAI", "OPENAI_API_KEY"),
@@ -21,7 +20,9 @@ def _provider_options(
     capability: str,
 ) -> list[str]:
     """Return selectable providers without silently switching unknown values."""
-    capability_map = available.get(capability, {}) if isinstance(available, dict) else {}
+    capability_map = (
+        available.get(capability, {}) if isinstance(available, dict) else {}
+    )
     if capability_map:
         options = list(capability_map)
         for provider in fallback:
@@ -47,7 +48,9 @@ def _provider_index(options: list[str], current_provider: str) -> int:
 
 
 def _provider_label(available: dict, capability: str, provider: str) -> str:
-    capability_map = available.get(capability, {}) if isinstance(available, dict) else {}
+    capability_map = (
+        available.get(capability, {}) if isinstance(available, dict) else {}
+    )
     info = capability_map.get(provider, {})
     if info.get("available", True):
         return provider
@@ -55,7 +58,9 @@ def _provider_label(available: dict, capability: str, provider: str) -> str:
 
 
 def _availability_reason(available: dict, capability: str, provider: str) -> str:
-    capability_map = available.get(capability, {}) if isinstance(available, dict) else {}
+    capability_map = (
+        available.get(capability, {}) if isinstance(available, dict) else {}
+    )
     info = capability_map.get(provider, {})
     return info.get("reason") or ""
 
@@ -150,7 +155,9 @@ def render_settings_page():
             llm_current_model = (
                 current_llm_model if new_llm == current_llm_provider else ""
             )
-            llm_model_options = _model_options(models, new_llm, llm_current_model, "llm")
+            llm_model_options = _model_options(
+                models, new_llm, llm_current_model, "llm"
+            )
             new_llm_model = st.selectbox(
                 "Select LLM Model",
                 options=llm_model_options,
@@ -217,9 +224,7 @@ def render_settings_page():
         if submitted:
             try:
                 api.update_ai_config(
-                    llm_provider=(
-                        new_llm if new_llm != current_llm_provider else None
-                    ),
+                    llm_provider=(new_llm if new_llm != current_llm_provider else None),
                     llm_model=(
                         new_llm_model
                         if new_llm_model and new_llm_model != current_llm_model

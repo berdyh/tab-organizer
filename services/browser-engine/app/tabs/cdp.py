@@ -8,7 +8,6 @@ from urllib.parse import urlparse, urlunparse
 
 from services.url_safety import validate_scrape_url
 
-
 LOCAL_CDP_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 DEFAULT_CDP_URL = "http://host.docker.internal:9222"
 
@@ -21,7 +20,9 @@ def validate_cdp_url(url: str) -> str:
     if not parsed.hostname:
         raise ValueError("Chrome debugging endpoint must include a host")
     if parsed.username or parsed.password or parsed.path not in {"", "/"}:
-        raise ValueError("Chrome debugging endpoint must not include credentials or a path")
+        raise ValueError(
+            "Chrome debugging endpoint must not include credentials or a path"
+        )
     if parsed.params or parsed.query or parsed.fragment:
         raise ValueError("Chrome debugging endpoint must not include query parameters")
 

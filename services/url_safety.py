@@ -6,7 +6,6 @@ import socket
 from dataclasses import dataclass
 from urllib.parse import ParseResult, urlparse, urlunparse
 
-
 SAFE_SCRAPE_SCHEMES = {"http", "https"}
 LOCAL_HOSTNAMES = {
     "localhost",

@@ -15,7 +15,7 @@ from services.url_safety import validate_scrape_url
 from .auth.detector import AuthDetector
 from .auth.queue import AuthQueue
 from .scraper.engine import ScraperEngine
-from .tabs.cdp import CDPTabHarvester, DEFAULT_CDP_URL
+from .tabs.cdp import DEFAULT_CDP_URL, CDPTabHarvester
 
 app = FastAPI(
     title="Tab Organizer - Browser Engine",
@@ -397,7 +397,9 @@ async def import_tabs_from_browser(
 ):
     """Import live tabs from a user-started Chrome/Chromium CDP endpoint."""
     if request.max_tabs < 1 or request.max_tabs > 2000:
-        raise HTTPException(status_code=400, detail="max_tabs must be between 1 and 2000")
+        raise HTTPException(
+            status_code=400, detail="max_tabs must be between 1 and 2000"
+        )
     if request.max_concurrent < 1 or request.max_concurrent > 100:
         raise HTTPException(
             status_code=400,

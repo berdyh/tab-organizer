@@ -92,8 +92,7 @@ class SessionManager:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
-            conn.executescript(
-                """
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -147,8 +146,7 @@ class SessionManager:
                     title,
                     content
                 );
-                """
-            )
+                """)
 
     def _load_from_db(self) -> None:
         with self._connect() as conn:
@@ -372,8 +370,12 @@ class SessionManager:
             return
         with self._connect() as conn:
             conn.execute("DELETE FROM url_records WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM tab_search_fts WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM tab_import_jobs WHERE session_id = ?", (session_id,))
+            conn.execute(
+                "DELETE FROM tab_search_fts WHERE session_id = ?", (session_id,)
+            )
+            conn.execute(
+                "DELETE FROM tab_import_jobs WHERE session_id = ?", (session_id,)
+            )
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._save_state(conn)
 
@@ -523,7 +525,9 @@ class SessionManager:
 
             return added, duplicates, records
 
-    def update_url_status(self, session_id: str, url: str, status: str, **kwargs) -> bool:
+    def update_url_status(
+        self, session_id: str, url: str, status: str, **kwargs
+    ) -> bool:
         """Update a URL status and persist the containing session."""
         with self._lock:
             session = self._sessions.get(session_id)

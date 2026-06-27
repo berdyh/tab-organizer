@@ -113,9 +113,7 @@ def render_clusters_cards(clusters: list):
                             if isinstance(url_data, dict)
                             else url
                         )
-                        display_title = (
-                            f"{title[:50]}..." if len(title) > 50 else title
-                        )
+                        display_title = f"{title[:50]}..." if len(title) > 50 else title
                         st.write(f"- {display_title} ({url})")
 
                 # Subclusters

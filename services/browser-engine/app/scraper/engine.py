@@ -14,7 +14,6 @@ from playwright.async_api import async_playwright
 
 from services.url_safety import resolve_scrape_targets, validate_scrape_url
 
-
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 REQUEST_HEADERS_TO_DROP = {
     "connection",
@@ -73,8 +72,7 @@ async def _safe_httpx_request(
         if response.status_code not in REDIRECT_STATUS_CODES or not location:
             return response
         if response.status_code == 303 or (
-            response.status_code in {301, 302}
-            and current_method not in {"GET", "HEAD"}
+            response.status_code in {301, 302} and current_method not in {"GET", "HEAD"}
         ):
             current_method = "GET"
             current_kwargs = {
