@@ -721,8 +721,9 @@ class SessionManager:
     @staticmethod
     def _fts_query(query: str) -> str:
         """Convert user text into a safe FTS query."""
-        terms = re.findall(r"[\w.-]+", query or "")
-        return " ".join(term for term in terms if term.strip())
+        terms = re.findall(r"\w+", query or "")
+        escaped_terms = [f'"{term}"' for term in terms if term.strip()]
+        return " ".join(escaped_terms)
 
     @staticmethod
     def _domain_for_url(url: str) -> str:

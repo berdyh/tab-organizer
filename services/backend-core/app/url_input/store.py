@@ -119,17 +119,21 @@ class URLStore:
         Returns:
             Tuple of (added_count, duplicate_count, new_records)
         """
+        normalized_urls = [(url, self.normalize(url)) for url in urls]
         added = 0
         duplicates = 0
         new_records = []
 
-        for url in urls:
-            is_new, record = self.add(url)
-            if is_new:
-                added += 1
-                new_records.append(record)
-            else:
+        for url, normalized in normalized_urls:
+            if normalized in self._urls:
                 duplicates += 1
+                continue
+
+            record = URLRecord(original=url, normalized=normalized)
+            self._urls[normalized] = record
+            self._original_to_normalized[url] = normalized
+            added += 1
+            new_records.append(record)
 
         return added, duplicates, new_records
 

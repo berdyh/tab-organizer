@@ -102,6 +102,32 @@ def test_keyword_index_searches_persisted_tab_content(tmp_path):
     assert results[0]["score"] > 0
 
 
+def test_keyword_search_escapes_fts_punctuation(tmp_path):
+    db_path = tmp_path / "backend.sqlite3"
+    manager = SessionManager(db_path=str(db_path))
+    session = manager.create_session("Keyword Punctuation")
+    manager.add_urls_to_session(session.id, ["https://example.com/research"])
+    manager.update_url_status(
+        session.id,
+        "https://example.com/research",
+        "scraped",
+        metadata={
+            "title": "Remote clustering notes",
+            "content": "remote-clustering docs are published on example.com",
+        },
+    )
+
+    results = manager.search_indexed_tabs(
+        session.id,
+        "remote-clustering example.com",
+        limit=5,
+    )
+
+    assert [result["url"] for result in results] == [
+        "https://example.com/research"
+    ]
+
+
 class CapturingBackgroundTasks:
     def __init__(self):
         self.calls = []

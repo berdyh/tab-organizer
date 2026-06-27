@@ -161,6 +161,28 @@ def test_browser_engine_rejects_unsafe_scrape_urls(url):
     assert exc_info.value.status_code == 400
 
 
+@pytest.mark.asyncio
+async def test_safe_httpx_get_rejects_unsafe_redirect_target():
+    from services.browser_engine.app.scraper import engine
+
+    calls = []
+
+    class RedirectingClient:
+        async def get(self, url, follow_redirects=False, **_kwargs):
+            calls.append({"url": url, "follow_redirects": follow_redirects})
+            request = httpx.Request("GET", url)
+            return httpx.Response(
+                302,
+                headers={"location": "http://127.0.0.1/private"},
+                request=request,
+            )
+
+    with pytest.raises(ValueError, match="private network"):
+        await engine._safe_httpx_get(RedirectingClient(), "https://example.com")
+
+    assert calls == [{"url": "https://example.com", "follow_redirects": False}]
+
+
 class FakeScraper:
     def __init__(self, results):
         self.results = results

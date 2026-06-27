@@ -15,6 +15,34 @@ from playwright.async_api import async_playwright
 from services.url_safety import validate_scrape_url
 
 
+REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+
+
+async def _safe_httpx_get(
+    client: httpx.AsyncClient,
+    url: str,
+    **kwargs,
+) -> httpx.Response:
+    """Follow redirects only after each target passes scrape URL validation."""
+    current_url = validate_scrape_url(url)
+    for _ in range(10):
+        response = await client.get(current_url, follow_redirects=False, **kwargs)
+        location = response.headers.get("location")
+        if response.status_code not in REDIRECT_STATUS_CODES or not location:
+            return response
+        current_url = validate_scrape_url(urljoin(str(response.url), location))
+    raise httpx.TooManyRedirects("Exceeded safe redirect limit")
+
+
+async def _route_only_safe_scrape_urls(route, request) -> None:
+    try:
+        validate_scrape_url(request.url)
+    except ValueError:
+        await route.abort()
+        return
+    await route.continue_()
+
+
 @dataclass
 class ScrapeResult:
     """Result of scraping a URL."""
@@ -176,10 +204,10 @@ class RobotsChecker:
         """Fetch and parse robots.txt."""
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(
+                response = await _safe_httpx_get(
+                    client,
                     f"{domain}/robots.txt",
                     timeout=10.0,
-                    follow_redirects=True,
                 )
                 if response.status_code == 200:
                     self._cache[domain] = self._parse_robots(response.text)
@@ -323,11 +351,9 @@ class ScraperEngine:
     ) -> ScrapeResult:
         """Scrape URL using httpx."""
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=self.timeout,
-            ) as client:
-                response = await client.get(
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await _safe_httpx_get(
+                    client,
                     url,
                     headers={"User-Agent": self.USER_AGENT},
                 )
@@ -417,6 +443,7 @@ class ScraperEngine:
 
             try:
                 await page.set_extra_http_headers({"User-Agent": self.USER_AGENT})
+                await page.route("**/*", _route_only_safe_scrape_urls)
 
                 response = await page.goto(url, timeout=self.timeout * 1000)
 
@@ -521,11 +548,11 @@ class ScraperEngine:
             )
 
             async with httpx.AsyncClient(
-                follow_redirects=True,
                 timeout=self.timeout,
                 auth=auth,
             ) as client:
-                response = await client.get(
+                response = await _safe_httpx_get(
+                    client,
                     url,
                     headers={"User-Agent": self.USER_AGENT},
                 )
@@ -562,11 +589,11 @@ class ScraperEngine:
             cookies = credentials.get("cookies", {})
 
             async with httpx.AsyncClient(
-                follow_redirects=True,
                 timeout=self.timeout,
                 cookies=cookies,
             ) as client:
-                response = await client.get(
+                response = await _safe_httpx_get(
+                    client,
                     url,
                     headers={"User-Agent": self.USER_AGENT},
                 )
@@ -606,6 +633,7 @@ class ScraperEngine:
 
             try:
                 login_url = credentials.get("login_url", url)
+                await page.route("**/*", _route_only_safe_scrape_urls)
                 await page.goto(login_url, timeout=self.timeout * 1000)
 
                 # Fill form fields

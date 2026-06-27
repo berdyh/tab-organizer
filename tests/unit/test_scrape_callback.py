@@ -4,6 +4,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
+from services import url_safety
 from services.backend_core.app.api.routes import (
     ClusterRequest,
     ScrapeRequest,
@@ -77,6 +78,27 @@ def test_url_store_rejects_unsafe_scrape_urls(url):
 
     with pytest.raises(ValueError):
         store.add(url)
+
+
+def test_url_store_rejects_hostname_resolving_to_private_address(monkeypatch):
+    monkeypatch.setattr(
+        url_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                url_safety.socket.AF_INET,
+                url_safety.socket.SOCK_STREAM,
+                6,
+                "",
+                ("127.0.0.1", 0),
+            )
+        ],
+    )
+
+    store = URLStore()
+
+    with pytest.raises(ValueError, match="private network"):
+        store.add("https://public-looking.test/path")
 
 
 def test_backend_add_urls_reports_unsafe_scrape_url_as_bad_request():

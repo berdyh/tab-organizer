@@ -2,6 +2,7 @@
 
 import ipaddress
 import os
+import socket
 from urllib.parse import ParseResult, urlparse, urlunparse
 
 
@@ -68,8 +69,29 @@ def _reject_private_host(host: str) -> None:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
+        _reject_resolved_private_addresses(host)
         return
 
+    _reject_private_address(address)
+
+
+def _reject_resolved_private_addresses(host: str) -> None:
+    try:
+        addrinfos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return
+
+    for raw_address in {addrinfo[4][0] for addrinfo in addrinfos}:
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError:
+            continue
+        _reject_private_address(address)
+
+
+def _reject_private_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> None:
     if (
         address.is_private
         or address.is_loopback
