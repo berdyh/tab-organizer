@@ -183,9 +183,10 @@ async def test_safe_httpx_get_connects_to_vetted_ip_with_host_and_sni(monkeypatc
     calls = []
 
     class CapturingClient:
-        async def get(self, url, follow_redirects=False, **_kwargs):
+        async def request(self, method, url, follow_redirects=False, **_kwargs):
             calls.append(
                 {
+                    "method": method,
                     "url": url,
                     "follow_redirects": follow_redirects,
                     "headers": _kwargs.get("headers"),
@@ -203,6 +204,7 @@ async def test_safe_httpx_get_connects_to_vetted_ip_with_host_and_sni(monkeypatc
 
     assert calls == [
         {
+            "method": "GET",
             "url": "https://93.184.216.34/page?q=1",
             "follow_redirects": False,
             "headers": {
@@ -234,8 +236,10 @@ async def test_safe_httpx_get_rejects_unsafe_redirect_target(monkeypatch):
     calls = []
 
     class RedirectingClient:
-        async def get(self, url, follow_redirects=False, **_kwargs):
-            calls.append({"url": url, "follow_redirects": follow_redirects})
+        async def request(self, method, url, follow_redirects=False, **_kwargs):
+            calls.append(
+                {"method": method, "url": url, "follow_redirects": follow_redirects}
+            )
             request = httpx.Request("GET", url)
             return httpx.Response(
                 302,
@@ -249,13 +253,17 @@ async def test_safe_httpx_get_rejects_unsafe_redirect_target(monkeypatch):
             "https://public-looking.test/path",
         )
 
-    assert calls == [{"url": "https://93.184.216.34/path", "follow_redirects": False}]
+    assert calls == [
+        {"method": "GET", "url": "https://93.184.216.34/path", "follow_redirects": False}
+    ]
 
 
 @pytest.mark.asyncio
-async def test_browser_mode_rejects_hostname_without_private_network_override(
+async def test_safe_browser_route_fetches_public_hostname_through_safe_httpx(
     monkeypatch,
 ):
+    from services.browser_engine.app.scraper import engine
+
     monkeypatch.setattr(
         url_safety.socket,
         "getaddrinfo",
@@ -270,20 +278,79 @@ async def test_browser_mode_rejects_hostname_without_private_network_override(
         ],
     )
     monkeypatch.delenv("SCRAPE_ALLOW_PRIVATE_NETWORKS", raising=False)
-    scraper = ScraperEngine(respect_robots=False)
+    calls = []
 
-    async def fail_browser_launch():
-        raise AssertionError("browser should not launch")
+    class CapturingAsyncClient:
+        def __init__(self, **_kwargs):
+            return None
 
-    scraper._get_browser = fail_browser_launch
+        async def __aenter__(self):
+            return self
 
-    result = await scraper.scrape_url(
-        "https://public-looking.test/path",
-        use_browser=True,
-    )
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
 
-    assert result.status == "failed"
-    assert "IP-literal URL" in result.error
+        async def request(self, method, url, follow_redirects=False, **_kwargs):
+            calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "follow_redirects": follow_redirects,
+                    "headers": _kwargs.get("headers"),
+                    "extensions": _kwargs.get("extensions"),
+                }
+            )
+            request = httpx.Request(method, url)
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "text/html",
+                    "content-length": "999",
+                },
+                content=b"<html><title>Safe</title></html>",
+                request=request,
+            )
+
+    class CapturingRoute:
+        def __init__(self):
+            self.fulfilled = None
+            self.aborted = False
+
+        async def fulfill(self, **kwargs):
+            self.fulfilled = kwargs
+
+        async def abort(self):
+            self.aborted = True
+
+    class BrowserRequest:
+        method = "GET"
+        url = "https://public-looking.test/page"
+        headers = {"user-agent": "TabOrganizer", "host": "public-looking.test"}
+        post_data_buffer = None
+
+    monkeypatch.setattr(engine.httpx, "AsyncClient", CapturingAsyncClient)
+    route = CapturingRoute()
+
+    await engine._safe_browser_route_handler(timeout=5)(route, BrowserRequest())
+
+    assert route.aborted is False
+    assert route.fulfilled == {
+        "status": 200,
+        "headers": {"content-type": "text/html"},
+        "body": b"<html><title>Safe</title></html>",
+    }
+    assert calls == [
+        {
+            "method": "GET",
+            "url": "https://93.184.216.34/page",
+            "follow_redirects": False,
+            "headers": {
+                "user-agent": "TabOrganizer",
+                "Host": "public-looking.test",
+            },
+            "extensions": {"sni_hostname": "public-looking.test"},
+        }
+    ]
 
 
 class FakeScraper:

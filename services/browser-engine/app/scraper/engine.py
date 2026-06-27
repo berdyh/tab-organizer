@@ -12,15 +12,34 @@ from playwright.async_api import Browser, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 
-from services.url_safety import (
-    private_scrape_urls_allowed,
-    resolve_scrape_targets,
-    scrape_url_host_is_ip_literal,
-    validate_scrape_url,
-)
+from services.url_safety import resolve_scrape_targets, validate_scrape_url
 
 
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+REQUEST_HEADERS_TO_DROP = {
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+RESPONSE_HEADERS_TO_DROP = {
+    "connection",
+    "content-encoding",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
 
 
 async def _safe_httpx_get(
@@ -28,27 +47,54 @@ async def _safe_httpx_get(
     url: str,
     **kwargs,
 ) -> httpx.Response:
+    return await _safe_httpx_request(client, "GET", url, **kwargs)
+
+
+async def _safe_httpx_request(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    **kwargs,
+) -> httpx.Response:
     """Follow redirects while connecting only to vetted network targets."""
     current_url = validate_scrape_url(url)
+    current_method = method.upper()
+    current_kwargs = dict(kwargs)
+
     for _ in range(10):
         targets = resolve_scrape_targets(current_url)
-        response = await _get_first_safe_target(client, targets, **kwargs)
+        response = await _request_first_safe_target(
+            client,
+            current_method,
+            targets,
+            **current_kwargs,
+        )
         location = response.headers.get("location")
         if response.status_code not in REDIRECT_STATUS_CODES or not location:
             return response
+        if response.status_code == 303 or (
+            response.status_code in {301, 302}
+            and current_method not in {"GET", "HEAD"}
+        ):
+            current_method = "GET"
+            current_kwargs = {
+                key: value for key, value in current_kwargs.items() if key != "content"
+            }
         current_url = validate_scrape_url(urljoin(current_url, location))
     raise httpx.TooManyRedirects("Exceeded safe redirect limit")
 
 
-async def _get_first_safe_target(
+async def _request_first_safe_target(
     client: httpx.AsyncClient,
+    method: str,
     targets,
     **kwargs,
 ) -> httpx.Response:
     last_error = None
     for target in targets:
         try:
-            return await client.get(
+            return await client.request(
+                method,
                 target.request_url,
                 follow_redirects=False,
                 **_request_kwargs_for_target(target, kwargs),
@@ -76,20 +122,46 @@ def _request_kwargs_for_target(target, kwargs):
     return request_kwargs
 
 
-def _browser_hostname_allowed(url: str) -> bool:
-    return private_scrape_urls_allowed() or scrape_url_host_is_ip_literal(url)
+def _safe_browser_route_handler(timeout: int):
+    async def handler(route, request) -> None:
+        try:
+            headers = _headers_for_safe_browser_fetch(request.headers)
+            content = None
+            if request.method.upper() not in {"GET", "HEAD"}:
+                content = request.post_data_buffer
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await _safe_httpx_request(
+                    client,
+                    request.method,
+                    request.url,
+                    headers=headers,
+                    content=content,
+                )
+            await route.fulfill(
+                status=response.status_code,
+                headers=_headers_for_browser_fulfill(response.headers),
+                body=b"" if request.method.upper() == "HEAD" else response.content,
+            )
+        except Exception:
+            await route.abort()
+
+    return handler
 
 
-async def _route_only_safe_scrape_urls(route, request) -> None:
-    try:
-        validate_scrape_url(request.url)
-    except ValueError:
-        await route.abort()
-        return
-    if not _browser_hostname_allowed(request.url):
-        await route.abort()
-        return
-    await route.continue_()
+def _headers_for_safe_browser_fetch(headers):
+    return {
+        key: value
+        for key, value in dict(headers).items()
+        if key.lower() not in REQUEST_HEADERS_TO_DROP
+    }
+
+
+def _headers_for_browser_fulfill(headers):
+    return {
+        key: value
+        for key, value in dict(headers).items()
+        if key.lower() not in RESPONSE_HEADERS_TO_DROP
+    }
 
 
 @dataclass
@@ -487,17 +559,12 @@ class ScraperEngine:
     ) -> ScrapeResult:
         """Scrape URL using Playwright browser."""
         try:
-            if not _browser_hostname_allowed(url):
-                raise ValueError(
-                    "Browser scraping without private network override requires "
-                    "an IP-literal URL"
-                )
             browser = await self._get_browser()
             page = await browser.new_page()
 
             try:
                 await page.set_extra_http_headers({"User-Agent": self.USER_AGENT})
-                await page.route("**/*", _route_only_safe_scrape_urls)
+                await page.route("**/*", _safe_browser_route_handler(self.timeout))
 
                 response = await page.goto(url, timeout=self.timeout * 1000)
 
@@ -682,18 +749,12 @@ class ScraperEngine:
     ) -> ScrapeResult:
         """Scrape with form-based authentication using browser."""
         try:
-            login_url = credentials.get("login_url", url)
-            for browser_url in {url, login_url}:
-                if not _browser_hostname_allowed(browser_url):
-                    raise ValueError(
-                        "Browser scraping without private network override requires "
-                        "an IP-literal URL"
-                    )
             browser = await self._get_browser()
             page = await browser.new_page()
 
             try:
-                await page.route("**/*", _route_only_safe_scrape_urls)
+                login_url = credentials.get("login_url", url)
+                await page.route("**/*", _safe_browser_route_handler(self.timeout))
                 await page.goto(login_url, timeout=self.timeout * 1000)
 
                 # Fill form fields
