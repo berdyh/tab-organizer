@@ -319,6 +319,39 @@ def test_lancedb_dimension_mismatch_requires_reindex_without_dropping(tmp_path):
     assert rows[0]["id"] == "https://example.com/old-dim"
 
 
+def test_legacy_lancedb_read_failure_does_not_drop_table(tmp_path):
+    class FakeSchema:
+        def field(self, _name):
+            raise KeyError("embedding")
+
+    class FailingTable:
+        schema = FakeSchema()
+
+        def to_pandas(self):
+            raise RuntimeError("storage read failed")
+
+    class FakeDB:
+        def __init__(self):
+            self.dropped = False
+
+        def table_names(self):
+            return [RAGChatbot.TABLE_NAME]
+
+        def open_table(self, _name):
+            return FailingTable()
+
+        def drop_table(self, _name):
+            self.dropped = True
+
+    fake_db = FakeDB()
+    runtime = RAGChatbot(db_uri=str(tmp_path / "read-failure"), embedding_dim=4)
+    runtime._db = fake_db
+
+    with pytest.raises(RuntimeError, match="Could not read existing LanceDB rows"):
+        _ = runtime.table
+    assert fake_db.dropped is False
+
+
 @pytest.mark.asyncio
 async def test_index_documents_rejects_wrong_embedding_dimension(tmp_path):
     runtime = RAGChatbot(db_uri=str(tmp_path / "wrong-dim"), embedding_dim=4)

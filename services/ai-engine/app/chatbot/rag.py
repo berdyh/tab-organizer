@@ -160,8 +160,11 @@ class RAGChatbot:
         """Read rows from a legacy table before rebuilding its vector schema."""
         try:
             df = table.to_pandas()
-        except Exception:
-            return []
+        except Exception as error:
+            raise RuntimeError(
+                "Could not read existing LanceDB rows for schema migration; "
+                "leaving the table unchanged"
+            ) from error
 
         if df.empty:
             return []

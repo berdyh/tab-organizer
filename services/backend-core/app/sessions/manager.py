@@ -610,7 +610,7 @@ class SessionManager:
 
     def search_indexed_tabs(
         self,
-        session_id: str,
+        session_id: Optional[str],
         query: str,
         limit: int = 10,
     ) -> list[dict]:
@@ -621,22 +621,37 @@ class SessionManager:
         limit = min(max(int(limit), 1), 50)
 
         if not self._db_path:
-            return self._search_indexed_tabs_in_memory(session_id, cleaned_query, limit)
+            return self._search_indexed_tabs_in_memory(session_id, query, limit)
 
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT url, title, content, domain, bm25(tab_search_fts) AS rank
-                FROM tab_search_fts
-                WHERE session_id = ? AND tab_search_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (session_id, cleaned_query, limit),
-            ).fetchall()
+            if session_id:
+                rows = conn.execute(
+                    """
+                    SELECT session_id, url, title, content, domain,
+                           bm25(tab_search_fts) AS rank
+                    FROM tab_search_fts
+                    WHERE session_id = ? AND tab_search_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (session_id, cleaned_query, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT session_id, url, title, content, domain,
+                           bm25(tab_search_fts) AS rank
+                    FROM tab_search_fts
+                    WHERE tab_search_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (cleaned_query, limit),
+                ).fetchall()
 
         return [
             {
+                "session_id": row["session_id"],
                 "url": row["url"],
                 "title": row["title"],
                 "content": row["content"],
@@ -649,34 +664,42 @@ class SessionManager:
 
     def _search_indexed_tabs_in_memory(
         self,
-        session_id: str,
+        session_id: Optional[str],
         query: str,
         limit: int,
     ) -> list[dict]:
-        session = self._sessions.get(session_id)
-        if not session:
-            return []
-        terms = [term.lower() for term in query.split()]
+        if session_id:
+            session = self._sessions.get(session_id)
+            sessions = [session] if session else []
+        else:
+            sessions = list(self._sessions.values())
+        terms = [term.lower() for term in re.findall(r"\w+", query or "")]
         results = []
-        for record in session.url_store.get_all():
-            haystack = " ".join(
-                [
-                    record.original,
-                    str(record.metadata.get("title") or ""),
-                    str(record.metadata.get("content") or ""),
-                ]
-            ).lower()
-            if all(term in haystack for term in terms):
-                results.append(
-                    {
-                        "url": record.original,
-                        "title": str(record.metadata.get("title") or record.original),
-                        "content": str(record.metadata.get("content") or ""),
-                        "domain": self._domain_for_url(record.normalized),
-                        "score": 1.0 / float(len(results) + 1),
-                        "source": "keyword",
-                    }
-                )
+        for session in sessions:
+            for record in session.url_store.get_all():
+                haystack = " ".join(
+                    [
+                        record.original,
+                        str(record.metadata.get("title") or ""),
+                        str(record.metadata.get("content") or ""),
+                    ]
+                ).lower()
+                if all(term in haystack for term in terms):
+                    results.append(
+                        {
+                            "session_id": session.id,
+                            "url": record.original,
+                            "title": str(
+                                record.metadata.get("title") or record.original
+                            ),
+                            "content": str(record.metadata.get("content") or ""),
+                            "domain": self._domain_for_url(record.normalized),
+                            "score": 1.0 / float(len(results) + 1),
+                            "source": "keyword",
+                        }
+                    )
+                if len(results) >= limit:
+                    break
             if len(results) >= limit:
                 break
         return results

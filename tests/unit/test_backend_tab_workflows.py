@@ -128,6 +128,66 @@ def test_keyword_search_escapes_fts_punctuation(tmp_path):
     ]
 
 
+def test_keyword_search_supports_global_sessionless_queries(tmp_path):
+    db_path = tmp_path / "backend.sqlite3"
+    manager = SessionManager(db_path=str(db_path))
+    first = manager.create_session("First")
+    second = manager.create_session("Second")
+    manager.add_urls_to_session(first.id, ["https://example.com/first"])
+    manager.add_urls_to_session(second.id, ["https://example.com/second"])
+    manager.update_url_status(
+        first.id,
+        "https://example.com/first",
+        "scraped",
+        metadata={"title": "First", "content": "global keyword needle"},
+    )
+    manager.update_url_status(
+        second.id,
+        "https://example.com/second",
+        "scraped",
+        metadata={"title": "Second", "content": "global keyword needle"},
+    )
+
+    results = manager.search_indexed_tabs(None, "global needle", limit=10)
+
+    assert {result["session_id"] for result in results} == {first.id, second.id}
+    assert {result["url"] for result in results} == {
+        "https://example.com/first",
+        "https://example.com/second",
+    }
+
+
+def test_keyword_search_in_memory_preserves_session_scope():
+    manager = SessionManager()
+    first = manager.create_session("First")
+    second = manager.create_session("Second")
+    manager.add_urls_to_session(first.id, ["https://example.com/first"])
+    manager.add_urls_to_session(second.id, ["https://example.com/second"])
+    manager.update_url_status(
+        first.id,
+        "https://example.com/first",
+        "scraped",
+        metadata={"title": "First", "content": "memory keyword needle"},
+    )
+    manager.update_url_status(
+        second.id,
+        "https://example.com/second",
+        "scraped",
+        metadata={"title": "Second", "content": "memory keyword needle"},
+    )
+
+    scoped = manager.search_indexed_tabs(first.id, "memory needle", limit=10)
+    global_results = manager.search_indexed_tabs(None, "memory needle", limit=10)
+    missing = manager.search_indexed_tabs("missing-session", "memory needle", limit=10)
+
+    assert [result["url"] for result in scoped] == ["https://example.com/first"]
+    assert {result["url"] for result in global_results} == {
+        "https://example.com/first",
+        "https://example.com/second",
+    }
+    assert missing == []
+
+
 class CapturingBackgroundTasks:
     def __init__(self):
         self.calls = []
@@ -217,3 +277,31 @@ async def test_backend_search_endpoint_merges_keyword_and_semantic_results(
         "https://example.com/local",
         "https://example.com/semantic",
     }
+
+
+@pytest.mark.asyncio
+async def test_backend_keyword_search_endpoint_supports_global_query(
+    tmp_path,
+    monkeypatch,
+):
+    manager = SessionManager(db_path=str(tmp_path / "backend.sqlite3"))
+    session = manager.create_session("Global Search Endpoint")
+    manager.add_urls_to_session(session.id, ["https://example.com/global"])
+    manager.update_url_status(
+        session.id,
+        "https://example.com/global",
+        "scraped",
+        metadata={"title": "Global Result", "content": "global browser tabs"},
+    )
+    monkeypatch.setattr(routes, "session_manager", manager)
+    monkeypatch.setenv("BACKEND_AGENT_API_TOKEN", "agent-secret")
+
+    response = await routes.search_tabs(
+        routes.SearchRequest(query="global browser", mode="keyword", top_k=5),
+        _auth=routes._require_backend_agent_auth("Bearer agent-secret"),
+    )
+
+    assert response["mode"] == "keyword"
+    assert response["count"] == 1
+    assert response["results"][0]["session_id"] == session.id
+    assert response["results"][0]["url"] == "https://example.com/global"

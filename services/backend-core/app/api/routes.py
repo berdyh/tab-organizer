@@ -875,7 +875,7 @@ async def search_tabs(
     keyword_results: list[dict[str, Any]] = []
     semantic_results: list[dict[str, Any]] = []
 
-    if mode in {"hybrid", "keyword"} and session_id:
+    if mode in {"hybrid", "keyword"}:
         keyword_results = session_manager.search_indexed_tabs(session_id, query, limit)
     if mode in {"hybrid", "semantic"}:
         semantic_results = await _semantic_search(session_id, query, limit)
