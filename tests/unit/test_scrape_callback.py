@@ -8,18 +8,19 @@ from services import url_safety
 from services.backend_core.app.api.routes import (
     ClusterRequest,
     ScrapeRequest,
+    URLInput,
     _ai_engine_headers,
     _browser_engine_headers,
     _require_backend_callback_auth,
+    add_urls,
     get_pending_auth,
     get_scrape_status,
-    add_urls,
     scrape_complete_callback,
     session_manager,
     start_clustering,
+    start_scraping,
     submit_credentials,
     trigger_scraping,
-    URLInput,
 )
 from services.backend_core.app.url_input.store import URLStore
 
@@ -239,6 +240,44 @@ async def test_backend_service_urls_use_runtime_env(monkeypatch):
             ("POST", "http://browser.test/auth/credentials"),
         ]
         assert calls[0][2]["use_browser"] is True
+    finally:
+        session_manager.delete_session(session.id)
+
+
+@pytest.mark.asyncio
+async def test_start_scraping_reports_browser_engine_dispatch_failure(monkeypatch):
+    session = session_manager.create_session("Dispatch Failure Regression")
+    session_manager.add_urls_to_session(session.id, ["https://example.com"])
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def post(self, url, **_kwargs):
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                401,
+                request=request,
+                json={"detail": "Not authenticated"},
+            )
+
+    monkeypatch.setattr(
+        "services.backend_core.app.api.routes.httpx.AsyncClient",
+        lambda: FakeClient(),
+    )
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await start_scraping(ScrapeRequest(session_id=session.id), None)
+
+        assert exc_info.value.status_code == 502
+        assert "Browser Engine scrape dispatch failed" in exc_info.value.detail
+        record = session.url_store.get("https://example.com")
+        assert record.status == "failed"
+        assert "dispatch_error" in record.metadata
     finally:
         session_manager.delete_session(session.id)
 

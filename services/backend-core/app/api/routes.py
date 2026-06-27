@@ -586,13 +586,18 @@ async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTas
     if not urls:
         return {"status": "no_urls", "message": "No URLs to scrape"}
 
-    # Trigger browser engine scraping
-    background_tasks.add_task(
-        trigger_scraping,
-        session.id,
-        urls,
-        request.use_browser,
-    )
+    try:
+        await trigger_scraping(session.id, urls, request.use_browser)
+    except Exception as error:
+        detail = f"Browser Engine scrape dispatch failed: {error}"
+        for url in urls:
+            session_manager.update_url_status(
+                session.id,
+                url,
+                "failed",
+                metadata={"dispatch_error": detail},
+            )
+        raise HTTPException(status_code=502, detail=detail) from error
 
     return {"status": "started", "session_id": session.id, "url_count": len(urls)}
 
@@ -603,20 +608,18 @@ async def trigger_scraping(
     use_browser: bool = False,
 ):
     """Background task to trigger browser engine scraping."""
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{_browser_engine_url()}/scrape",
-                json={
-                    "session_id": session_id,
-                    "urls": urls,
-                    "use_browser": use_browser,
-                },
-                headers=_browser_engine_headers(),
-                timeout=30.0,
-            )
-    except Exception as e:
-        print(f"Error triggering scraping: {e}")
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{_browser_engine_url()}/scrape",
+            json={
+                "session_id": session_id,
+                "urls": urls,
+                "use_browser": use_browser,
+            },
+            headers=_browser_engine_headers(),
+            timeout=30.0,
+        )
+        response.raise_for_status()
 
 
 def _job_response(job) -> dict[str, Any]:
