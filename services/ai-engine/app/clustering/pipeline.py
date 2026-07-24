@@ -46,6 +46,8 @@ class TabClusterer:
         umap_n_neighbors: int = 15,
         umap_n_components: int = 5,
         umap_min_dist: float = 0.1,
+        min_cluster_corpus: int = 4,
+        max_subcluster_depth: int = 3,
     ):
         self.min_cluster_size = min_cluster_size
         self.min_samples = min_samples
@@ -53,6 +55,12 @@ class TabClusterer:
         self.umap_n_neighbors = umap_n_neighbors
         self.umap_n_components = umap_n_components
         self.umap_min_dist = umap_min_dist
+        # Below this corpus size, skip UMAP/HDBSCAN entirely (they cannot form
+        # meaningful clusters and UMAP's spectral init 500s on tiny inputs).
+        self.min_cluster_corpus = min_cluster_corpus
+        # Hard bound on recursive sub-clustering depth (belt-and-suspenders
+        # alongside the no-progress guard in cluster()).
+        self.max_subcluster_depth = max_subcluster_depth
         self._llm_client = None
 
     def set_llm_client(self, client) -> None:
@@ -93,9 +101,14 @@ class TabClusterer:
                     else embeddings
                 )
 
+            # UMAP's spectral init runs eigsh with k = n_components + 1 and
+            # requires k < n_samples; bound n_components at n_samples - 2 so it
+            # never raises "Cannot use scipy.linalg.eigh ... with k >= N".
+            n_components = min(self.umap_n_components, max(1, n_samples - 2))
+
             reducer = umap.UMAP(
                 n_neighbors=n_neighbors,
-                n_components=min(self.umap_n_components, n_samples - 1),
+                n_components=n_components,
                 min_dist=self.umap_min_dist,
                 metric="cosine",
                 random_state=42,
@@ -249,7 +262,7 @@ Respond with ONLY the label, nothing else. Examples: "Python Async Programming",
         except Exception:
             return f"Cluster {cluster.id}"
 
-    async def cluster(self, tabs: list[Tab]) -> list[Cluster]:
+    async def cluster(self, tabs: list[Tab], _depth: int = 0) -> list[Cluster]:
         """
         Main clustering pipeline.
 
@@ -258,6 +271,8 @@ Respond with ONLY the label, nothing else. Examples: "Python Async Programming",
         3. Cluster with HDBSCAN
         4. Generate labels with LLM
         5. Optionally sub-cluster large clusters
+
+        `_depth` is internal recursion bookkeeping for sub-clustering.
         """
         if not tabs:
             return []
@@ -276,6 +291,11 @@ Respond with ONLY the label, nothing else. Examples: "Python Async Programming",
                 # Cannot cluster without embeddings
                 return [Cluster(id=0, name="All Tabs", tabs=tabs)]
 
+        # Small-N guard: UMAP/HDBSCAN cannot form meaningful clusters below a
+        # minimum corpus size and UMAP's spectral init 500s on tiny inputs.
+        if len(tabs_with_embeddings) < self.min_cluster_corpus:
+            return [Cluster(id=0, name="All Tabs", tabs=tabs_with_embeddings)]
+
         # Stack embeddings
         embeddings = np.vstack([t.embedding for t in tabs_with_embeddings])
 
@@ -293,10 +313,20 @@ Respond with ONLY the label, nothing else. Examples: "Python Async Programming",
             if cluster.name != "Uncategorized":
                 cluster.name = await self.generate_cluster_label(cluster)
 
-        # Sub-cluster large clusters
-        for cluster in clusters:
-            if len(cluster.tabs) > 10:
-                cluster.subclusters = await self.cluster(cluster.tabs)
+        # Sub-cluster large clusters, bounded by max depth so a non-subdividing
+        # cluster (HDBSCAN keeps returning one group) cannot recurse forever.
+        if _depth < self.max_subcluster_depth:
+            for cluster in clusters:
+                if len(cluster.tabs) <= 10:
+                    continue
+                subclusters = await self.cluster(cluster.tabs, _depth=_depth + 1)
+                # No-progress guard: a single child holding all of the parent's
+                # tabs means this cluster cannot be subdivided; don't nest it.
+                if len(subclusters) == 1 and len(subclusters[0].tabs) == len(
+                    cluster.tabs
+                ):
+                    continue
+                cluster.subclusters = subclusters
 
         return clusters
 
@@ -312,6 +342,11 @@ Respond with ONLY the label, nothing else. Examples: "Python Async Programming",
         # Assign embeddings to tabs
         for tab, emb in zip(tabs, embeddings):
             tab.embedding = emb
+
+        # Small-N guard: mirror cluster()'s behavior so tiny corpora never hit
+        # UMAP's spectral-init 500 and just return a single group.
+        if len(tabs) < self.min_cluster_corpus:
+            return [Cluster(id=0, name="All Tabs", tabs=tabs)]
 
         # Reduce dimensions
         reduced = self.reduce_dimensions(embeddings)

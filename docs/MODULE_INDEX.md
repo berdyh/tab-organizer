@@ -58,3 +58,6 @@ Use the smallest relevant check first:
 | Textual TUI and rofi/fzf quick-pick | isolate-for-later | Ops Tooling | CLI/MCP wrappers are the active agent surface; richer local navigation UIs should stay behind `scripts/` boundaries. |
 | Full MCP SDK server package | replace-with-contract | Ops Tooling | Current contract is Python-callable wrappers plus JSON-lines stdio adapter; promote to SDK server only with MCP validation. |
 | BERTopic topic modeling | isolate-for-later | AI Engine clustering | Current cluster engine remains UMAP + HDBSCAN + LLM labels; add topic modeling behind the clustering submodule. |
+| Throwaway credential-store key | replaced | Browser Engine auth | Fail-closed: OS keyring or `CREDENTIAL_ENCRYPTION_KEY`, else `store()` raises `CredentialStoreError`; never invents a key. Covered by `tests/unit/test_credential_store.py`. |
+| Unbounded cluster recursion | replaced | AI Engine clustering | `cluster()` bounded by `max_subcluster_depth` + no-progress guard. Covered by `tests/unit/test_clustering.py`. |
+| Small-N clustering 500 (WI0 B9) | replaced | AI Engine clustering | UMAP params keep `n_components + 1 < n_samples`; below `min_cluster_corpus` a single "All Tabs" cluster is returned. Covered by `tests/unit/test_clustering.py`. |

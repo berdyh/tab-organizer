@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from services.url_safety import validate_scrape_url
 
 from .auth.detector import AuthDetector
-from .auth.queue import AuthQueue
+from .auth.queue import AuthQueue, CredentialStoreError
 from .scraper.engine import ScraperEngine
 from .tabs.cdp import DEFAULT_CDP_URL, CDPTabHarvester
 
@@ -493,10 +493,14 @@ async def submit_credentials(
     _auth=Depends(_require_browser_engine_auth),
 ):
     """Submit credentials for a domain."""
-    success = await auth_queue.provide_credentials(
-        domain=request.domain,
-        credentials=request.credentials,
-    )
+    try:
+        success = await auth_queue.provide_credentials(
+            domain=request.domain,
+            credentials=request.credentials,
+        )
+    except CredentialStoreError as error:
+        # Fail closed: never accept credentials we cannot encrypt securely.
+        raise HTTPException(status_code=503, detail=error.to_dict())
 
     if not success:
         raise HTTPException(
