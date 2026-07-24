@@ -1,0 +1,10 @@
+{
+  "name": "anthropic_docs_403_challenge",
+  "kind": "challenge",
+  "url": "https://docs.anthropic.com/en/home",
+  "status_code": 403,
+  "headers": {
+    "server": "cloudflare"
+  },
+  "html": "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body><p>Verifying you are human. This may take a few seconds.</p><div class=\"spinner\"></div></body></html>"
+}

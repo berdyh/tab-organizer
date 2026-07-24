@@ -17,6 +17,7 @@ COPY .github/ ./.github/
 COPY Makefile ./Makefile
 COPY docker-compose.yml ./docker-compose.yml
 COPY .env.example ./.env.example
+COPY .gitleaks.toml ./.gitleaks.toml
 COPY tests/ ./tests/
 
 ENV PYTHONPATH=/app

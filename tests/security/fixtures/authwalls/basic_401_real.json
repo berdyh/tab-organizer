@@ -1,0 +1,11 @@
+{
+  "name": "basic_401_real",
+  "kind": "real_auth",
+  "url": "https://api.example.com/private",
+  "status_code": 401,
+  "headers": {
+    "www-authenticate": "Basic realm=\"site\""
+  },
+  "html": "",
+  "expect_auth_type": "basic"
+}

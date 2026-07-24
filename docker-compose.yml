@@ -155,6 +155,7 @@ services:
       - ./Makefile:/app/Makefile:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - ./.env.example:/app/.env.example:ro
+      - ./.gitleaks.toml:/app/.gitleaks.toml:ro
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     networks:

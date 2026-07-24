@@ -1,0 +1,10 @@
+{
+  "name": "perimeterx_denied_challenge",
+  "kind": "challenge",
+  "url": "https://www.example-shop.com/products",
+  "status_code": 403,
+  "headers": {
+    "content-type": "text/html; charset=UTF-8"
+  },
+  "html": "<!DOCTYPE html><html><head><title>Access Denied</title></head><body><h1>Access to this page has been denied</h1><p>Please verify you are a human by completing the action below.</p><div id=\"px-captcha\"></div></body></html>"
+}

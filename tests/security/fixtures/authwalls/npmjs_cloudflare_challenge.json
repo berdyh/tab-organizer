@@ -1,0 +1,12 @@
+{
+  "name": "npmjs_cloudflare_challenge",
+  "kind": "challenge",
+  "url": "https://www.npmjs.com/package/left-pad",
+  "status_code": 403,
+  "headers": {
+    "server": "cloudflare",
+    "cf-mitigated": "challenge",
+    "content-type": "text/html; charset=UTF-8"
+  },
+  "html": "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body><h1>www.npmjs.com</h1><p>Enable JavaScript and cookies to continue</p><form id=\"challenge-form\" action=\"/cdn-cgi/challenge-platform/verify\" method=\"POST\"><input type=\"hidden\" name=\"cf_ch_verify\" value=\"plat\"></form></body></html>"
+}
