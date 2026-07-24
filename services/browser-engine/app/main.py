@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
@@ -11,6 +12,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from config.config_loader import get_ai_config
 from services.observability import (
     RequestIDMiddleware,
     configure_logging,
@@ -29,10 +31,27 @@ from .tabs.cdp import DEFAULT_CDP_URL, CDPTabHarvester
 
 configure_logging("browser-engine")
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Refuse to start on malformed shared AI config (finding 27).
+
+    Browser Engine does not read this config itself, but it ships the same
+    ai_models.yaml the AI Engine depends on; failing fast here surfaces a
+    broken provider catalog before any request is served, not on first use.
+    """
+    errors = get_ai_config().validate_config()
+    if errors:
+        log_event("config.invalid", level=logging.CRITICAL, errors=errors)
+        raise RuntimeError("AI model configuration is invalid: " + "; ".join(errors))
+    yield
+
+
 app = FastAPI(
     title="Tab Organizer - Browser Engine",
     description="Web scraping and authentication handling",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Bind X-Request-ID for every request before other middleware runs.

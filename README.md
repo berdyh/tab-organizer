@@ -71,12 +71,12 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 
 2. **Configure AI provider** (edit `.env`):
    ```bash
-   # OpenRouter (docker-compose default — single key for many models)
+   # OpenRouter (docker-compose AND .env.example default — single key for many models)
    AI_PROVIDER=openrouter
    EMBEDDING_PROVIDER=openrouter
    OPENROUTER_API_KEY=<openrouter-api-key>
 
-   # Local-only via Ollama (.env.example default)
+   # Local-only via Ollama (opt-in; pull models first with `./scripts/cli.py init --models`)
    AI_PROVIDER=ollama
    EMBEDDING_PROVIDER=ollama
 

@@ -14,10 +14,14 @@ def test_streamlit_ui_text_has_no_sticker_characters():
 
     offenders = []
     for path in paths:
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1
+        ):
             stickers = sorted({char for char in line if _is_sticker(char)})
             if stickers:
-                offenders.append(f"{path.relative_to(root)}:{line_number}: {''.join(stickers)}")
+                offenders.append(
+                    f"{path.relative_to(root)}:{line_number}: {''.join(stickers)}"
+                )
 
     assert not offenders, "Sticker characters found in UI text:\n" + "\n".join(
         offenders
@@ -107,6 +111,115 @@ def test_api_client_start_scraping_sends_browser_mode(monkeypatch):
         "session_id": "session-1",
         "use_browser": True,
     }
+
+
+def test_api_client_chat_routes_through_backend_not_ai_engine(monkeypatch):
+    """WI0 B7: chat must go through Backend Core, never straight to ai-engine."""
+    from services.web_ui.src.api.client import SyncAPIClient
+
+    calls = []
+
+    def fake_request(method, url, timeout=None, **kwargs):
+        calls.append({"method": method, "url": url, "kwargs": kwargs})
+
+        class Response:
+            content = b'{"answer": "ok"}'
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"answer": "ok"}
+
+        return Response()
+
+    monkeypatch.setattr("services.web_ui.src.api.client.requests.request", fake_request)
+
+    client = SyncAPIClient()
+    result = client.chat("what changed?", session_id="session-1")
+
+    assert calls[0]["url"] == f"{client.backend_url}/chat"
+    assert client.ai_url not in calls[0]["url"]
+    assert result == {"answer": "ok"}
+
+
+def test_api_client_scrape_status_reports_unavailable_on_backend_http_error(
+    monkeypatch,
+):
+    """Finding 28: never fabricate not_started/completed on a failed status call."""
+    import requests
+
+    from services.web_ui.src.api.client import SyncAPIClient
+
+    def fake_request(method, url, timeout=None, **kwargs):
+        response = requests.Response()
+        response.status_code = 404
+        raise requests.HTTPError(response=response)
+
+    monkeypatch.setattr("services.web_ui.src.api.client.requests.request", fake_request)
+
+    client = SyncAPIClient()
+    status = client.get_scrape_status("session-1")
+
+    assert status["status"] == "unknown"
+    assert "status unavailable" in status["detail"]
+    assert "total" not in status
+    assert "completed" not in status
+
+
+def test_api_client_scrape_status_reports_unavailable_when_backend_unreachable(
+    monkeypatch,
+):
+    """Connection failures must not propagate uncaught nor be fabricated."""
+    import requests
+
+    from services.web_ui.src.api.client import SyncAPIClient
+
+    def fake_request(method, url, timeout=None, **kwargs):
+        raise requests.ConnectionError("connection refused")
+
+    monkeypatch.setattr("services.web_ui.src.api.client.requests.request", fake_request)
+
+    client = SyncAPIClient()
+    status = client.get_scrape_status("session-1")
+
+    assert status["status"] == "unknown"
+    assert "backend unreachable" in status["detail"]
+
+
+def test_api_client_check_health_passes_through_status_strings(monkeypatch):
+    """Finding 33: health aggregation must not collapse to booleans only."""
+    import requests
+
+    from services.web_ui.src.api.client import SyncAPIClient
+
+    def fake_request(method, url, timeout=None, headers=None, **kwargs):
+        class Response:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+                self.content = b"1"
+
+            def json(self):
+                return self._payload
+
+        if "backend-core" in url:
+            return Response(200, {"status": "healthy"})
+        if "ai-engine" in url:
+            return Response(200, {"status": "degraded", "runtime": {"ready": False}})
+        raise requests.ConnectionError("no route to host")
+
+    monkeypatch.setattr("services.web_ui.src.api.client.requests.request", fake_request)
+
+    client = SyncAPIClient()
+    health = client.check_health()
+
+    assert health["backend"] is True
+    assert health["backend_status"] == "healthy"
+    assert health["ai_engine"] is False
+    assert health["ai_engine_status"] == "degraded"
+    assert health["browser_engine"] is False
+    assert health["browser_engine_status"] == "unreachable"
 
 
 def test_scraping_page_renders_downstream_error_details_for_callbacks(monkeypatch):

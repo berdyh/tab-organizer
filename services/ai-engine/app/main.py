@@ -4,12 +4,14 @@ import asyncio
 import hmac
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from config.config_loader import get_ai_config
 from services.observability import RequestIDMiddleware, configure_logging, log_event
 
 from .chatbot.rag import Document, RAGChatbot
@@ -17,23 +19,6 @@ from .clustering.pipeline import Tab, TabClusterer
 from .core.llm_client import LLMClient
 
 configure_logging("ai-engine")
-
-app = FastAPI(
-    title="Tab Organizer - AI Engine",
-    description="AI services for embeddings, clustering, and chat",
-    version="1.0.0",
-)
-
-# Bind X-Request-ID for every request before other middleware runs.
-app.add_middleware(RequestIDMiddleware, service="ai-engine")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Global instances
 llm_client = LLMClient()
@@ -46,6 +31,53 @@ chatbot = RAGChatbot(
 chatbot.set_llm_client(llm_client)
 provider_state_lock = asyncio.Lock()
 UNAUTHENTICATED_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Fail fast on malformed provider config; log (never crash) an unusable one.
+
+    Schema errors (finding 27) mean ai_models.yaml itself is broken — refuse to
+    start. An unusable *selected* provider (WI0 B1, e.g. openrouter with no API
+    key) is a runtime/credentials fact, not a schema error: log it structurally
+    and let `/health` report it as degraded so the service stays diagnosable
+    instead of going dark.
+    """
+    errors = get_ai_config().validate_config()
+    if errors:
+        log_event("config.invalid", level=logging.CRITICAL, errors=errors)
+        raise RuntimeError("AI model configuration is invalid: " + "; ".join(errors))
+
+    runtime = llm_client.get_runtime_health()
+    if not runtime["ready"]:
+        log_event(
+            "provider.unusable_at_startup",
+            level=logging.ERROR,
+            llm_provider=llm_client.llm_config.provider,
+            llm_reason=runtime["llm"].get("reason"),
+            embedding_provider=llm_client.embedding_config.provider,
+            embedding_reason=runtime["embeddings"].get("reason"),
+        )
+    yield
+
+
+app = FastAPI(
+    title="Tab Organizer - AI Engine",
+    description="AI services for embeddings, clustering, and chat",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Bind X-Request-ID for every request before other middleware runs.
+app.add_middleware(RequestIDMiddleware, service="ai-engine")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _current_embedding_model() -> Optional[str]:

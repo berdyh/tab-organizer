@@ -197,13 +197,15 @@ def test_platform_response_helpers_match_backend_shapes(monkeypatch):
 
 
 def test_platform_auth_clears_account_scoped_state(monkeypatch):
-    session_state = SessionState({
-        "platform_created_token": {"token": "tbo_previous_raw_token"},
-        "platform_last_raw_api_token": "tbo_previous_raw_token",
-        "platform_first_call_api_token": "tbo_previous_raw_token",
-        "platform_dashboard": {"api_calls": 9},
-        "platform_company_results": {"companies": []},
-    })
+    session_state = SessionState(
+        {
+            "platform_created_token": {"token": "tbo_previous_raw_token"},
+            "platform_last_raw_api_token": "tbo_previous_raw_token",
+            "platform_first_call_api_token": "tbo_previous_raw_token",
+            "platform_dashboard": {"api_calls": 9},
+            "platform_company_results": {"companies": []},
+        }
+    )
     monkeypatch.setitem(
         sys.modules,
         "streamlit",
@@ -331,12 +333,12 @@ def test_platform_auth_client_request_shapes(monkeypatch):
             "method": "POST",
             "url": "http://backend.test/api/v1/platform/auth/signup",
             "timeout": 7.0,
-                "json": {
-                    "email": "buyer@example.com",
-                    "password": "not-a-real-secret",
-                    "name": "Buyer",
-                    "account_type": "business",
-                    "company_name": "Acme",
+            "json": {
+                "email": "buyer@example.com",
+                "password": "not-a-real-secret",
+                "name": "Buyer",
+                "account_type": "business",
+                "company_name": "Acme",
             },
         },
         {
@@ -441,11 +443,12 @@ def test_ai_client_request_shapes_include_shared_token(monkeypatch):
 
     assert calls == [
         {
+            # WI0 B7: chat is proxied through Backend Core, not called on
+            # ai_url directly, so no client-side AI Engine token header.
             "method": "POST",
-            "url": "http://ai-engine:8090/chat",
+            "url": "http://backend.test/api/v1/chat",
             "timeout": 7.0,
             "json": {"query": "hello", "session_id": "sess_1"},
-            "headers": {"Authorization": "Bearer ai-token"},
         },
         {
             "method": "POST",

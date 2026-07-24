@@ -39,10 +39,17 @@ SCRAPE_STATUS_TO_URL_STATUS = {
     "blocked": "failed",
 }
 
+# Single-source defaults for inter-service URLs (finding 32). Every call site
+# resolves through these two accessors — never a bare literal — and the
+# fallback values here match docker-compose.yml's own defaults
+# (`${AI_ENGINE_URL:-http://ai-engine:8090}` / `${BROWSER_ENGINE_URL:-...}`).
+DEFAULT_AI_ENGINE_URL = "http://ai-engine:8090"
+DEFAULT_BROWSER_ENGINE_URL = "http://browser-engine:8083"
+
 
 def _ai_engine_url() -> str:
     """Resolve the AI engine base URL from runtime environment."""
-    return os.getenv("AI_ENGINE_URL", "http://ai-engine:8090").rstrip("/")
+    return os.getenv("AI_ENGINE_URL", DEFAULT_AI_ENGINE_URL).rstrip("/")
 
 
 def _ai_engine_headers() -> dict[str, str]:
@@ -122,7 +129,7 @@ def _require_backend_agent_auth(
 
 def _browser_engine_url() -> str:
     """Resolve the browser engine base URL from runtime environment."""
-    return os.getenv("BROWSER_ENGINE_URL", "http://browser-engine:8083").rstrip("/")
+    return os.getenv("BROWSER_ENGINE_URL", DEFAULT_BROWSER_ENGINE_URL).rstrip("/")
 
 
 # Request/Response models
@@ -182,6 +189,12 @@ class SearchRequest(BaseModel):
     session_id: Optional[str] = None
     mode: str = "hybrid"
     top_k: int = 10
+
+
+class ChatRequest(BaseModel):
+    query: str
+    session_id: Optional[str] = None
+    top_k: int = 5
 
 
 class PlatformSignupRequest(BaseModel):
@@ -946,6 +959,42 @@ async def search_tabs(
     return {"results": results[:limit], "count": len(results[:limit]), "mode": mode}
 
 
+# Chat endpoint (proxy to AI Engine; mirrors the /cluster proxy pattern)
+@router.post("/chat")
+async def chat(request: ChatRequest):
+    """Proxy chat to AI Engine so it stays behind Backend Core (WI0 B7).
+
+    Web UI previously called `{ai_url}/chat` directly, bypassing the "Backend
+    Core is the only orchestrator" rule and duplicating AI Engine token
+    handling client-side. This route keeps the bearer token server-side.
+    """
+    if request.session_id and not session_manager.get_session(request.session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{_ai_engine_url()}/chat",
+                json={
+                    "query": request.query,
+                    "session_id": request.session_id,
+                    "top_k": request.top_k,
+                },
+                headers=_ai_engine_request_headers(),
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        log_event(
+            "chat.failed",
+            level=logging.ERROR,
+            session_id=request.session_id,
+            reason=str(e),
+        )
+        raise HTTPException(status_code=500, detail=f"Chat failed: {e}")
+
+
 # Clustering endpoints
 @router.post("/cluster")
 async def start_clustering(request: ClusterRequest):
@@ -1024,7 +1073,20 @@ def export_session(request: ExportRequest):
 
 @router.get("/scrape/status/{session_id}")
 async def get_scrape_status(session_id: str):
-    """Get scraping status for a session from browser engine."""
+    """Get scraping status for a session from browser engine.
+
+    Browser Engine's scrape state is in-process memory (documented stub): a
+    404 there can mean "never scraped" OR "browser-engine restarted mid-batch"
+    — those are not the same fact. Never fabricate not_started/completed from
+    local URL-store counts when the real status is unknown (finding 28); report
+    an explicit `status: "unknown"` with a `detail` reason instead, still
+    including local counts as best-effort reference data.
+    """
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    reason = None
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -1032,36 +1094,39 @@ async def get_scrape_status(session_id: str):
                 headers=_browser_engine_request_headers(),
                 timeout=10.0,
             )
-            if response.status_code == 404:
-                session = session_manager.get_session(session_id)
-                if not session:
-                    raise HTTPException(status_code=404, detail="Session not found")
-
-                counts = session.url_store.count_by_status()
-                total = session.url_store.count()
-                completed = (
-                    counts.get("scraped", 0)
-                    + counts.get("failed", 0)
-                    + counts.get("auth_required", 0)
-                )
-                status = (
-                    "completed" if total > 0 and completed >= total else "not_started"
-                )
-                return {
-                    "session_id": session_id,
-                    "status": status,
-                    "total": total,
-                    "completed": completed,
-                    "success": counts.get("scraped", 0),
-                    "failed": counts.get("failed", 0),
-                    "auth_required": counts.get("auth_required", 0),
-                }
+        if response.status_code == 404:
+            reason = "browser-engine has no record of this scrape"
+        else:
             response.raise_for_status()
             return response.json()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Status check failed: {e}")
+    except httpx.HTTPStatusError as e:
+        reason = f"browser-engine returned HTTP {e.response.status_code}"
+    except httpx.RequestError as e:
+        reason = f"browser-engine unreachable: {e}"
+
+    log_event(
+        "scrape.status_unavailable",
+        level=logging.WARNING,
+        session_id=session_id,
+        reason=reason,
+    )
+    counts = session.url_store.count_by_status()
+    total = session.url_store.count()
+    completed = (
+        counts.get("scraped", 0)
+        + counts.get("failed", 0)
+        + counts.get("auth_required", 0)
+    )
+    return {
+        "session_id": session_id,
+        "status": "unknown",
+        "detail": f"status unavailable: {reason}",
+        "total": total,
+        "completed": completed,
+        "success": counts.get("scraped", 0),
+        "failed": counts.get("failed", 0),
+        "auth_required": counts.get("auth_required", 0),
+    }
 
 
 # Auth queue endpoints (proxy to browser engine)

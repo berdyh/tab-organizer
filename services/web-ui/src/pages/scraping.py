@@ -51,7 +51,9 @@ def render_scraping_page():
     try:
         status = api.get_scrape_status(session_id)
 
-        if status.get("status") == "not_started":
+        if status.get("status") == "unknown":
+            st.warning(status.get("detail", "Scrape status is unavailable."))
+        elif status.get("status") == "not_started":
             st.info("Scraping has not been started yet.")
         else:
             # Progress bar

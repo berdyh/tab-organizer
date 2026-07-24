@@ -5,16 +5,25 @@ from typing import Any, Optional
 
 import requests
 
+# Single-source defaults for inter-service URLs (finding 32). These match
+# docker-compose.yml's own defaults and services/backend-core/app/api/routes.py's
+# DEFAULT_AI_ENGINE_URL / DEFAULT_BROWSER_ENGINE_URL; web-ui builds from its own
+# Docker context so it cannot import that module directly, but the literal
+# values must stay in step with it.
+DEFAULT_BACKEND_URL = "http://backend-core:8080"
+DEFAULT_AI_ENGINE_URL = "http://ai-engine:8090"
+DEFAULT_BROWSER_ENGINE_URL = "http://browser-engine:8083"
+
 
 class SyncAPIClient:
     """Simple blocking API client for backend, AI, and browser services."""
 
     def __init__(self):
-        backend_base = os.getenv("BACKEND_URL", "http://backend-core:8080")
+        backend_base = os.getenv("BACKEND_URL", DEFAULT_BACKEND_URL)
         self.backend_url = f"{backend_base.rstrip('/')}/api/v1"
-        self.ai_url = os.getenv("AI_ENGINE_URL", "http://ai-engine:8090").rstrip("/")
+        self.ai_url = os.getenv("AI_ENGINE_URL", DEFAULT_AI_ENGINE_URL).rstrip("/")
         self.browser_url = os.getenv(
-            "BROWSER_ENGINE_URL", "http://browser-engine:8083"
+            "BROWSER_ENGINE_URL", DEFAULT_BROWSER_ENGINE_URL
         ).rstrip("/")
         self.ai_engine_token = os.getenv("AI_ENGINE_API_TOKEN", "").strip()
         self.timeout = float(os.getenv("UI_API_TIMEOUT", "30"))
@@ -73,27 +82,25 @@ class SyncAPIClient:
         )
 
     def get_scrape_status(self, session_id: str) -> dict:
+        # Never fabricate "not_started"/"completed" from local counts when the
+        # backend call itself fails — that reads an outage as a valid state
+        # (finding 28). Surface an explicit unknown/degraded status instead.
         try:
             return self._request(
                 "GET", f"{self.backend_url}/scrape/status/{session_id}"
             )
-        except requests.HTTPError:
-            stats = self.get_session(session_id)
-            counts = stats.get("status_counts", {})
-            total = stats.get("total_urls", 0)
-            done = (
-                counts.get("scraped", 0)
-                + counts.get("failed", 0)
-                + counts.get("auth_required", 0)
-            )
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else "unknown"
             return {
                 "session_id": session_id,
-                "status": "completed" if total and done >= total else "not_started",
-                "total": total,
-                "completed": done,
-                "success": counts.get("scraped", 0),
-                "failed": counts.get("failed", 0),
-                "auth_required": counts.get("auth_required", 0),
+                "status": "unknown",
+                "detail": f"status unavailable: backend returned HTTP {code}",
+            }
+        except requests.RequestException as exc:
+            return {
+                "session_id": session_id,
+                "status": "unknown",
+                "detail": f"status unavailable: backend unreachable ({exc})",
             }
 
     def get_pending_auth(self) -> dict:
@@ -117,11 +124,15 @@ class SyncAPIClient:
         return self._request("GET", f"{self.backend_url}/clusters/{session_id}")
 
     def chat(self, query: str, session_id: Optional[str] = None) -> dict:
+        # Routed through Backend Core (not ai_url) so the AI Engine bearer
+        # token stays server-side and Backend Core remains the only
+        # orchestrator (WI0 B7). search()/summarize_session() below still
+        # call ai_url directly; that split is a known, tracked gap, not
+        # fixed here.
         return self._request(
             "POST",
-            f"{self.ai_url}/chat",
+            f"{self.backend_url}/chat",
             json={"query": query, "session_id": session_id},
-            headers=self._ai_headers(),
         )
 
     def search(self, query: str, session_id: Optional[str] = None) -> dict:
@@ -198,39 +209,56 @@ class SyncAPIClient:
             json={"session_id": session_id, "format": export_format},
         )
 
-    def check_health(self) -> dict:
-        health = {
-            "backend": False,
-            "ai_engine": False,
-            "browser_engine": False,
-            "backend_detail": None,
-            "ai_engine_detail": None,
-            "browser_engine_detail": None,
-        }
+    def _probe_health(self, url: str, headers: Optional[dict[str, str]] = None) -> dict:
+        """Fetch a service's /health without collapsing 4xx/5xx/unreachable to
+        a boolean (finding 33): callers get the real status string, not just
+        up/down.
+        """
         try:
-            detail = self._request("GET", f"{self.backend_url}/health")
-            health["backend_detail"] = detail
-            health["backend"] = detail.get("status") == "healthy"
-        except Exception:
-            pass
-
-        try:
-            detail = self._request(
-                "GET", f"{self.ai_url}/health", headers=self._ai_headers()
+            response = requests.request(
+                "GET", url, timeout=self.timeout, headers=headers or {}
             )
-            health["ai_engine_detail"] = detail
-            health["ai_engine"] = detail.get("status") == "healthy"
-        except Exception:
-            pass
+        except requests.RequestException as exc:
+            return {"status": "unreachable", "error": str(exc)}
 
         try:
-            detail = self._request("GET", f"{self.browser_url}/health")
-            health["browser_engine_detail"] = detail
-            health["browser_engine"] = detail.get("status") == "healthy"
-        except Exception:
-            pass
+            payload = response.json() if response.content else {}
+        except ValueError:
+            payload = {}
 
-        return health
+        if response.status_code >= 400:
+            # FastAPI's HTTPException(detail=...) nests the real payload
+            # (e.g. {"status": "unhealthy", ...}) under "detail".
+            nested = payload.get("detail") if isinstance(payload, dict) else None
+            if isinstance(nested, dict) and nested.get("status"):
+                return nested
+            return {
+                "status": f"http_error:{response.status_code}",
+                "detail": nested if nested is not None else payload,
+            }
+
+        if isinstance(payload, dict) and payload.get("status"):
+            return payload
+        return {"status": "unknown", "detail": payload}
+
+    def check_health(self) -> dict:
+        backend_detail = self._probe_health(f"{self.backend_url}/health")
+        ai_engine_detail = self._probe_health(
+            f"{self.ai_url}/health", self._ai_headers()
+        )
+        browser_engine_detail = self._probe_health(f"{self.browser_url}/health")
+
+        return {
+            "backend": backend_detail.get("status") == "healthy",
+            "ai_engine": ai_engine_detail.get("status") == "healthy",
+            "browser_engine": browser_engine_detail.get("status") == "healthy",
+            "backend_status": backend_detail.get("status", "unknown"),
+            "ai_engine_status": ai_engine_detail.get("status", "unknown"),
+            "browser_engine_status": browser_engine_detail.get("status", "unknown"),
+            "backend_detail": backend_detail,
+            "ai_engine_detail": ai_engine_detail,
+            "browser_engine_detail": browser_engine_detail,
+        }
 
     # Platform auth / company discovery / B2B / maintainer features
     def platform_signup(
