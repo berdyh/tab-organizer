@@ -1,3 +1,5 @@
+> PARTIALLY SUPERSEDED by docs/ARCHITECTURE_PLAN.md (2026-07-24); rewrite scheduled.
+
 # Testing Documentation
 
 This file is the single source-of-truth for running and debugging the project's containerized tests.

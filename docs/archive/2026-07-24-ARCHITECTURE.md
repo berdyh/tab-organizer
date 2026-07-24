@@ -1,3 +1,5 @@
+> ARCHIVED 2026-07-24 — superseded by the reviewed architecture plan (see docs/ARCHITECTURE_PLAN.md). Retained for reference.
+
 # Architecture Documentation
 
 For development boundaries, load [MODULE_INDEX.md](MODULE_INDEX.md) first, then

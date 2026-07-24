@@ -106,4 +106,4 @@ LLM-only providers (`claude_code`, `codex_cli`, `codex_acp`) shell out to locall
 
 ## Docs map
 
-`docs/ARCHITECTURE.md` (system design), `docs/AI_CONFIG.md` (providers/models), `docs/TESTING.md` (authoritative test guide), `docs/DEVELOPMENT.md` (workflow), `docs/MANUAL_SETUP.md`, `docs/REQUIREMENTS.md`. Module cards list which of these must be updated alongside a given change.
+`docs/ARCHITECTURE_PLAN.md` is the single source of truth (reviewed TS-migration plan, 2026-07-24) — read it first. `docs/AI_CONFIG.md` (providers/models) and `docs/TESTING.md` (test guide) are marked partially superseded but still describe current Python behavior; rewrites are scheduled. `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `docs/MANUAL_SETUP.md`, `docs/REQUIREMENTS.md`, `docs/SCRAPER_AGENTIC_ANALYSIS.md`, and `docs/REPO_IMPROVEMENTS_REVIEW.md` are archived under `docs/archive/` (superseded, retained for reference). Module cards list which of these must be updated alongside a given change.

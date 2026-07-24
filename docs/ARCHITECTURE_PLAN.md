@@ -13,6 +13,12 @@ Work item zero is a real-tab end-to-end run: the live database shows `tab_import
 and `tab_search_fts = 0` rows despite 15 successful scrapes, so CDP attach has never been
 exercised and the scrape→FTS write path is broken in production.
 
+> This file is the repo copy of the single source of truth. The upstream original (edited
+> live during review) lives at
+> `~/.gstack/projects/berdyh-tab-organizer/agent-platform-subscription-routing-review-design-20260723.md`
+> on the author's machine — not fetchable from this repo. If the two ever diverge, this
+> repo copy is authoritative for engineering work; reconcile the upstream copy by hand.
+
 ## Problem statement
 
 tab-organizer is an "oracle over your open tabs": it reads the *content* of your
@@ -573,3 +579,40 @@ second user/company on the platform routes, or a stated commercialization roadma
   Next.js + better-sqlite3 unless overridden)
 - Clustering evaluation not yet run (100/500/2000-page corpora; purity, coherence, useful
   singleton rate, stability across reruns) — until then the Python geometry sidecar stays
+
+## WI0 addendum (2026-07-24)
+
+Work item zero (decision 36) ran ~50 real URLs through the live Docker stack end to end.
+Every break below was verified empirically against the running system and live SQLite, not
+by code reading. Full detail: WI0 findings notes (not checked into this repo).
+
+- **B1 (CRITICAL)** — Semantic pipeline has never worked on this deployment: default
+  provider `openrouter` has no API key configured, and the Ollama fallback container had
+  zero models pulled. LanceDB has never received a vector.
+- **B2 (CRITICAL)** — CDP tab attach is architecturally impossible in the Docker deployment:
+  Chrome binds its debug port to 127.0.0.1 and rejects non-IP/`localhost` Host headers, so
+  the shipped `host.docker.internal` default can never connect. `tab_import_jobs = 0` is not
+  disuse — it could never work.
+- **B3 (HIGH)** — `POST /scrape` with inline `urls` never registers them via
+  `add_urls_to_session`; every callback then fails "URL not found in session" and content
+  vanishes while batch status still reads `completed`. Root cause of "15 scraped / 0 FTS
+  rows" in production.
+- **B4 (HIGH)** — Hybrid search 500s whenever the semantic leg fails, even though the
+  keyword leg has results; one dead leg kills the whole default search mode.
+- **B5 (MEDIUM)** — Batch indexing counters under-report total failure: a 100% indexing
+  outage reads as a 1-in-50 blip instead of "nothing was indexed."
+- **B6 (MEDIUM)** — Auth detection false-positives on public pages (npmjs.com, Anthropic
+  docs) misread bot-challenges/403s as login walls.
+- **B7 (MEDIUM)** — web-ui calls ai-engine `/chat` directly, bypassing backend-core and
+  violating the "Backend Core is the only orchestrator" rule.
+- **B8 (precondition)** — Zero application logging made every other break invisible; no log
+  line beyond uvicorn access logs recorded 50 failed callbacks or the 100% index outage.
+- **B9 (HIGH)** — Clustering 500s on small corpora: UMAP spectral init requires k < N and
+  the pipeline never adapts `n_neighbors`/`n_components` to corpus size, so every
+  early-stage session crashes `/cluster`.
+
+Also confirmed: scraping itself is healthy (46/50 real-world success); the full loop
+(scrape → index → hybrid search → chat) works end to end once providers are configured
+correctly — the deployment *default*, not the product, has never been a working
+configuration. See "Reordering consequence for wk0 tasks" in the WI0 notes for how these
+folded into the phase-1 task list.

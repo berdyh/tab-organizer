@@ -1,5 +1,10 @@
 # Module Index
 
+> NOTE 2026-07-24: the TS migration plan (docs/ARCHITECTURE_PLAN.md) supersedes the
+> service-topology boundary rules here; cards remain authoritative for day-to-day Python
+> work until cutover. The "preserve the four runtime services" rule is explicitly
+> superseded (plan decision 22).
+
 This index is the top-level context for module/submodule work. Load this file
 first, then the relevant local `MODULE.md`, then only the source/tests linked by
 that card.

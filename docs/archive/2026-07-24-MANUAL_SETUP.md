@@ -1,3 +1,5 @@
+> ARCHIVED 2026-07-24 — superseded by the reviewed architecture plan (see docs/ARCHITECTURE_PLAN.md). Retained for reference.
+
 # Manual Setup Guide
 
 This guide explains how to run the Tab Organizer project without Docker, using Python directly on your system.
@@ -342,6 +344,6 @@ tracked in the TypeScript migration plan.
 
 ## Next Steps
 
-- Read the [Development Guide](DEVELOPMENT.md) for contributing
-- Check the [API Documentation](../README.md#api-reference) for integration
-- Review the [Architecture Documentation](ARCHITECTURE.md) for understanding the system
+- Read the [Development Guide](2026-07-24-DEVELOPMENT.md) for contributing (archived alongside this doc)
+- Check the [API Documentation](../../README.md#api-reference) for integration
+- Review the [Architecture Documentation](2026-07-24-ARCHITECTURE.md) for understanding the system (archived alongside this doc)

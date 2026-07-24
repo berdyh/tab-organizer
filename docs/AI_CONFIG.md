@@ -1,3 +1,5 @@
+> PARTIALLY SUPERSEDED by docs/ARCHITECTURE_PLAN.md (2026-07-24); rewrite scheduled.
+
 # AI Model Configuration Guide
 
 This guide explains the centralized AI model configuration system that makes it easy to manage, update, and switch between different AI providers and models.

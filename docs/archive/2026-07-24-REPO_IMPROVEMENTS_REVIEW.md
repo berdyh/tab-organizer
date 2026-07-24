@@ -1,3 +1,5 @@
+> ARCHIVED 2026-07-24 — superseded by the reviewed architecture plan (see docs/ARCHITECTURE_PLAN.md). Retained for reference.
+
 # Repository Improvement Review (Post-pass)
 
 This review is grounded in the current code. Each item names the concrete

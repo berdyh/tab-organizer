@@ -1,5 +1,7 @@
 # Tab Organizer
 
+> Current direction: [docs/ARCHITECTURE_PLAN.md](docs/ARCHITECTURE_PLAN.md) — the reviewed, single-source-of-truth migration plan.
+
 A **local-first web scraping and tab organization tool** that helps you analyze, cluster, and manage browser tabs using AI. The system scrapes tab URLs, generates embeddings, clusters related content, and provides chatbot-style discovery.
 
 ## Features
