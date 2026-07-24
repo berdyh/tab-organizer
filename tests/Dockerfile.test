@@ -10,6 +10,13 @@ COPY tests/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/ ./services/
+COPY config/ ./config/
+COPY scripts/ ./scripts/
+COPY docs/ ./docs/
+COPY .github/ ./.github/
+COPY Makefile ./Makefile
+COPY docker-compose.yml ./docker-compose.yml
+COPY .env.example ./.env.example
 COPY tests/ ./tests/
 
 ENV PYTHONPATH=/app

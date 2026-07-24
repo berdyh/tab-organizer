@@ -7,7 +7,7 @@ from ..api.client import SyncAPIClient
 
 def render_url_input_page():
     """Render the URL input page."""
-    st.header("📥 Add URLs")
+    st.header("Add URLs")
 
     # Initialize API client
     if "api_client" not in st.session_state:
@@ -56,7 +56,7 @@ def render_url_input_page():
     # URL input methods
     st.subheader("Add URLs")
 
-    tab1, tab2, tab3 = st.tabs(["📝 Paste URLs", "📄 Upload File", "🔗 Single URL"])
+    tab1, tab2, tab3 = st.tabs(["Paste URLs", "Upload File", "Single URL"])
 
     with tab1:
         urls_text = st.text_area(
@@ -160,14 +160,14 @@ def render_url_input_page():
             with st.expander("View URLs"):
                 urls = api.get_urls(st.session_state.current_session_id)
                 for url_data in urls[:50]:  # Limit display
-                    status_icon = {
-                        "pending": "⏳",
-                        "scraped": "✅",
-                        "failed": "❌",
-                        "auth_required": "🔐",
-                    }.get(url_data["status"], "❓")
+                    status_label = {
+                        "pending": "Pending",
+                        "scraped": "Scraped",
+                        "failed": "Failed",
+                        "auth_required": "Auth required",
+                    }.get(url_data["status"], "Unknown")
 
-                    st.write(f"{status_icon} {url_data['original']}")
+                    st.write(f"{status_label}: {url_data['original']}")
 
                 if len(urls) > 50:
                     st.info(f"Showing 50 of {len(urls)} URLs")

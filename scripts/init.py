@@ -56,6 +56,12 @@ def update_env_var(key: str, value: str) -> None:
     ENV_FILE.write_text("\n".join(lines) + "\n")
 
 
+def update_embedding_model_env(embedding_model: str) -> None:
+    """Set embedding model and clear stale dimension overrides."""
+    update_env_var("EMBEDDING_MODEL", embedding_model)
+    update_env_var("EMBEDDING_DIMENSIONS", "")
+
+
 def ensure_env_file() -> None:
     """Guarantee that .env exists by copying the template when necessary."""
     if ENV_FILE.exists():
@@ -174,27 +180,39 @@ def configure_ollama(args: argparse.Namespace) -> Dict[str, str]:
         "Choose an Ollama embedding model:", embed_options, default_index=0
     )
 
-    update_env_var("LLM_PROVIDER", "ollama")
+    update_env_var("AI_PROVIDER", "ollama")
     update_env_var("EMBEDDING_PROVIDER", "ollama")
     update_env_var("LLM_MODEL", llm_model)
-    update_env_var("EMBEDDING_MODEL", embedding_model)
+    update_embedding_model_env(embedding_model)
 
     mode = args.ollama_mode
     if mode == "auto":
         mode = "local" if detect_local_ollama() else "docker"
 
     if mode == "local":
-        update_env_var("OLLAMA_URL", "http://localhost:11434")
+        update_env_var("OLLAMA_HOST", "http://localhost:11434")
         print("Detected local Ollama instance; dockerized Ollama will be skipped.")
         use_local = True
     else:
-        update_env_var("OLLAMA_URL", "http://ollama:11434")
+        update_env_var("OLLAMA_HOST", "http://ollama:11434")
         use_local = False
         print("Ollama will run inside Docker. The first start may take several minutes while models download.")
 
     compose_profile = resolve_profile(args.profile)
 
     return {"provider": "ollama", "use_local": str(use_local), "compose_profile": compose_profile}
+
+
+def get_embedding_provider_options(ai_config) -> List[Tuple[str, str]]:
+    """Return embedding-capable providers that have at least one embedding model."""
+    options = []
+    for provider in ai_config.get_all_providers():
+        if not ai_config.is_provider_supported(provider, "embeddings"):
+            continue
+        if not ai_config.get_provider_models(provider, "embedding"):
+            continue
+        options.append((provider, ai_config.get_provider_config(provider).get("type", "")))
+    return options
 
 
 def configure_claude(args: argparse.Namespace) -> Dict[str, str]:
@@ -225,13 +243,26 @@ def configure_claude(args: argparse.Namespace) -> Dict[str, str]:
     
     # Claude doesn't support embeddings, so we need to choose another provider
     print("\nClaude does not provide embeddings. Selecting embedding provider...")
-    embed_providers = [p for p in ai_config.get_all_providers() if ai_config.is_provider_supported(p, "embeddings") and p != "anthropic"]
-    embed_provider = args.claude_embedding_provider or prompt_choice(
-        "Choose embedding provider:", [(p, ai_config.get_provider_config(p).get("type", "")) for p in embed_providers], default_index=0
-    )
+    embed_provider_options = get_embedding_provider_options(ai_config)
+    if not embed_provider_options:
+        raise SystemExit("No embedding-capable providers with embedding models are configured.")
+
+    supported_embedding_providers = [provider for provider, _ in embed_provider_options]
+    if args.claude_embedding_provider:
+        if args.claude_embedding_provider not in supported_embedding_providers:
+            supported = ", ".join(supported_embedding_providers)
+            raise SystemExit(
+                f"--claude-embedding-provider '{args.claude_embedding_provider}' does not support embeddings "
+                f"or has no embedding models. Supported providers: {supported}."
+            )
+        embed_provider = args.claude_embedding_provider
+    else:
+        embed_provider = prompt_choice("Choose embedding provider:", embed_provider_options, default_index=0)
     
     # Get models for selected embedding provider
     embed_models = ai_config.get_provider_models(embed_provider, "embedding")
+    if not embed_models:
+        raise SystemExit(f"Provider '{embed_provider}' has no embedding models configured.")
     embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
     embedding_model = args.claude_embedding or prompt_choice(
         f"Choose a {embed_provider} embedding model:", embed_options, default_index=0
@@ -244,12 +275,131 @@ def configure_claude(args: argparse.Namespace) -> Dict[str, str]:
     if api_key:
         update_env_var("ANTHROPIC_API_KEY", api_key)
 
-    update_env_var("LLM_PROVIDER", "anthropic")
+    update_env_var("AI_PROVIDER", "anthropic")
     update_env_var("EMBEDDING_PROVIDER", embed_provider)
     update_env_var("LLM_MODEL", llm_model)
-    update_env_var("EMBEDDING_MODEL", embedding_model)
+    update_embedding_model_env(embedding_model)
 
     return {"provider": "claude", "use_local": "false", "compose_profile": ""}
+
+
+def _select_embedding_provider(ai_config, requested_provider: str | None) -> str:
+    embed_provider_options = get_embedding_provider_options(ai_config)
+    if not embed_provider_options:
+        raise SystemExit("No embedding-capable providers with embedding models are configured.")
+
+    supported_embedding_providers = [provider for provider, _ in embed_provider_options]
+    if requested_provider:
+        if requested_provider not in supported_embedding_providers:
+            supported = ", ".join(supported_embedding_providers)
+            raise SystemExit(
+                f"Embedding provider '{requested_provider}' does not support embeddings "
+                f"or has no embedding models. Supported providers: {supported}."
+            )
+        return requested_provider
+
+    default_index = supported_embedding_providers.index("ollama") if "ollama" in supported_embedding_providers else 0
+    return prompt_choice("Choose embedding provider:", embed_provider_options, default_index=default_index)
+
+
+def _select_embedding_model(ai_config, provider: str, requested_model: str | None) -> str:
+    embed_models = ai_config.get_provider_models(provider, "embedding")
+    if not embed_models:
+        raise SystemExit(f"Provider '{provider}' has no embedding models configured.")
+    if requested_model:
+        return requested_model
+    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
+    return prompt_choice(f"Choose a {provider} embedding model:", embed_options, default_index=0)
+
+
+def configure_openrouter(args: argparse.Namespace) -> Dict[str, str]:
+    """Configure OpenRouter as the HTTP LLM/embedding provider."""
+    print(
+        textwrap.dedent(
+            """
+            Configuring OpenRouter provider
+            --------------------------------
+            OpenRouter uses HTTPS API calls and requires OPENROUTER_API_KEY. Use
+            claude_code, codex_cli, or codex_acp when you want local subscription
+            CLI routing instead of API-key routing.
+            """
+        ).strip()
+    )
+
+    ai_config = get_ai_config()
+    llm_models = ai_config.get_provider_models("openrouter", "llm")
+    embed_models = ai_config.get_provider_models("openrouter", "embedding")
+    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in llm_models]
+    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
+
+    llm_model = args.openrouter_llm or prompt_choice("Choose an OpenRouter LLM model:", llm_options, default_index=0)
+    embedding_model = args.openrouter_embedding or prompt_choice(
+        "Choose an OpenRouter embedding model:", embed_options, default_index=0
+    )
+    api_key = args.openrouter_key or prompt_text(
+        "Enter your OPENROUTER_API_KEY (leave blank to keep existing value)",
+        required=False,
+        default="",
+    )
+    if api_key:
+        update_env_var("OPENROUTER_API_KEY", api_key)
+
+    update_env_var("AI_PROVIDER", "openrouter")
+    update_env_var("EMBEDDING_PROVIDER", "openrouter")
+    update_env_var("LLM_MODEL", llm_model)
+    update_embedding_model_env(embedding_model)
+
+    return {"provider": "openrouter", "use_local": "false", "compose_profile": ""}
+
+
+def configure_subscription_cli(args: argparse.Namespace, provider: str) -> Dict[str, str]:
+    """Configure local subscription CLI providers for LLM routing."""
+    labels = {
+        "claude_code": "Claude Code print mode",
+        "codex_cli": "Codex CLI one-shot exec",
+        "codex_acp": "Codex ACP harness",
+    }
+    print(
+        textwrap.dedent(
+            f"""
+            Configuring {labels[provider]}
+            {'-' * (14 + len(labels[provider]))}
+            This provider uses local CLI subscription login state and does not
+            require an Anthropic or OpenAI API key for LLM calls. Embeddings
+            still need an embedding-capable provider such as Ollama or OpenRouter.
+            The stock Docker AI image does not include these CLIs; run the AI
+            engine on the host or use a custom image with the authenticated CLI.
+            """
+        ).strip()
+    )
+
+    ai_config = get_ai_config()
+    llm_models = ai_config.get_provider_models(provider, "llm")
+    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in llm_models]
+    llm_model = args.subscription_llm or prompt_choice(
+        f"Choose a {provider} LLM model:", llm_options, default_index=0
+    )
+
+    embed_provider = _select_embedding_provider(ai_config, args.subscription_embedding_provider)
+    embedding_model = _select_embedding_model(
+        ai_config,
+        embed_provider,
+        args.subscription_embedding,
+    )
+
+    update_env_var("AI_PROVIDER", provider)
+    update_env_var("EMBEDDING_PROVIDER", embed_provider)
+    update_env_var("LLM_MODEL", llm_model)
+    update_embedding_model_env(embedding_model)
+
+    if provider == "claude_code" and args.claude_code_command:
+        update_env_var("CLAUDE_CODE_COMMAND", args.claude_code_command)
+    if provider == "codex_cli" and args.codex_cli_command:
+        update_env_var("CODEX_CLI_COMMAND", args.codex_cli_command)
+    if provider == "codex_acp" and args.codex_acp_command:
+        update_env_var("CODEX_ACP_COMMAND", args.codex_acp_command)
+
+    return {"provider": provider, "use_local": "true", "compose_profile": ""}
 
 
 def perform_docker_tasks(provider_info: Dict[str, str], args: argparse.Namespace) -> None:
@@ -270,7 +420,7 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Project bootstrap utility")
     parser.add_argument(
         "--provider",
-        choices=["ollama", "claude"],
+        choices=["ollama", "claude", "openrouter", "claude_code", "codex_cli", "codex_acp"],
         help="Preselect the preferred model provider. Default prompts interactively.",
     )
     parser.add_argument(
@@ -288,8 +438,21 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ollama-llm", help="Explicit Ollama LLM model selection.")
     parser.add_argument("--ollama-embedding", help="Explicit Ollama embedding model selection.")
     parser.add_argument("--claude-llm", help="Explicit Claude LLM selection.")
+    parser.add_argument("--claude-embedding-provider", help="Embedding provider to pair with Anthropic Claude.")
     parser.add_argument("--claude-embedding", help="Explicit Claude embedding selection.")
     parser.add_argument("--anthropic-key", help="Anthropic API key (Claude provider).")
+    parser.add_argument("--openrouter-llm", help="Explicit OpenRouter LLM selection.")
+    parser.add_argument("--openrouter-embedding", help="Explicit OpenRouter embedding selection.")
+    parser.add_argument("--openrouter-key", help="OpenRouter API key.")
+    parser.add_argument("--subscription-llm", help="Explicit local subscription CLI LLM selection.")
+    parser.add_argument(
+        "--subscription-embedding-provider",
+        help="Embedding provider to pair with claude_code, codex_cli, or codex_acp.",
+    )
+    parser.add_argument("--subscription-embedding", help="Explicit subscription-mode embedding model.")
+    parser.add_argument("--claude-code-command", help="Command for Claude Code print mode.")
+    parser.add_argument("--codex-cli-command", help="Command for Codex CLI exec mode.")
+    parser.add_argument("--codex-acp-command", help="Command for Codex ACP/acpx mode.")
     parser.add_argument("--skip-pull", action="store_true", help="Skip docker compose pull.")
     parser.add_argument("--skip-build", action="store_true", help="Skip docker compose build.")
     return parser.parse_args(argv)
@@ -310,8 +473,12 @@ def main(argv: List[str] | None = None) -> int:
 
     if provider == "ollama":
         provider_info = configure_ollama(args)
-    else:
+    elif provider == "claude":
         provider_info = configure_claude(args)
+    elif provider == "openrouter":
+        provider_info = configure_openrouter(args)
+    else:
+        provider_info = configure_subscription_cli(args, provider)
 
     perform_docker_tasks(provider_info, args)
 

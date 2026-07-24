@@ -7,7 +7,7 @@ from ..api.client import SyncAPIClient
 
 def render_chatbot_page():
     """Render the chatbot page."""
-    st.header("💬 Chat with Your Tabs")
+    st.header("Chat with Your Tabs")
 
     # Initialize API client
     if "api_client" not in st.session_state:
@@ -31,7 +31,7 @@ def render_chatbot_page():
     with st.sidebar:
         st.subheader("Chat Options")
 
-        if st.button("🗑️ Clear Chat History"):
+        if st.button("Clear Chat History"):
             st.session_state.chat_history = []
             st.rerun()
 
@@ -40,7 +40,7 @@ def render_chatbot_page():
         # Quick actions
         st.subheader("Quick Actions")
 
-        if st.button("📝 Summarize Session"):
+        if st.button("Summarize Session"):
             if session_id:
                 with st.spinner("Generating summary..."):
                     try:
@@ -65,11 +65,11 @@ def render_chatbot_page():
             else:
                 st.warning("Please select a session first")
 
-        if st.button("🔍 Search Mode"):
+        if st.button("Search Mode"):
             st.session_state.chat_mode = "search"
             st.success("Switched to search mode")
 
-        if st.button("💭 Chat Mode"):
+        if st.button("Chat Mode"):
             st.session_state.chat_mode = "chat"
             st.success("Switched to chat mode")
 
@@ -80,7 +80,7 @@ def render_chatbot_page():
 
             # Show sources if available
             if message.get("sources"):
-                with st.expander("📚 Sources"):
+                with st.expander("Sources"):
                     for source in message["sources"]:
                         st.markdown(
                             f"- [{source.get('title', 'Untitled')}]({source.get('url', '#')}) "
@@ -136,7 +136,7 @@ def render_chatbot_page():
                         st.markdown(answer)
 
                         if sources:
-                            with st.expander("📚 Sources"):
+                            with st.expander("Sources"):
                                 for source in sources:
                                     st.markdown(
                                         f"- [{source.get('title', 'Untitled')}]({source.get('url', '#')}) "
@@ -164,7 +164,7 @@ def render_chatbot_page():
     # Example queries
     if not st.session_state.chat_history:
         st.divider()
-        st.subheader("💡 Example Questions")
+        st.subheader("Example Questions")
 
         examples = [
             "What are the main topics covered in my tabs?",

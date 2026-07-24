@@ -10,12 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY services/browser-engine/requirements.txt .
 RUN uv pip install --system --no-cache-dir -r requirements.txt
 
 RUN playwright install chromium --with-deps
 
-COPY app/ ./app/
+COPY services/browser-engine/app/ ./app/
+COPY services/__init__.py ./services/__init__.py
+COPY services/url_safety.py ./services/url_safety.py
 
 EXPOSE 8083
 

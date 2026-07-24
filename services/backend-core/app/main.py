@@ -7,7 +7,7 @@ from .api.routes import router
 
 app = FastAPI(
     title="Tab Organizer - Backend Core",
-    description="API Gateway and session management for Tab Organizer",
+    description="Backend API and session management for Tab Organizer",
     version="1.0.0",
 )
 

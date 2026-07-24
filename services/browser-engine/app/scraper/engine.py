@@ -12,6 +12,155 @@ from playwright.async_api import Browser, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 
+from services.url_safety import resolve_scrape_targets, validate_scrape_url
+
+REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+REQUEST_HEADERS_TO_DROP = {
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+RESPONSE_HEADERS_TO_DROP = {
+    "connection",
+    "content-encoding",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+async def _safe_httpx_get(
+    client: httpx.AsyncClient,
+    url: str,
+    **kwargs,
+) -> httpx.Response:
+    return await _safe_httpx_request(client, "GET", url, **kwargs)
+
+
+async def _safe_httpx_request(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    **kwargs,
+) -> httpx.Response:
+    """Follow redirects while connecting only to vetted network targets."""
+    current_url = validate_scrape_url(url)
+    current_method = method.upper()
+    current_kwargs = dict(kwargs)
+
+    for _ in range(10):
+        targets = resolve_scrape_targets(current_url)
+        response = await _request_first_safe_target(
+            client,
+            current_method,
+            targets,
+            **current_kwargs,
+        )
+        location = response.headers.get("location")
+        if response.status_code not in REDIRECT_STATUS_CODES or not location:
+            return response
+        if response.status_code == 303 or (
+            response.status_code in {301, 302} and current_method not in {"GET", "HEAD"}
+        ):
+            current_method = "GET"
+            current_kwargs = {
+                key: value for key, value in current_kwargs.items() if key != "content"
+            }
+        current_url = validate_scrape_url(urljoin(current_url, location))
+    raise httpx.TooManyRedirects("Exceeded safe redirect limit")
+
+
+async def _request_first_safe_target(
+    client: httpx.AsyncClient,
+    method: str,
+    targets,
+    **kwargs,
+) -> httpx.Response:
+    last_error = None
+    for target in targets:
+        try:
+            return await client.request(
+                method,
+                target.request_url,
+                follow_redirects=False,
+                **_request_kwargs_for_target(target, kwargs),
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+            last_error = error
+            continue
+    if last_error:
+        raise last_error
+    raise ValueError("Scrape URL host could not be resolved safely")
+
+
+def _request_kwargs_for_target(target, kwargs):
+    headers = dict(kwargs.get("headers") or {})
+    if target.host_header:
+        headers = {**headers, "Host": target.host_header}
+
+    extensions = dict(kwargs.get("extensions") or {})
+    if target.sni_hostname:
+        extensions = {**extensions, "sni_hostname": target.sni_hostname}
+
+    request_kwargs = {**kwargs, "headers": headers}
+    if extensions:
+        request_kwargs = {**request_kwargs, "extensions": extensions}
+    return request_kwargs
+
+
+def _safe_browser_route_handler(timeout: int):
+    async def handler(route, request) -> None:
+        try:
+            headers = _headers_for_safe_browser_fetch(request.headers)
+            content = None
+            if request.method.upper() not in {"GET", "HEAD"}:
+                content = request.post_data_buffer
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await _safe_httpx_request(
+                    client,
+                    request.method,
+                    request.url,
+                    headers=headers,
+                    content=content,
+                )
+            await route.fulfill(
+                status=response.status_code,
+                headers=_headers_for_browser_fulfill(response.headers),
+                body=b"" if request.method.upper() == "HEAD" else response.content,
+            )
+        except Exception:
+            await route.abort()
+
+    return handler
+
+
+def _headers_for_safe_browser_fetch(headers):
+    return {
+        key: value
+        for key, value in dict(headers).items()
+        if key.lower() not in REQUEST_HEADERS_TO_DROP
+    }
+
+
+def _headers_for_browser_fulfill(headers):
+    return {
+        key: value
+        for key, value in dict(headers).items()
+        if key.lower() not in RESPONSE_HEADERS_TO_DROP
+    }
+
 
 @dataclass
 class ScrapeResult:
@@ -174,10 +323,10 @@ class RobotsChecker:
         """Fetch and parse robots.txt."""
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(
+                response = await _safe_httpx_get(
+                    client,
                     f"{domain}/robots.txt",
                     timeout=10.0,
-                    follow_redirects=True,
                 )
                 if response.status_code == 200:
                     self._cache[domain] = self._parse_robots(response.text)
@@ -227,6 +376,8 @@ class ScraperEngine:
         self.respect_robots = respect_robots
 
         self._browser: Optional[Browser] = None
+        self._playwright = None
+        self._browser_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._extractor = ContentExtractor()
         self._robots = RobotsChecker()
@@ -243,19 +394,34 @@ class ScraperEngine:
 
     async def _get_browser(self) -> Browser:
         """Get or create browser instance."""
-        if self._browser is None:
-            playwright = await async_playwright().start()
-            self._browser = await playwright.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
+        async with self._browser_lock:
+            if self._browser is None:
+                self._playwright = await async_playwright().start()
+                try:
+                    self._browser = await self._playwright.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    )
+                except Exception:
+                    await self._playwright.stop()
+                    self._playwright = None
+                    raise
         return self._browser
 
     async def close(self) -> None:
         """Close browser instance."""
-        if self._browser:
-            await self._browser.close()
+        async with self._browser_lock:
+            browser = self._browser
+            playwright = self._playwright
             self._browser = None
+            self._playwright = None
+
+            try:
+                if browser:
+                    await browser.close()
+            finally:
+                if playwright:
+                    await playwright.stop()
 
     async def scrape_url(
         self,
@@ -271,6 +437,11 @@ class ScraperEngine:
             session_id: Session ID for auth queue
             use_browser: Use Playwright instead of httpx
         """
+        try:
+            validate_scrape_url(url)
+        except ValueError as error:
+            return ScrapeResult(url=url, status="failed", error=str(error))
+
         async with self._semaphore:
             # Check robots.txt
             if self.respect_robots:
@@ -299,11 +470,9 @@ class ScraperEngine:
     ) -> ScrapeResult:
         """Scrape URL using httpx."""
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=self.timeout,
-            ) as client:
-                response = await client.get(
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await _safe_httpx_get(
+                    client,
                     url,
                     headers={"User-Agent": self.USER_AGENT},
                 )
@@ -393,6 +562,7 @@ class ScraperEngine:
 
             try:
                 await page.set_extra_http_headers({"User-Agent": self.USER_AGENT})
+                await page.route("**/*", _safe_browser_route_handler(self.timeout))
 
                 response = await page.goto(url, timeout=self.timeout * 1000)
 
@@ -497,11 +667,11 @@ class ScraperEngine:
             )
 
             async with httpx.AsyncClient(
-                follow_redirects=True,
                 timeout=self.timeout,
                 auth=auth,
             ) as client:
-                response = await client.get(
+                response = await _safe_httpx_get(
+                    client,
                     url,
                     headers={"User-Agent": self.USER_AGENT},
                 )
@@ -538,11 +708,11 @@ class ScraperEngine:
             cookies = credentials.get("cookies", {})
 
             async with httpx.AsyncClient(
-                follow_redirects=True,
                 timeout=self.timeout,
                 cookies=cookies,
             ) as client:
-                response = await client.get(
+                response = await _safe_httpx_get(
+                    client,
                     url,
                     headers={"User-Agent": self.USER_AGENT},
                 )
@@ -582,6 +752,7 @@ class ScraperEngine:
 
             try:
                 login_url = credentials.get("login_url", url)
+                await page.route("**/*", _safe_browser_route_handler(self.timeout))
                 await page.goto(login_url, timeout=self.timeout * 1000)
 
                 # Fill form fields
@@ -634,6 +805,7 @@ class ScraperEngine:
         urls: list[str],
         session_id: Optional[str] = None,
         callback: Optional[Callable[[ScrapeResult], Awaitable[None]]] = None,
+        use_browser: bool = False,
     ) -> list[ScrapeResult]:
         """
         Scrape multiple URLs in parallel.
@@ -645,7 +817,7 @@ class ScraperEngine:
 
         for url in urls:
             task = asyncio.create_task(
-                self._scrape_with_callback(url, session_id, callback)
+                self._scrape_with_callback(url, session_id, callback, use_browser)
             )
             tasks.append(task)
 
@@ -672,14 +844,19 @@ class ScraperEngine:
         url: str,
         session_id: Optional[str],
         callback: Optional[Callable[[ScrapeResult], Awaitable[None]]],
+        use_browser: bool = False,
     ) -> ScrapeResult:
         """Scrape URL and call callback with result."""
-        result = await self.scrape_url(url, session_id)
+        result = await self.scrape_url(
+            url,
+            session_id=session_id,
+            use_browser=use_browser,
+        )
 
         if callback:
             try:
                 await callback(result)
-            except Exception:
-                pass
+            except Exception as error:
+                result.metadata = {**result.metadata, "callback_error": str(error)}
 
         return result

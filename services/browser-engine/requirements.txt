@@ -4,3 +4,4 @@ httpx==0.26.0
 pydantic==2.5.3
 playwright==1.41.0
 cryptography==42.0.0
+trafilatura==1.8.1

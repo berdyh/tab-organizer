@@ -5,12 +5,12 @@ This guide explains the centralized AI model configuration system that makes it 
 ## Overview
 
 The Tab Organizer uses a centralized configuration system located in `config/ai_models.yaml` that defines:
-- Available AI providers (OpenRouter, Ollama, OpenAI, Anthropic, DeepSeek, Gemini)
+- Available AI providers (OpenRouter, Ollama, OpenAI, Anthropic, Claude Code, Codex CLI, Codex ACP, DeepSeek, Gemini)
 - All supported models with their metadata
 - Default configurations for each provider
 - Use case recommendations
 
-OpenRouter is the docker-compose default (one API key, many models). Ollama is the `.env.example` default for running fully offline. The other providers are wired in the same registry and can be swapped at runtime.
+OpenRouter is the docker-compose default (one API key, many models). Ollama is the `.env.example` default for running fully offline. Claude Code and Codex CLI are LLM-only options that use local CLI subscription login state instead of API keys. `codex_acp` is an LLM-only ACP harness route through `acpx` and the Codex ACP adapter. The other providers are wired in the same registry and can be swapped at runtime.
 
 ## Configuration Structure
 
@@ -40,6 +40,36 @@ providers:
     default_models:
       llm: "llama3.2:3b"
       embedding: "nomic-embed-text"
+
+  claude_code:
+    type: local_cli
+    command_env: "CLAUDE_CODE_COMMAND"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "sonnet"
+      embedding: null
+
+  codex_cli:
+    type: local_cli
+    command_env: "CODEX_CLI_COMMAND"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "codex-default"
+      embedding: null
+
+  codex_acp:
+    type: local_acp
+    command_env: "CODEX_ACP_COMMAND"
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "codex-acp-default"
+      embedding: null
 ```
 
 ### Models Section
@@ -68,8 +98,8 @@ defaults:
       provider: "openrouter"
       model: "openai/gpt-4o-mini"
     coding:
-      provider: "anthropic"
-      model: "claude-3-5-sonnet-latest"
+      provider: "claude_code"
+      model: "sonnet"
     embeddings:
       provider: "openrouter"
       model: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
@@ -114,7 +144,8 @@ info = client.get_provider_info()
 
 ```bash
 # Interactive setup using config
-./scripts/init.py --provider openrouter   # or ollama, anthropic, openai, deepseek, gemini
+./scripts/init.py --provider ollama       # local Ollama setup
+./scripts/init.py --provider claude       # Anthropic Claude plus a separate embedding provider
 
 # The script will automatically:
 # 1. Load models from config
@@ -124,6 +155,10 @@ info = client.get_provider_info()
 # Or use the CLI wrapper, which copies .env.example, builds images, and pulls Ollama models:
 ./scripts/cli.py init --build --models
 ```
+
+`scripts/init.py` accepts `ollama`, `claude`, `openrouter`, `claude_code`,
+`codex_cli`, and `codex_acp`. Configure OpenAI, Gemini, or DeepSeek by editing
+`.env`/runtime provider settings rather than passing them to `--provider`.
 
 ## Adding New Models
 
@@ -182,12 +217,50 @@ models:
 
 The system uses these environment variables:
 
-- `AI_PROVIDER`: Default AI provider (openrouter, ollama, openai, anthropic, deepseek, gemini)
+- `AI_PROVIDER`: Default AI provider (openrouter, ollama, openai, anthropic, claude_code, codex_cli, codex_acp, deepseek, gemini)
 - `EMBEDDING_PROVIDER`: Default embedding provider
 - `LLM_MODEL`: Override default LLM model
 - `EMBEDDING_MODEL`: Override default embedding model
 - `EMBEDDING_DIMENSIONS`: Override embedding dimensions (must match the model)
+- `LLM_BASE_URL` / `EMBEDDING_BASE_URL`: Explicit runtime endpoint overrides
+- `OLLAMA_HOST`: Ollama endpoint selected by init for local or Docker mode. For Ollama, the runtime uses `LLM_BASE_URL`/`EMBEDDING_BASE_URL` when explicitly set, then `OLLAMA_HOST`, then the YAML default.
 - `OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` / `GOOGLE_API_KEY`: API keys for cloud providers
+- `CLAUDE_CODE_COMMAND`: Claude Code CLI command, defaults to `claude`
+- `CLAUDE_CODE_TIMEOUT`: Claude Code request timeout in seconds, defaults to `300`
+- `CLAUDE_CODE_DISABLE_TOOLS`: Disable Claude Code tools for app LLM calls, defaults to `true`
+- `CODEX_CLI_COMMAND`: Codex CLI command, defaults to `codex`
+- `CODEX_CLI_TIMEOUT`: Codex CLI request timeout in seconds, defaults to `300`
+- `CODEX_CLI_SANDBOX`: Codex sandbox mode, defaults to `read-only`
+- `CODEX_CLI_ALLOW_UNTRUSTED_CONTEXT`: Allow `codex_cli` for scraped-content prompts. Defaults to disabled because `codex exec` is not a tool-free LLM-only mode.
+- `CODEX_ACP_COMMAND`: ACPX command for Codex ACP harness routing, defaults to `acpx`
+- `CODEX_ACP_TIMEOUT`: Codex ACP request timeout in seconds, defaults to `300`
+- `CODEX_ACP_PERMISSION_MODE`: ACPX permission mode, defaults to `deny-all` (`approve-reads` and `approve-all` are also accepted for trusted local experiments)
+- `CODEX_ACP_NON_INTERACTIVE_PERMISSIONS`: ACPX policy for non-interactive permission prompts, defaults to `fail` (`deny` is also accepted)
+- `CODEX_ACP_QUEUE_TTL_SECONDS`: ACPX queue-owner TTL for each prompt turn, defaults to `0.1`
+- `CODEX_ACP_SESSION_NAME`: Optional persistent ACP session name. If unset, each app LLM call creates and closes a unique ACP session to avoid cross-request context bleed.
+- `AGENT_CLI_WORKDIR`: Working directory for local agent CLI calls, defaults to `/tmp/tab-organizer-agent-cli`
+- `AI_ENGINE_API_TOKEN`: Bearer token required by generation, indexing, clustering, chat, search, summarization, document deletion, and provider-switch endpoints. `scripts/cli.py start` and `scripts/cli.py host-ai` generate `data/host-ai-token` automatically.
+- `BACKEND_CALLBACK_TOKEN`: Bearer token required for browser-engine scrape callbacks into backend-core. Defaults operationally to the same generated local token when started through `scripts/cli.py`.
+- `BACKEND_AGENT_API_TOKEN`: Bearer token required for local agent/CLI tab-management endpoints in backend-core. Defaults operationally to the same generated local token when started through `scripts/cli.py`.
+
+### Subscription CLI Providers
+
+`claude_code` invokes `claude -p` and uses the local Claude Code login state. `codex_cli` invokes `codex exec` and uses local Codex/ChatGPT login state. They do not require Anthropic or OpenAI API keys, but they only work where the AI engine process can execute those commands. The stock Docker image does not install these CLIs or mount their auth state; run the AI engine on the host or build a custom image for Docker-based subscription CLI routing.
+
+`codex_cli` is not ACP mode: it is a one-shot `codex exec --ephemeral --json -` provider. For ACP semantics use `codex_acp`, which invokes `acpx` and drives the Codex harness with the ACP session lifecycle (`sessions ensure`, `prompt --file -`, and session cleanup). This is still a repo-local LLM provider, not an OpenClaw `sessions_spawn(runtime: "acp")` orchestrator.
+
+The local CLI/ACP providers are LLM-only. Keep `EMBEDDING_PROVIDER` on `ollama`, `openrouter`, `openai`, or `gemini`.
+
+For a host-run local subscription mode:
+
+```bash
+./scripts/init.py --provider codex_acp --subscription-embedding-provider ollama
+./scripts/cli.py host-ai --provider codex_acp
+./scripts/cli.py start -d --host-ai
+./scripts/cli.py check-provider --provider codex_acp --generate
+```
+
+Use `--provider codex_cli` for one-shot Codex CLI or `--provider claude_code` for Claude Code print mode. `--host-ai` sets the Docker services to call `http://host.docker.internal:8090`, while the AI Engine process itself runs on the host and can access your authenticated CLI state. The CLI creates a local `data/host-ai-token` and passes it as `AI_ENGINE_API_TOKEN` so containers can call the host AI Engine without exposing unauthenticated generation and provider-switching endpoints.
 
 ## Model Metadata
 

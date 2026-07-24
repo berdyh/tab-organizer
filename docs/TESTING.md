@@ -25,8 +25,24 @@ make test          # unit (default)
 make test-all
 make test-integration
 make test-e2e
+make test-backend
+make test-ai
+make test-browser
+make test-web
+make test-ops
 make coverage
 ```
+
+Use module-local targets before wider integration checks when a change stays
+inside one module boundary:
+
+| Target | Module boundary |
+| --- | --- |
+| `make test-backend` | Backend Core API, platform, sessions, callbacks, URL state |
+| `make test-ai` | AI Engine provider config, local CLI providers, RAG, clustering |
+| `make test-browser` | Browser Engine auth detection, scraper lifecycle, callbacks |
+| `make test-web` | Web UI API client, platform/settings/scraping page behavior |
+| `make test-ops` | CLI, init script, runtime config, CI/static docs checks |
 
 ## What's Included
 
@@ -48,9 +64,12 @@ docker compose --profile test-unit up --build --abort-on-container-exit test-uni
 Start infrastructure and services (LanceDB is embedded inside `ai-engine`):
 
 ```bash
-docker compose --profile test-integration up -d ollama
-docker compose --profile test-integration up -d --build backend-core ai-engine browser-engine
-docker compose --profile test-integration up --build --abort-on-container-exit test-integration
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+  docker compose --profile default --profile test-integration up -d ollama
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+  docker compose --profile default --profile test-integration up -d --build backend-core ai-engine browser-engine
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+  docker compose --profile default --profile test-integration run --rm test-integration
 ```
 
 ### E2E Tests
@@ -58,9 +77,12 @@ docker compose --profile test-integration up --build --abort-on-container-exit t
 Start full stack:
 
 ```bash
-docker compose --profile test-e2e up -d ollama
-docker compose --profile test-e2e up -d --build backend-core ai-engine browser-engine web-ui
-docker compose --profile test-e2e up --build --abort-on-container-exit test-e2e
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+  docker compose --profile default --profile test-e2e up -d ollama
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+  docker compose --profile default --profile test-e2e up -d --build backend-core ai-engine browser-engine web-ui
+AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+  docker compose --profile default --profile test-e2e run --rm test-e2e
 ```
 
 ### Cleanup
@@ -171,15 +193,15 @@ Tests are organized by type, not by service:
 ```
 tests/
 ├── unit/                  # Fast, isolated unit tests
-│   ├── test_auth_detector.py
-│   ├── test_clustering.py
-│   ├── test_dedup.py
-│   └── test_url_store.py
+│   ├── test_platform_backend.py
+│   ├── test_ai_provider_switch.py
+│   ├── test_browser_engine_callbacks.py
+│   ├── test_web_ui_platform.py
+│   └── ...
 ├── integration/           # Tests with services running
 │   └── test_api.py
 └── e2e/                   # Full workflow tests
-    ├── test_workflow.py
-    └── test_full_workflow.py
+    └── test_workflow.py
 ```
 
 ## Writing Tests

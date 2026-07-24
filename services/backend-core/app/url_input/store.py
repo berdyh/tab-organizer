@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+from services.url_safety import normalize_scrape_url
+
 
 @dataclass
 class URLRecord:
@@ -59,13 +61,13 @@ class URLStore:
 
     def normalize(self, url: str) -> str:
         """Convert URL to canonical form."""
-        url = url.strip()
+        url = normalize_scrape_url(url)
 
         # Parse URL
-        parsed = urlparse(url.lower())
+        parsed = urlparse(url)
 
         # Ensure scheme
-        scheme = parsed.scheme or "https"
+        scheme = parsed.scheme
 
         # Clean netloc (remove www. prefix for consistency)
         netloc = parsed.netloc
@@ -117,17 +119,21 @@ class URLStore:
         Returns:
             Tuple of (added_count, duplicate_count, new_records)
         """
+        normalized_urls = [(url, self.normalize(url)) for url in urls]
         added = 0
         duplicates = 0
         new_records = []
 
-        for url in urls:
-            is_new, record = self.add(url)
-            if is_new:
-                added += 1
-                new_records.append(record)
-            else:
+        for url, normalized in normalized_urls:
+            if normalized in self._urls:
                 duplicates += 1
+                continue
+
+            record = URLRecord(original=url, normalized=normalized)
+            self._urls[normalized] = record
+            self._original_to_normalized[url] = normalized
+            added += 1
+            new_records.append(record)
 
         return added, duplicates, new_records
 
@@ -179,6 +185,15 @@ class URLStore:
     def get_all(self) -> list[URLRecord]:
         """Get all URL records."""
         return list(self._urls.values())
+
+    def replace_records(self, records: list[URLRecord]) -> None:
+        """Replace store contents with pre-built records."""
+        self.clear()
+        for record in records:
+            self._urls[record.normalized] = record
+            self._original_to_normalized[record.original] = record.normalized
+            if record.content_hash:
+                self._content_hashes[record.content_hash] = record.normalized
 
     def count(self) -> int:
         """Get total count of URLs."""

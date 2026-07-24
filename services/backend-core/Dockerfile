@@ -5,10 +5,12 @@ RUN pip install uv
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY services/backend-core/requirements.txt .
 RUN uv pip install --system --no-cache-dir -r requirements.txt
 
-COPY app/ ./app/
+COPY services/backend-core/app/ ./app/
+COPY services/__init__.py ./services/__init__.py
+COPY services/url_safety.py ./services/url_safety.py
 
 EXPOSE 8080
 

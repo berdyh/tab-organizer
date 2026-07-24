@@ -74,6 +74,18 @@ class TestURLStore:
         assert added == 3
         assert duplicates == 1
         assert len(records) == 3
+
+    def test_add_batch_rejects_without_partial_mutation(self):
+        """Invalid batch members should not leave earlier URLs inserted."""
+        with pytest.raises(ValueError):
+            self.store.add_batch(
+                [
+                    "https://example.com/page1",
+                    "http://127.0.0.1/private",
+                ]
+            )
+
+        assert len(self.store) == 0
     
     def test_get_url(self):
         """Test getting a URL record."""
