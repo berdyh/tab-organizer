@@ -1,12 +1,15 @@
 """API routes for Backend Core service."""
 
 import hmac
+import logging
 import os
 from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel, Field, HttpUrl
+
+from services.observability import log_event, request_id_headers
 
 from ..export.exporter import Exporter
 from ..platform.store import (
@@ -56,6 +59,16 @@ def _browser_engine_headers() -> dict[str, str]:
         or os.getenv("AI_ENGINE_API_TOKEN", "").strip()
     )
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _ai_engine_request_headers() -> dict[str, str]:
+    """AI Engine auth headers plus the current X-Request-ID for propagation."""
+    return {**_ai_engine_headers(), **request_id_headers()}
+
+
+def _browser_engine_request_headers() -> dict[str, str]:
+    """Browser Engine auth headers plus the current X-Request-ID."""
+    return {**_browser_engine_headers(), **request_id_headers()}
 
 
 def _backend_callback_token() -> str:
@@ -590,6 +603,13 @@ async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTas
         await trigger_scraping(session.id, urls, request.use_browser)
     except Exception as error:
         detail = f"Browser Engine scrape dispatch failed: {error}"
+        log_event(
+            "scrape.dispatch_failed",
+            level=logging.ERROR,
+            session_id=session.id,
+            url_count=len(urls),
+            reason=str(error),
+        )
         for url in urls:
             session_manager.update_url_status(
                 session.id,
@@ -599,6 +619,12 @@ async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTas
             )
         raise HTTPException(status_code=502, detail=detail) from error
 
+    log_event(
+        "scrape.dispatched",
+        session_id=session.id,
+        url_count=len(urls),
+        use_browser=request.use_browser,
+    )
     return {"status": "started", "session_id": session.id, "url_count": len(urls)}
 
 
@@ -616,7 +642,7 @@ async def trigger_scraping(
                 "urls": urls,
                 "use_browser": use_browser,
             },
-            headers=_browser_engine_headers(),
+            headers=_browser_engine_request_headers(),
             timeout=30.0,
         )
         response.raise_for_status()
@@ -673,14 +699,30 @@ async def _index_tab_documents(session_id: str, documents: list[dict[str, Any]])
 
     async with httpx.AsyncClient() as client:
         for chunk in _chunked(documents, 100):
-            response = await client.post(
-                f"{_ai_engine_url()}/index",
-                json={"session_id": session_id, "documents": chunk},
-                headers=_ai_engine_headers(),
-                timeout=120.0,
-            )
-            response.raise_for_status()
+            try:
+                response = await client.post(
+                    f"{_ai_engine_url()}/index",
+                    json={"session_id": session_id, "documents": chunk},
+                    headers=_ai_engine_request_headers(),
+                    timeout=120.0,
+                )
+                response.raise_for_status()
+            except Exception as e:
+                log_event(
+                    "index.batch_failed",
+                    level=logging.ERROR,
+                    session_id=session_id,
+                    document_count=len(chunk),
+                    reason=str(e),
+                )
+                raise
             indexed += int(response.json().get("indexed", 0))
+    log_event(
+        "index.batch",
+        session_id=session_id,
+        document_count=len(documents),
+        indexed=indexed,
+    )
     return indexed
 
 
@@ -694,9 +736,16 @@ async def _semantic_search(
         response = await client.post(
             f"{_ai_engine_url()}/search",
             json={"session_id": session_id, "query": query, "top_k": top_k},
-            headers=_ai_engine_headers(),
+            headers=_ai_engine_request_headers(),
             timeout=60.0,
         )
+        if response.is_error:
+            log_event(
+                "search.semantic_failed",
+                level=logging.WARNING,
+                session_id=session_id,
+                status_code=response.status_code,
+            )
         response.raise_for_status()
         return response.json().get("results", [])
 
@@ -739,7 +788,7 @@ async def import_tabs_background(job_id: str, cdp_url: str, max_tabs: int) -> No
             response = await client.post(
                 f"{_browser_engine_url()}/tabs/import",
                 json={"cdp_url": cdp_url, "max_tabs": max_tabs},
-                headers=_browser_engine_headers(),
+                headers=_browser_engine_request_headers(),
                 timeout=180.0,
             )
             response.raise_for_status()
@@ -852,7 +901,7 @@ async def open_tabs(
             response = await client.post(
                 f"{_browser_engine_url()}/tabs/open",
                 json={"cdp_url": request.cdp_url, "urls": urls},
-                headers=_browser_engine_headers(),
+                headers=_browser_engine_request_headers(),
                 timeout=60.0,
             )
             response.raise_for_status()
@@ -927,7 +976,7 @@ async def start_clustering(request: ClusterRequest):
                         for r in scraped
                     ],
                 },
-                headers=_ai_engine_headers(),
+                headers=_ai_engine_request_headers(),
                 timeout=120.0,
             )
             response.raise_for_status()
@@ -936,6 +985,13 @@ async def start_clustering(request: ClusterRequest):
 
             return {"status": "completed", "clusters": clusters}
     except Exception as e:
+        log_event(
+            "cluster.failed",
+            level=logging.ERROR,
+            session_id=session.id,
+            url_count=len(scraped),
+            reason=str(e),
+        )
         raise HTTPException(status_code=500, detail=f"Clustering failed: {e}")
 
 
@@ -973,7 +1029,7 @@ async def get_scrape_status(session_id: str):
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{_browser_engine_url()}/scrape/status/{session_id}",
-                headers=_browser_engine_headers(),
+                headers=_browser_engine_request_headers(),
                 timeout=10.0,
             )
             if response.status_code == 404:
@@ -1016,7 +1072,7 @@ async def get_pending_auth():
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{_browser_engine_url()}/auth/pending",
-                headers=_browser_engine_headers(),
+                headers=_browser_engine_request_headers(),
                 timeout=10.0,
             )
             return response.json()
@@ -1032,7 +1088,7 @@ async def submit_credentials(domain: str, credentials: dict):
             response = await client.post(
                 f"{_browser_engine_url()}/auth/credentials",
                 json={"domain": domain, "credentials": credentials},
-                headers=_browser_engine_headers(),
+                headers=_browser_engine_request_headers(),
                 timeout=10.0,
             )
             return response.json()
@@ -1055,6 +1111,12 @@ def scrape_complete_callback(
 
     session = session_manager.get_session(session_id)
     if not session:
+        log_event(
+            "callback.scrape_complete_failed",
+            level=logging.WARNING,
+            session_id=session_id,
+            reason="session_not_found",
+        )
         return {"status": "error", "message": "Session not found"}
 
     url_status = SCRAPE_STATUS_TO_URL_STATUS.get(status, "failed")
@@ -1067,6 +1129,20 @@ def scrape_complete_callback(
         metadata={**metadata, "content": content} if content else metadata,
     )
     if not updated:
+        log_event(
+            "callback.scrape_complete_failed",
+            level=logging.WARNING,
+            session_id=session.id,
+            scrape_status=status,
+            reason="url_not_found_in_session",
+        )
         return {"status": "error", "message": "URL not found in session"}
 
+    log_event(
+        "callback.scrape_complete",
+        session_id=session.id,
+        scrape_status=status,
+        url_status=url_status,
+        content_length=len(content) if content else 0,
+    )
     return {"status": "updated"}

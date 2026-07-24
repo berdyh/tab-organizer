@@ -3,13 +3,20 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from services.observability import RequestIDMiddleware, configure_logging
+
 from .api.routes import router
+
+configure_logging("backend-core")
 
 app = FastAPI(
     title="Tab Organizer - Backend Core",
     description="Backend API and session management for Tab Organizer",
     version="1.0.0",
 )
+
+# Bind X-Request-ID for every request before other middleware runs.
+app.add_middleware(RequestIDMiddleware, service="backend-core")
 
 # CORS middleware
 app.add_middleware(

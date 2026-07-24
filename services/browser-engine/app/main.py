@@ -2,6 +2,7 @@
 
 import asyncio
 import hmac
+import logging
 import os
 from typing import Optional
 
@@ -10,6 +11,15 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from services.observability import (
+    RequestIDMiddleware,
+    configure_logging,
+    get_request_id,
+    log_event,
+    request_id_headers,
+    reset_request_id,
+    set_request_id,
+)
 from services.url_safety import validate_scrape_url
 
 from .auth.detector import AuthDetector
@@ -17,11 +27,16 @@ from .auth.queue import AuthQueue, CredentialStoreError
 from .scraper.engine import ScraperEngine
 from .tabs.cdp import DEFAULT_CDP_URL, CDPTabHarvester
 
+configure_logging("browser-engine")
+
 app = FastAPI(
     title="Tab Organizer - Browser Engine",
     description="Web scraping and authentication handling",
     version="1.0.0",
 )
+
+# Bind X-Request-ID for every request before other middleware runs.
+app.add_middleware(RequestIDMiddleware, service="browser-engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -148,12 +163,21 @@ async def start_scraping(
     # Track scraping task
     scraping_tasks[session_id] = _new_scrape_task_info(len(request.urls))
 
-    # Start background scraping
+    log_event(
+        "scrape.received",
+        session_id=session_id,
+        url_count=len(request.urls),
+        use_browser=request.use_browser,
+    )
+
+    # Start background scraping; carry the request id into the detached task so
+    # its callbacks and index calls stay correlated with this request.
     background_tasks.add_task(
         scrape_urls_background,
         session_id,
         request.urls,
         request.use_browser,
+        get_request_id(),
     )
 
     return {
@@ -238,6 +262,19 @@ def _finalize_scrape_status(task_info: dict) -> None:
         task_info["status"] = "completed"
 
 
+def _result_domain(result) -> Optional[str]:
+    """Best-effort host for auth-queue log lines (never the full URL/query)."""
+    domain = result.metadata.get("domain") if result.metadata else None
+    if domain:
+        return domain
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(result.url).hostname
+    except Exception:
+        return None
+
+
 def _service_url(env_name: str, default: str) -> str:
     """Resolve service base URL and tolerate trailing slash env values."""
     return os.getenv(env_name, default).rstrip("/")
@@ -257,11 +294,13 @@ async def scrape_urls_background(
     session_id: str,
     urls: list[str],
     use_browser: bool,
+    request_id: Optional[str] = None,
 ):
     """Background task for scraping URLs."""
     backend_url = _service_url("BACKEND_URL", "http://backend-core:8080")
     scraping_tasks.setdefault(session_id, _new_scrape_task_info(len(urls)))
     batch_scraper = _new_scraper_engine()
+    request_token = set_request_id(request_id)
 
     async def on_result(result):
         """Callback for each scrape result."""
@@ -272,6 +311,12 @@ async def scrape_urls_background(
             task_info["success"] = task_info.get("success", 0) + 1
         elif result.status == "auth_required":
             task_info["auth_required"] = task_info.get("auth_required", 0) + 1
+            log_event(
+                "auth.queued",
+                session_id=session_id,
+                domain=_result_domain(result),
+                auth_type=result.metadata.get("auth_type"),
+            )
         else:
             task_info["failed"] = task_info.get("failed", 0) + 1
 
@@ -291,9 +336,12 @@ async def scrape_urls_background(
                             **result.metadata,
                         },
                     },
-                    headers=_service_token_headers(
-                        "BACKEND_CALLBACK_TOKEN", "AI_ENGINE_API_TOKEN"
-                    ),
+                    headers={
+                        **_service_token_headers(
+                            "BACKEND_CALLBACK_TOKEN", "AI_ENGINE_API_TOKEN"
+                        ),
+                        **request_id_headers(),
+                    },
                     timeout=10.0,
                 )
                 if response.is_error:
@@ -307,6 +355,13 @@ async def scrape_urls_background(
                         payload.get("message") or "Backend callback returned error"
                     )
         except Exception as e:
+            log_event(
+                "callback.failed",
+                level=logging.WARNING,
+                session_id=session_id,
+                scrape_status=result.status,
+                reason=str(e),
+            )
             _record_downstream_error(
                 task_info,
                 "backend_callback",
@@ -345,12 +400,27 @@ async def scrape_urls_background(
                             "session_id": session_id,
                             "documents": documents,
                         },
-                        headers=_service_token_headers("AI_ENGINE_API_TOKEN"),
+                        headers={
+                            **_service_token_headers("AI_ENGINE_API_TOKEN"),
+                            **request_id_headers(),
+                        },
                         timeout=120.0,
                     )
                     if response.is_error:
                         raise RuntimeError(_http_response_error_message(response))
+                log_event(
+                    "index.dispatched",
+                    session_id=session_id,
+                    document_count=len(documents),
+                )
             except Exception as e:
+                log_event(
+                    "index.dispatch_failed",
+                    level=logging.ERROR,
+                    session_id=session_id,
+                    document_count=len(documents),
+                    reason=str(e),
+                )
                 _record_downstream_error(
                     scraping_tasks[session_id],
                     "ai_index",
@@ -364,6 +434,7 @@ async def scrape_urls_background(
         scraping_tasks[session_id]["error"] = str(e)
     finally:
         await batch_scraper.close()
+        reset_request_id(request_token)
 
 
 @app.post("/scrape/single")
@@ -500,6 +571,12 @@ async def submit_credentials(
         )
     except CredentialStoreError as error:
         # Fail closed: never accept credentials we cannot encrypt securely.
+        log_event(
+            "auth.credentials_rejected",
+            level=logging.WARNING,
+            domain=request.domain,
+            reason="credential_store_unavailable",
+        )
         raise HTTPException(status_code=503, detail=error.to_dict())
 
     if not success:
@@ -508,6 +585,8 @@ async def submit_credentials(
             detail=f"No pending auth request for domain: {request.domain}",
         )
 
+    # Log the queue transition only; never the submitted credential values.
+    log_event("auth.credentials_stored", domain=request.domain)
     return {"status": "credentials_stored", "domain": request.domain}
 
 

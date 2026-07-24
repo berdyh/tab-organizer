@@ -2,6 +2,7 @@
 
 import asyncio
 import hmac
+import logging
 import os
 from typing import Optional
 
@@ -9,15 +10,22 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from services.observability import RequestIDMiddleware, configure_logging, log_event
+
 from .chatbot.rag import Document, RAGChatbot
 from .clustering.pipeline import Tab, TabClusterer
 from .core.llm_client import LLMClient
+
+configure_logging("ai-engine")
 
 app = FastAPI(
     title="Tab Organizer - AI Engine",
     description="AI services for embeddings, clustering, and chat",
     version="1.0.0",
 )
+
+# Bind X-Request-ID for every request before other middleware runs.
+app.add_middleware(RequestIDMiddleware, service="ai-engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -196,11 +204,20 @@ async def switch_provider(
             )
             if request.embedding_provider or request.embedding_model:
                 chatbot.reconfigure_embeddings(llm_client.embedding_config.dimensions)
+            llm_config = getattr(llm_client, "llm_config", None)
+            log_event(
+                "provider.switched",
+                llm_provider=getattr(llm_config, "provider", None),
+                llm_model=getattr(llm_config, "model", None),
+                embedding_provider=llm_client.embedding_config.provider,
+                embedding_model=_current_embedding_model(),
+            )
             return {
                 "status": "switched",
                 "providers": llm_client.get_provider_info(),
             }
     except Exception as e:
+        log_event("provider.switch_failed", level=logging.WARNING, reason=str(e))
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -315,6 +332,13 @@ async def cluster_urls(request: ClusterRequest, _auth=Depends(_require_ai_engine
             "cluster_count": len(clusters),
         }
     except Exception as e:
+        log_event(
+            "cluster.failed",
+            level=logging.ERROR,
+            session_id=request.session_id,
+            url_count=len(request.urls),
+            reason=str(e),
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -337,8 +361,21 @@ async def index_documents(
 
         async with provider_state_lock:
             count = await chatbot.index_documents(documents, request.session_id)
+        log_event(
+            "index.completed",
+            session_id=request.session_id,
+            document_count=len(documents),
+            indexed=count,
+        )
         return {"indexed": count}
     except Exception as e:
+        log_event(
+            "index.failed",
+            level=logging.ERROR,
+            session_id=request.session_id,
+            document_count=len(request.documents),
+            reason=str(e),
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
