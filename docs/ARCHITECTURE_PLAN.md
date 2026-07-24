@@ -63,6 +63,25 @@ Division of labor (decided this session):
    `pages.text`. Corpus text is immutable; agent claims are grounded in **cited chunk
    ids**, not merely a content hash.
 
+**Corollary to premise 4 (added 2026-07-24, wk0 security review).** Premise 4 above
+reads as though the API-level defense-in-depth layer already exists. It did not. The wk0
+review found the credential-proxy endpoints carrying no auth dependency at all, every
+service accepting cross-origin requests from any website with credentials enabled, and
+`scripts/cli.py` minting one token value under three names — so the agent credential was
+byte-identical to the one guarding the credential and CDP control plane. All three are
+fixed in wk0 (`0a22621`, and the CORS/exfil commit that follows it), but the lesson is
+structural: **the API layer is a required deliverable, not an assumed property.** Until
+every credential-adjacent and corpus-read endpoint carries an auth dependency and
+cross-origin reach is closed, premise 4 rests on the process boundary alone and the
+"defense-in-depth" clause is aspirational. The TS port inherits this obligation — the
+frozen suite's route-auth and CORS probes exist to keep it honest.
+
+A second, subtler failure the same review exposed: the frozen suite's harness synthesizes
+four distinct tokens, a configuration `cli.py` could not produce. Its scope-isolation
+invariants therefore passed while the shipped stack did the opposite. **A test that
+constructs its own environment certifies that environment, not the product.** Deployment-
+shape assertions belong in tooling unit tests, not in the portable black-box suite.
+
 **Capture method (User Challenge D9):** KEEP the credential-store path — scraper stores
 passwords, authenticates, re-fetches. Rejected the extension/tab-capture pivot because
 scheduled headless re-fetch (tab closed / page changed) genuinely needs stored creds.
