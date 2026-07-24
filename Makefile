@@ -61,6 +61,7 @@ test-backend: ## Run focused Backend Core unit tests
 		tests/unit/test_backend_tab_workflows.py \
 		tests/unit/test_platform_backend.py \
 		tests/unit/test_backend_callback_persistence.py \
+		tests/unit/test_ingest_v1.py \
 		tests/unit/test_session_persistence.py \
 		tests/unit/test_scrape_callback.py \
 		tests/unit/test_url_store.py \

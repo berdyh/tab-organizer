@@ -51,6 +51,23 @@ DOORS = {
         },
         {"callback"},
     ),
+    "backend_ingest_v1": (
+        "backend",
+        "POST",
+        "/api/v1/ingest/v1",
+        {
+            "capture_id": "sec-probe",
+            "attempt": 1,
+            "session_id": "x",
+            "url": "http://example.com/",
+            "status": "failed",
+            "content": None,
+            "metadata": {},
+            "auth_used": False,
+            "fetched_at": "2026-07-24T00:00:00",
+        },
+        {"callback"},
+    ),
 }
 
 

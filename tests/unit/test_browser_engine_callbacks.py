@@ -429,9 +429,9 @@ async def test_backend_callback_http_failure_is_visible_without_stopping_batch(
 
     def handler(url, kwargs):
         calls.append((url, kwargs))
-        if url.endswith("/callback/scrape-complete"):
-            return _response(url, status_code=503, text="backend unavailable")
-        return _response(url, json={"status": "indexed"})
+        # Browser-engine now delivers to the single ingest endpoint and never
+        # calls /index itself (backend is the sole vector writer).
+        return _response(url, status_code=503, text="backend unavailable")
 
     _use_background_scraper(monkeypatch, fake_scraper)
     monkeypatch.setattr(
@@ -440,7 +440,6 @@ async def test_backend_callback_http_failure_is_visible_without_stopping_batch(
         lambda: FakeAsyncClient(handler),
     )
     monkeypatch.setenv("BACKEND_URL", "http://backend.test/")
-    monkeypatch.setenv("AI_ENGINE_URL", "http://ai.test/")
     monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "callback-token")
     browser_main.scraping_tasks[session_id] = browser_main._new_scrape_task_info(1)
 
@@ -452,13 +451,11 @@ async def test_backend_callback_http_failure_is_visible_without_stopping_batch(
         assert status["success"] == 1
         assert status["status"] == "completed_with_downstream_errors"
         assert status["backend_callback_failed"] == 1
-        assert status["ai_index_failed"] == 0
         assert status["downstream_errors"][0]["source"] == "backend_callback"
         assert status["downstream_errors"][0]["url"] == result.url
         assert "backend unavailable" in status["downstream_errors"][0]["message"]
         assert [url for url, _kwargs in calls] == [
-            "http://backend.test/api/v1/callback/scrape-complete",
-            "http://ai.test/index",
+            "http://backend.test/api/v1/ingest/v1",
         ]
         assert calls[0][1]["headers"] == {"Authorization": "Bearer callback-token"}
         assert fake_scraper.closed is True
@@ -479,13 +476,11 @@ async def test_backend_callback_http_detail_payload_is_visible(monkeypatch):
     fake_scraper = FakeScraper([result])
 
     def handler(url, kwargs):
-        if url.endswith("/callback/scrape-complete"):
-            return _response(
-                url,
-                status_code=401,
-                json={"detail": "Invalid backend callback token"},
-            )
-        return _response(url, json={"status": "indexed"})
+        return _response(
+            url,
+            status_code=401,
+            json={"detail": "Invalid backend callback token"},
+        )
 
     _use_background_scraper(monkeypatch, fake_scraper)
     monkeypatch.setattr(
@@ -519,7 +514,9 @@ async def test_backend_callback_error_payload_is_visible(monkeypatch):
     fake_scraper = FakeScraper([result])
 
     def handler(url, kwargs):
-        return _response(url, json={"status": "error", "message": "Session not found"})
+        # The ingest endpoint signals a misdirected write (unknown session) with
+        # a 404, not a 200 body; browser-engine counts it as a delivery failure.
+        return _response(url, status_code=404, json={"detail": "Session not found"})
 
     _use_background_scraper(monkeypatch, fake_scraper)
     monkeypatch.setattr(
@@ -542,66 +539,27 @@ async def test_backend_callback_error_payload_is_visible(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ai_index_failure_is_visible_after_successful_callbacks(monkeypatch):
-    session_id = "index-failure"
+async def test_ingest_delivery_carries_capture_identity_and_auth_flag(monkeypatch):
+    # Browser-engine posts each result to the versioned ingest endpoint with a
+    # unique capture_id, a per-(session,url) attempt, fetched_at, and the
+    # honest auth_used flag. It never calls /index (backend is the sole writer).
+    session_id = "ingest-delivery"
     result = ScrapeResult(
-        url="https://www.iana.org/domains/reserved",
+        url="https://intranet.example/report",
         status="success",
-        title="IANA-managed Reserved Domains",
-        content="Reserved domain content",
+        title="Quarterly Report",
+        content="authenticated content",
         status_code=200,
+        auth_used=True,
     )
+    result.scraped_at = __import__("datetime").datetime(2026, 7, 24, 12, 0, 0)
     fake_scraper = FakeScraper([result])
+    calls = []
 
     def handler(url, kwargs):
-        if url.endswith("/callback/scrape-complete"):
-            return _response(url, json={"status": "updated"})
-        return _response(url, status_code=500, text="index failed")
-
-    _use_background_scraper(monkeypatch, fake_scraper)
-    monkeypatch.setattr(
-        browser_main.httpx,
-        "AsyncClient",
-        lambda: FakeAsyncClient(handler),
-    )
-    monkeypatch.setenv("AI_ENGINE_URL", "http://ai.test")
-    browser_main.scraping_tasks[session_id] = browser_main._new_scrape_task_info(1)
-
-    try:
-        await browser_main.scrape_urls_background(session_id, [result.url], False)
-
-        status = browser_main.scraping_tasks[session_id]
-        assert status["completed"] == 1
-        assert status["success"] == 1
-        assert status["status"] == "completed_with_downstream_errors"
-        assert status["backend_callback_failed"] == 0
-        assert status["ai_index_failed"] == 1
-        assert status["downstream_errors"][0]["source"] == "ai_index"
-        assert "index failed" in status["downstream_errors"][0]["message"]
-        assert fake_scraper.closed is True
-    finally:
-        browser_main.scraping_tasks.pop(session_id, None)
-
-
-@pytest.mark.asyncio
-async def test_ai_index_http_detail_payload_is_visible(monkeypatch):
-    session_id = "index-detail-failure"
-    result = ScrapeResult(
-        url="https://www.iana.org/domains/reserved",
-        status="success",
-        title="IANA-managed Reserved Domains",
-        content="Reserved domain content",
-        status_code=200,
-    )
-    fake_scraper = FakeScraper([result])
-
-    def handler(url, kwargs):
-        if url.endswith("/callback/scrape-complete"):
-            return _response(url, json={"status": "updated"})
+        calls.append((url, kwargs))
         return _response(
-            url,
-            status_code=500,
-            json={"detail": "OPENROUTER_API_KEY is not configured"},
+            url, json={"status": "applied", "capture_id": "x", "index": "pending"}
         )
 
     _use_background_scraper(monkeypatch, fake_scraper)
@@ -610,72 +568,30 @@ async def test_ai_index_http_detail_payload_is_visible(monkeypatch):
         "AsyncClient",
         lambda: FakeAsyncClient(handler),
     )
-    monkeypatch.setenv("AI_ENGINE_URL", "http://ai.test")
+    monkeypatch.setenv("BACKEND_URL", "http://backend.test")
+    browser_main._ingest_attempts.clear()
     browser_main.scraping_tasks[session_id] = browser_main._new_scrape_task_info(1)
 
     try:
         await browser_main.scrape_urls_background(session_id, [result.url], False)
 
         status = browser_main.scraping_tasks[session_id]
-        assert status["status"] == "completed_with_downstream_errors"
-        assert status["ai_index_failed"] == 1
-        assert "OPENROUTER_API_KEY is not configured" in (
-            status["downstream_errors"][0]["message"]
-        )
+        assert status["status"] == "completed"
+        assert status["backend_callback_failed"] == 0
+        assert [url for url, _ in calls] == ["http://backend.test/api/v1/ingest/v1"]
+        body = calls[0][1]["json"]
+        assert body["attempt"] == 1
+        assert body["session_id"] == session_id
+        assert body["url"] == result.url
+        assert body["status"] == "success"
+        assert body["content"] == "authenticated content"
+        assert body["auth_used"] is True
+        assert body["fetched_at"] == "2026-07-24T12:00:00"
+        assert body["capture_id"]
+        assert body["metadata"]["title"] == "Quarterly Report"
     finally:
         browser_main.scraping_tasks.pop(session_id, None)
-
-
-@pytest.mark.asyncio
-async def test_ai_index_batch_failure_counts_every_document(monkeypatch):
-    # WI0 B5: one failed batched /index call leaves every document in that call
-    # unindexed. ai_index_failed must reflect per-document blast radius and the
-    # error entry must carry batch scope + docs_in_failed_call, not read as a
-    # single 1-in-N blip.
-    session_id = "index-batch-failure"
-    results = [
-        ScrapeResult(
-            url=f"https://example.com/doc-{index}",
-            status="success",
-            title=f"Doc {index}",
-            content=f"content {index}",
-            status_code=200,
-        )
-        for index in range(3)
-    ]
-    fake_scraper = FakeScraper(results)
-
-    def handler(url, kwargs):
-        if url.endswith("/callback/scrape-complete"):
-            return _response(url, json={"status": "updated"})
-        return _response(url, status_code=500, text="index failed")
-
-    _use_background_scraper(monkeypatch, fake_scraper)
-    monkeypatch.setattr(
-        browser_main.httpx,
-        "AsyncClient",
-        lambda: FakeAsyncClient(handler),
-    )
-    monkeypatch.setenv("AI_ENGINE_URL", "http://ai.test")
-    browser_main.scraping_tasks[session_id] = browser_main._new_scrape_task_info(3)
-
-    try:
-        await browser_main.scrape_urls_background(
-            session_id, [r.url for r in results], False
-        )
-
-        status = browser_main.scraping_tasks[session_id]
-        assert status["success"] == 3
-        assert status["status"] == "completed_with_downstream_errors"
-        # One failed call, but three documents unindexed.
-        assert status["downstream_error_count"] == 1
-        assert status["ai_index_failed"] == 3
-        error = status["downstream_errors"][0]
-        assert error["source"] == "ai_index"
-        assert error["scope"] == "batch"
-        assert error["docs_in_failed_call"] == 3
-    finally:
-        browser_main.scraping_tasks.pop(session_id, None)
+        browser_main._ingest_attempts.clear()
 
 
 @pytest.mark.asyncio

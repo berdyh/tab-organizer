@@ -175,6 +175,13 @@ class ScrapeResult:
     error: Optional[str] = None
     scraped_at: datetime = field(default_factory=datetime.utcnow)
     metadata: dict = field(default_factory=dict)
+    # True only when the result came from the credential-store path
+    # (_scrape_with_auth basic/cookie/form). Ambient auth (cookies already in a
+    # browser context, session reuse, auth-wall pages queued as auth_required) is
+    # invisible today, so auth_used=false there is a known under-report — see the
+    # scraper MODULE card. The unknown-auth-type fallback to plain httpx stays
+    # false. Propagates capture -> ledger -> /index metadata (decision 37 hook).
+    auth_used: bool = False
 
 
 class ContentExtractor:
@@ -689,6 +696,7 @@ class ScraperEngine:
                     html=html,
                     status_code=response.status_code,
                     metadata=metadata,
+                    auth_used=True,
                 )
 
         except Exception as e:
@@ -730,6 +738,7 @@ class ScraperEngine:
                     html=html,
                     status_code=response.status_code,
                     metadata=metadata,
+                    auth_used=True,
                 )
 
         except Exception as e:
@@ -788,6 +797,7 @@ class ScraperEngine:
                     content=content,
                     html=html,
                     metadata=metadata,
+                    auth_used=True,
                 )
 
             finally:

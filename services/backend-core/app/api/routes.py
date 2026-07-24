@@ -3,6 +3,8 @@
 import hmac
 import logging
 import os
+import uuid
+from datetime import datetime
 from typing import Any, Optional
 
 import httpx
@@ -21,8 +23,13 @@ from ..platform.store import (
     PlatformStore,
     PlatformValidationError,
 )
-from ..sessions.manager import SessionManager
+from ..sessions.manager import (
+    SCRAPE_STATUS_TO_URL_STATUS,
+    IngestCapture,
+    SessionManager,
+)
 from ..url_input.store import URLStore
+from . import ingest
 
 # Global instances
 session_manager = SessionManager()
@@ -30,14 +37,9 @@ exporter = Exporter()
 platform_store = PlatformStore()
 
 router = APIRouter()
-
-SCRAPE_STATUS_TO_URL_STATUS = {
-    "success": "scraped",
-    "failed": "failed",
-    "auth_required": "auth_required",
-    "timeout": "failed",
-    "blocked": "failed",
-}
+# New idempotent ingest endpoint lives in its own submodule; routes.py stays the
+# compatibility aggregator that mounts it (POST /api/v1/ingest/v1).
+router.include_router(ingest.router)
 
 # Single-source defaults for inter-service URLs (finding 32). Every call site
 # resolves through these two accessors — never a bare literal — and the
@@ -1131,6 +1133,25 @@ def export_session(request: ExportRequest):
 
 
 @router.get("/scrape/status/{session_id}")
+def _overlay_ingest_status(session_id: str, payload: dict) -> dict:
+    """Overlay backend ingest-ledger index aggregates onto the browser payload.
+
+    Backend is the single vector writer now, so ai-engine index outcomes live in
+    the ledger, not in browser-engine's task state. Forwarding is per capture, so
+    `ai_index_failed` is inherently per-document (B5's batch under-report is gone
+    structurally). The browser payload is merged, never replaced: its scrape
+    counters and any `backend_callback` errors are preserved.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    overlay = session_manager.capture_index_counts(session_id)
+    payload["ai_index_failed"] = overlay["ai_index_failed"]
+    payload["ai_index_pending"] = overlay["ai_index_pending"]
+    existing_errors = payload.get("downstream_errors") or []
+    payload["downstream_errors"] = existing_errors + overlay["downstream_errors"]
+    return payload
+
+
 async def get_scrape_status(session_id: str):
     """Get scraping status for a session from browser engine.
 
@@ -1157,7 +1178,7 @@ async def get_scrape_status(session_id: str):
             reason = "browser-engine has no record of this scrape"
         else:
             response.raise_for_status()
-            return response.json()
+            return _overlay_ingest_status(session_id, response.json())
     except httpx.HTTPStatusError as e:
         reason = f"browser-engine returned HTTP {e.response.status_code}"
     except httpx.RequestError as e:
@@ -1220,53 +1241,45 @@ async def submit_credentials(domain: str, credentials: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Callback endpoint for browser engine
+# Legacy callback endpoint for browser engine (compatibility shim).
 @router.post("/callback/scrape-complete")
 def scrape_complete_callback(
     data: dict,
+    background_tasks: BackgroundTasks = None,
     _auth=Depends(_require_backend_callback_auth),
 ):
-    """Callback from browser engine when scraping is complete."""
-    session_id = data.get("session_id")
-    url = data.get("url")
-    status = data.get("status")
-    content = data.get("content")
-    metadata = data.get("metadata", {})
+    """Deprecated adapter over the idempotent ingest endpoint.
 
-    session = session_manager.get_session(session_id)
-    if not session:
-        log_event(
-            "callback.scrape_complete_failed",
-            level=logging.WARNING,
-            session_id=session_id,
-            reason="session_not_found",
-        )
-        return {"status": "error", "message": "Session not found"}
-
-    url_status = SCRAPE_STATUS_TO_URL_STATUS.get(status, "failed")
-
-    # Update URL record
-    updated = session_manager.update_url_status(
-        session.id,
-        url,
-        url_status,
-        metadata={**metadata, "content": content} if content else metadata,
-    )
-    if not updated:
-        log_event(
-            "callback.scrape_complete_failed",
-            level=logging.WARNING,
-            session_id=session.id,
-            scrape_status=status,
-            reason="url_not_found_in_session",
-        )
-        return {"status": "error", "message": "URL not found in session"}
-
+    Old writers (and a rolling-deploy window's older browser-engine builds)
+    still POST this legacy shape. It maps onto ``IngestCapture`` with a
+    synthetic ``capture_id`` and ``attempt=0`` (receipt-time newest-wins =
+    exactly the pre-ingest last-write-wins behavior; ``attempt=0`` loses every
+    tie against a real v1 write) and preserves the legacy response shape.
+    Browser-engine now calls ``/api/v1/ingest/v1`` directly, so this path only
+    serves legacy traffic.
+    """
     log_event(
-        "callback.scrape_complete",
-        session_id=session.id,
-        scrape_status=status,
-        url_status=url_status,
-        content_length=len(content) if content else 0,
+        "ingest.legacy_callback_deprecated",
+        level=logging.WARNING,
+        session_id=data.get("session_id"),
     )
+    capture = IngestCapture(
+        capture_id=str(uuid.uuid4()),
+        attempt=0,
+        session_id=data.get("session_id"),
+        url=data.get("url"),
+        status=data.get("status"),
+        content=data.get("content"),
+        metadata=data.get("metadata", {}) or {},
+        auth_used=False,
+        fetched_at=datetime.utcnow().isoformat(),
+    )
+    try:
+        ingest.apply_capture(capture, background_tasks)
+    except HTTPException as error:
+        if error.status_code == 404:
+            return {"status": "error", "message": "Session not found"}
+        if error.status_code == 409:
+            return {"status": "error", "message": "URL not found in session"}
+        raise
     return {"status": "updated"}

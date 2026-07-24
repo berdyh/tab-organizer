@@ -185,10 +185,10 @@ def test_callback_failure_emits_structured_record(tmp_path, monkeypatch):
     assert response == {"status": "error", "message": "URL not found in session"}
 
     events = _read_events(stream)
-    failures = [e for e in events if e["event"] == "callback.scrape_complete_failed"]
+    failures = [e for e in events if e["event"] == "ingest.rejected"]
     assert len(failures) == 1
     assert failures[0]["level"] == "warning"
-    assert failures[0]["reason"] == "url_not_found_in_session"
+    assert failures[0]["reason"] == "url_not_registered"
     assert failures[0]["session_id"] == session.id
 
 
@@ -215,7 +215,7 @@ def test_callback_success_emits_content_length_not_body(tmp_path, monkeypatch):
         logger.removeHandler(handler)
 
     events = _read_events(stream)
-    success = [e for e in events if e["event"] == "callback.scrape_complete"]
+    success = [e for e in events if e["event"] == "ingest.applied"]
     assert len(success) == 1
     assert success[0]["content_length"] == len("secret page body")
     # The raw body must never appear in a log line.
@@ -277,7 +277,6 @@ async def test_background_scrape_propagates_request_id_downstream(monkeypatch):
         browser_main.httpx, "AsyncClient", lambda: _CapturingAsyncClient(calls)
     )
     monkeypatch.setenv("BACKEND_URL", "http://backend.test/")
-    monkeypatch.setenv("AI_ENGINE_URL", "http://ai.test/")
     monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "callback-token")
     browser_main.scraping_tasks[session_id] = browser_main._new_scrape_task_info(1)
 
@@ -288,9 +287,10 @@ async def test_background_scrape_propagates_request_id_downstream(monkeypatch):
     finally:
         browser_main.scraping_tasks.pop(session_id, None)
 
+    # Browser-engine delivers only to the backend ingest endpoint; it no longer
+    # pushes to ai-engine /index (backend is the single vector writer).
     assert [url for url, _ in calls] == [
-        "http://backend.test/api/v1/callback/scrape-complete",
-        "http://ai.test/index",
+        "http://backend.test/api/v1/ingest/v1",
     ]
     for _url, headers in calls:
         assert headers.get("X-Request-ID") == "req-propagate-1"

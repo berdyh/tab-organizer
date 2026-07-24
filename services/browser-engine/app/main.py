@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -86,6 +87,18 @@ scraper = _new_scraper_engine()
 # Scraping state
 scraping_tasks: dict[str, dict] = {}  # session_id → task info
 MAX_RECORDED_DOWNSTREAM_ERRORS = 20
+
+# Per-(session_id, url) attempt counter for the idempotent ingest endpoint.
+# In-process only: it resets to 1 across restarts/re-dispatch, which is why the
+# backend ordering rule keys on (fetched_at, attempt), not attempt alone.
+_ingest_attempts: dict[tuple[str, str], int] = {}
+
+
+def _next_ingest_attempt(session_id: str, url: str) -> int:
+    key = (session_id, url)
+    attempt = _ingest_attempts.get(key, 0) + 1
+    _ingest_attempts[key] = attempt
+    return attempt
 
 
 # Request models
@@ -227,27 +240,20 @@ def _record_downstream_error(
     source: str,
     message: str,
     url: Optional[str] = None,
-    docs_affected: int = 1,
-    scope: Optional[str] = None,
 ) -> None:
-    """Record callback/index errors without aborting the scrape batch.
+    """Record an ingest-callback failure without aborting the scrape batch.
 
-    WI0 B5: indexing is one batched `/index` call covering every scraped
-    document, so a single failed call means every one of those documents went
-    unindexed. `*_failed` counters therefore track per-document consequence
-    (`docs_affected`), not call count, and batch-scoped errors carry
-    `scope="batch"` + `docs_in_failed_call` so status readers see the true
-    blast radius instead of a misleading "1 failure".
+    Browser-engine no longer writes vectors: it POSTs each result to the
+    backend ingest endpoint and the backend is the single ai-engine /index
+    writer. Ingest is per capture, so a failed callback affects exactly one
+    document. AI-index failures now live in the backend ledger and surface via
+    the backend `/scrape/status` overlay, not here.
     """
     task_info["downstream_error_count"] = task_info.get("downstream_error_count", 0) + 1
 
     if source == "backend_callback":
         task_info["backend_callback_failed"] = (
-            task_info.get("backend_callback_failed", 0) + docs_affected
-        )
-    elif source == "ai_index":
-        task_info["ai_index_failed"] = (
-            task_info.get("ai_index_failed", 0) + docs_affected
+            task_info.get("backend_callback_failed", 0) + 1
         )
 
     errors = task_info.setdefault("downstream_errors", [])
@@ -255,10 +261,6 @@ def _record_downstream_error(
         error = {"source": source, "message": message}
         if url:
             error["url"] = url
-        if scope:
-            error["scope"] = scope
-        if docs_affected != 1:
-            error["docs_in_failed_call"] = docs_affected
         errors.append(error)
     else:
         task_info["downstream_errors_truncated"] = True
@@ -355,12 +357,18 @@ async def scrape_urls_background(
         else:
             task_info["failed"] = task_info.get("failed", 0) + 1
 
-        # Notify backend
+        # Deliver the result to the backend's single idempotent ingest endpoint.
+        # Backend owns persistence AND the sole /index forward to ai-engine, so
+        # browser-engine never writes vectors. A 200 "ignored" (duplicate/stale)
+        # is a successful delivery, not a failure — only transport/4xx/5xx errors
+        # count against backend_callback_failed.
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{backend_url}/api/v1/callback/scrape-complete",
+                    f"{backend_url}/api/v1/ingest/v1",
                     json={
+                        "capture_id": str(uuid.uuid4()),
+                        "attempt": _next_ingest_attempt(session_id, result.url),
                         "session_id": session_id,
                         "url": result.url,
                         "status": result.status,
@@ -370,6 +378,8 @@ async def scrape_urls_background(
                             "status_code": result.status_code,
                             **result.metadata,
                         },
+                        "auth_used": result.auth_used,
+                        "fetched_at": result.scraped_at.isoformat(),
                     },
                     headers={
                         **_service_token_headers(
@@ -381,14 +391,6 @@ async def scrape_urls_background(
                 )
                 if response.is_error:
                     raise RuntimeError(_http_response_error_message(response))
-                try:
-                    payload = response.json()
-                except ValueError:
-                    payload = {}
-                if payload.get("status") == "error":
-                    raise RuntimeError(
-                        payload.get("message") or "Backend callback returned error"
-                    )
         except Exception as e:
             log_event(
                 "callback.failed",
@@ -405,64 +407,12 @@ async def scrape_urls_background(
             )
 
     try:
-        results = await batch_scraper.scrape_batch(
+        await batch_scraper.scrape_batch(
             urls=urls,
             session_id=session_id,
             callback=on_result,
             use_browser=use_browser,
         )
-
-        # Index successful results in AI engine
-        ai_url = _service_url("AI_ENGINE_URL", "http://ai-engine:8090")
-        documents = [
-            {
-                "id": r.url,
-                "url": r.url,
-                "title": r.title or "",
-                "content": r.content or "",
-                "metadata": r.metadata,
-            }
-            for r in results
-            if r.status == "success" and r.content
-        ]
-
-        if documents:
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{ai_url}/index",
-                        json={
-                            "session_id": session_id,
-                            "documents": documents,
-                        },
-                        headers={
-                            **_service_token_headers("AI_ENGINE_API_TOKEN"),
-                            **request_id_headers(),
-                        },
-                        timeout=120.0,
-                    )
-                    if response.is_error:
-                        raise RuntimeError(_http_response_error_message(response))
-                log_event(
-                    "index.dispatched",
-                    session_id=session_id,
-                    document_count=len(documents),
-                )
-            except Exception as e:
-                log_event(
-                    "index.dispatch_failed",
-                    level=logging.ERROR,
-                    session_id=session_id,
-                    document_count=len(documents),
-                    reason=str(e),
-                )
-                _record_downstream_error(
-                    scraping_tasks[session_id],
-                    "ai_index",
-                    str(e),
-                    docs_affected=len(documents),
-                    scope="batch",
-                )
 
         _finalize_scrape_status(scraping_tasks[session_id])
 
