@@ -1,6 +1,6 @@
 # Security-Invariant Suite (FROZEN)
 
-This suite is **FROZEN** at `SECSUITE_VERSION = "1.0.0"` (see `__init__.py`). It
+This suite is **FROZEN** at `SECSUITE_VERSION = "1.2.0"` (see `__init__.py`). It
 is the black-box security contract for the Tab Organizer backend. The
 TypeScript reimplementation **must pass the same probes** by pointing the
 harness env vars at its own servers/boot commands — the test IDs and fixture
@@ -16,8 +16,10 @@ decision 41. The exclusion is enforced — `conftest.py` raises
 
 After merge, any semantic edit to `tests/security/` requires a decision-log row
 in `docs/MODULE_INDEX.md`'s ledger and a bump of `SECSUITE_VERSION`. See
-`MODULE.md` for the full invariant list and the TS-porting rules for the two
-`sec_seam` exceptions (SEC-26 MCP tool surface, SEC-39 auth classifier).
+`MODULE.md` for the full invariant list and the TS-porting rules for the
+`sec_seam` exceptions (SEC-26 MCP tool surface, SEC-39 auth classifier, SEC-40
+RAG chat prompt-assembly seam, SEC-41 cluster-label prompt-assembly seam,
+SEC-42 agent env-allowlist drift check).
 
 ## Running
 
@@ -61,7 +63,7 @@ pytest tests/security -q
 ## Seam exceptions
 
 Every probe here is meant to be black-box (HTTP status codes, response bodies,
-recorded subprocess argv/env/stdin/cwd). Three probes touch importable Python
+recorded subprocess argv/env/stdin/cwd). Five probes touch importable Python
 instead, for the reasons below — listed here so a reader doesn't mistake an
 accepted, reasoned exception for an oversight:
 
@@ -73,13 +75,30 @@ accepted, reasoned exception for an oversight:
   data through a Python auth-classifier function. TS-porting rule: feed the
   same `fixtures/authwalls/*.json` to the TS auth-classifier seam with the
   same assertions.
-- **SEC-25** (`test_credential_isolation.py::test_agent_subprocess_env_contains_no_secrets`,
-  *not yet marked* `sec_seam`) — imports
-  `AgentCLILLMProvider.ENV_ALLOWLIST` directly to check the recorded
-  subprocess env against it. No black-box process-introspection primitive
-  exists yet, and there is no second (TS) implementation to black-box test
-  against, so writing a TS-porting rule now would be speculative. This is
-  left as an acknowledged, undocumented-until-now gap rather than a fake
-  black-box wrapper around one Python import — revisit (and add the
-  `sec_seam` marker + a real TS-porting rule) when the TS Agent SDK adapter
-  lands.
+- **SEC-40** (`test_prompt_envelope.py::test_sec40_rag_chat_prompt_assembly_wraps_retrieved_text`,
+  `sec_seam`) — imports `RAGChatbot`, `ClaudeCodeLLMProvider`, and `LLMConfig`
+  directly to drive the chat prompt-assembly seam with a fixed poisoned
+  "retrieval" result (no live embedding backend involved) through a real CLI
+  provider pointed at the hermetic `agent_cli_recorder` stub. This is the
+  *gating* counterpart to SEC-34, which is `sec_managed` **and** additionally
+  skips without a live embedder, so it can never fail CI on its own.
+  TS-porting rule: call the TS port's equivalent chat-prompt-builder
+  function(s) directly with the same poisoned fixture and apply the same
+  envelope assertions to the output string.
+- **SEC-41** (`test_prompt_envelope.py::test_sec41_cluster_label_prompt_assembly_carries_envelope`,
+  `sec_seam`) — same pattern as SEC-40, for `TabClusterer.generate_cluster_label`.
+  Gating counterpart to SEC-35. TS-porting rule: call the TS port's equivalent
+  label-prompt-builder function(s) directly with the same poisoned tab titles
+  and apply the same envelope assertions.
+- **SEC-42** (`test_credential_isolation.py::test_sec42_env_allowlist_matches_frozen_fixture`,
+  `sec_seam`) — imports `AgentCLILLMProvider.ENV_ALLOWLIST` directly to pin it
+  against the frozen `fixtures/agent_env_allowlist.json` contract, as a drift
+  check. TS-porting rule: once the TS Agent SDK adapter lands, pin its
+  equivalent allowlist constant/config against the same fixture file.
+
+**SEC-25 is no longer a seam exception.** It used to import
+`AgentCLILLMProvider.ENV_ALLOWLIST` directly; it now asserts the observed
+subprocess env is a subset of `fixtures/agent_env_allowlist.json` (a frozen
+data contract, not a Python import) — genuinely black-box. SEC-42 above is the
+new, explicitly-marked exception that keeps the Python constant honest against
+that same fixture.

@@ -1,16 +1,23 @@
-"""SEC-24..27: credential isolation (premise 4 in executable form)."""
+"""SEC-24..27, SEC-42: credential isolation (premise 4 in executable form)."""
 
+import json
 import re
 
 import pytest
 
 from tests.security.conftest import (
+    FIXTURES_DIR,
     TOKEN_ENVS,
     ai_generate,
     switch_llm_provider,
 )
 
 pytestmark = [pytest.mark.security]
+
+
+def _agent_env_allowlist_fixture() -> dict:
+    path = FIXTURES_DIR / "agent_env_allowlist.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 BROWSER_AUTH_ENDPOINTS = [
@@ -37,15 +44,17 @@ def test_agent_principal_cannot_reach_credential_surfaces(method, path, browser)
 
 @pytest.mark.sec_managed
 def test_agent_subprocess_env_contains_no_secrets(ai, agent_cli_recorder, monkeypatch):
-    """SEC-25: the spawned agent CLI env is allowlisted and secret-free."""
+    """SEC-25: the spawned agent CLI env is allowlisted and secret-free.
+
+    Black-box: the observed subprocess env is compared against the frozen
+    ``fixtures/agent_env_allowlist.json`` contract, not against the Python
+    provider's ``ENV_ALLOWLIST`` constant (that comparison is SEC-42, a
+    separate ``sec_seam`` drift check). No longer a seam exception -- see
+    tests/security/README.md's "Seam exceptions" section.
+    """
     import os
 
-    # Seam exception (undocumented until now, see tests/security/README.md's
-    # "Seam exceptions" section): this imports the allowlist directly instead
-    # of black-box-checking it, because no black-box process-introspection
-    # primitive exists yet and there is no second (TS) implementation to test
-    # against. Revisit when the TS Agent SDK adapter lands.
-    from services.ai_engine.app.providers.agent_cli import AgentCLILLMProvider
+    allowlist = set(_agent_env_allowlist_fixture()["allowlist"])
 
     sentinels = {
         "OPENROUTER_API_KEY": "sentinel-openrouter-" + "a" * 12,
@@ -68,13 +77,37 @@ def test_agent_subprocess_env_contains_no_secrets(ai, agent_cli_recorder, monkey
     dumps = agent_cli_recorder.dumps()
     assert dumps, "recorder captured no agent invocation"
     recorded_env = dumps[-1]["env"]
-    assert set(recorded_env) <= AgentCLILLMProvider.ENV_ALLOWLIST, (
+    assert set(recorded_env) <= allowlist, (
         f"agent env leaked non-allowlisted keys: "
-        f"{set(recorded_env) - AgentCLILLMProvider.ENV_ALLOWLIST}"
+        f"{set(recorded_env) - allowlist}"
     )
     flattened = "\n".join(f"{k}={v}" for k, v in recorded_env.items())
     for name, value in sentinels.items():
         assert value not in flattened, f"secret {name} leaked into agent env"
+
+
+@pytest.mark.sec_seam
+def test_sec42_env_allowlist_matches_frozen_fixture():
+    """SEC-42: ``AgentCLILLMProvider.ENV_ALLOWLIST`` must equal the frozen fixture.
+
+    Seam exception: imports the Python constant to pin it against
+    ``fixtures/agent_env_allowlist.json``, the contract SEC-25 checks
+    black-box observed behaviour against. If the Python allowlist drifts
+    from the fixture -- widens or narrows without a deliberate fixture
+    update -- this fails loudly instead of silently changing what SEC-25
+    permits. TS porting rule: once the TS Agent SDK adapter lands, pin its
+    equivalent allowlist constant/config against the same fixture file.
+    """
+    from services.ai_engine.app.providers.agent_cli import AgentCLILLMProvider
+
+    fixture_allowlist = set(_agent_env_allowlist_fixture()["allowlist"])
+    assert AgentCLILLMProvider.ENV_ALLOWLIST == fixture_allowlist, (
+        "AgentCLILLMProvider.ENV_ALLOWLIST has drifted from the frozen "
+        "fixtures/agent_env_allowlist.json contract -- if this widening/narrowing "
+        "is deliberate, update the fixture (with a docs/MODULE_INDEX.md ledger "
+        "row + SECSUITE_VERSION bump) in the same change; symmetric diff: "
+        f"{AgentCLILLMProvider.ENV_ALLOWLIST ^ fixture_allowlist}"
+    )
 
 
 @pytest.mark.sec_seam
