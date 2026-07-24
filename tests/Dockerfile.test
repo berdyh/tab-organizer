@@ -18,6 +18,7 @@ COPY Makefile ./Makefile
 COPY docker-compose.yml ./docker-compose.yml
 COPY .env.example ./.env.example
 COPY .gitleaks.toml ./.gitleaks.toml
+COPY pytest.ini ./pytest.ini
 COPY tests/ ./tests/
 
 ENV PYTHONPATH=/app

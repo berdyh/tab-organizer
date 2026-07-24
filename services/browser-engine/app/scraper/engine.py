@@ -484,6 +484,8 @@ class ScraperEngine:
                     headers={"User-Agent": self.USER_AGENT},
                 )
 
+                html = response.text
+
                 # Check for auth requirement
                 if self._auth_detector:
                     auth_result = self._auth_detector.detect_from_response(
@@ -491,6 +493,21 @@ class ScraperEngine:
                         dict(response.headers),
                         url,
                     )
+
+                    # A 401/403 can be a bot-challenge whose only tell is in the
+                    # body (Cloudflare "Just a moment...", PerimeterX captcha);
+                    # re-check with the full response so such pages are reported
+                    # blocked instead of entering the credential queue (WI0-B6).
+                    if auth_result.requires_auth and response.status_code in (
+                        401,
+                        403,
+                    ):
+                        auth_result = self._auth_detector.detect(
+                            url=url,
+                            status_code=response.status_code,
+                            headers=dict(response.headers),
+                            html=html,
+                        )
 
                     if auth_result.requires_auth:
                         if self._auth_queue:
@@ -505,10 +522,9 @@ class ScraperEngine:
                             url=url,
                             status="auth_required",
                             status_code=response.status_code,
+                            html=html,
                             metadata={"auth_type": auth_result.auth_type},
                         )
-
-                html = response.text
 
                 # Check HTML for auth indicators
                 if self._auth_detector:

@@ -6,11 +6,13 @@ chosen because the black-box ``/detect-auth`` endpoint does not accept
 WI0. TS porting rule: feed the same JSON fixtures to the TS auth-classifier
 seam and apply the same assertions.
 
-Challenge fixtures carry ``xfail(strict=False)``: they document the live bug
-(public bot-challenge pages classified as credential-promptable auth walls).
-The wk0 B6 fix commit DELETES the xfail marker on those cases -- that deletion
-is the fix's acceptance criterion. Counter-fixtures are green from day one and
-guard against a fix that merely neuters 403 handling.
+Challenge fixtures previously carried ``xfail(reason="WI0-B6 open")`` to
+document the live bug (public bot-challenge pages classified as
+credential-promptable auth walls). WI0-B6 is now closed: ``AuthDetector``
+classifies Cloudflare/PerimeterX/generic-403 challenges as
+``requires_auth=False`` (``blocked=True``, ``auth_type="bot_challenge"``), so
+the marker is deleted and the cases assert for real. The real-auth
+counter-fixtures guard against a fix that merely neuters all 403 handling.
 """
 
 import pytest
@@ -42,7 +44,6 @@ def _detect(fixture: dict):
     )
 
 
-@pytest.mark.xfail(reason="WI0-B6 open", strict=False)
 @pytest.mark.parametrize("name", CHALLENGE_FIXTURES)
 def test_challenge_pages_are_not_auth_walls(name, load_fixture):
     fixture = load_fixture(name)

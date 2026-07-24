@@ -106,10 +106,6 @@ def _install_managed_env() -> None:
         _set_env(key, None)
 
 
-if MODE == "managed":
-    _install_managed_env()
-
-
 def _restore_env() -> None:
     for key, value in _ORIGINAL_ENV.items():
         if value is None:
@@ -260,6 +256,27 @@ class ServiceClient:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _managed_env():
+    """Install the controlled managed-mode environment only while the security
+    suite runs, then restore it.
+
+    Historically the managed env was applied at conftest import time, which
+    leaked service tokens (``BROWSER_ENGINE_API_TOKEN`` et al.) into every other
+    suite collected in the same pytest invocation. Scoping it to a session
+    fixture keeps the mutation contained to ``tests/security`` and guarantees a
+    restore, so nothing leaks outside this suite.
+    """
+    if MODE != "managed":
+        yield
+        return
+    _install_managed_env()
+    try:
+        yield
+    finally:
+        _restore_env()
+
+
 @pytest.fixture(scope="session")
 def sec_mode() -> str:
     return MODE
@@ -274,7 +291,7 @@ def _event_loop():
 
 
 @pytest.fixture(scope="session")
-def _clients(_event_loop):
+def _clients(_managed_env, _event_loop):
     built: dict[str, ServiceClient] = {}
     yield_map: dict[str, Optional[ServiceClient]] = {}
     for service in ("backend", "ai", "browser"):
@@ -296,8 +313,6 @@ def _clients(_event_loop):
             if token and token in body:
                 leaked.append(token)
     assert not leaked, "configured token value leaked into an HTTP response body"
-    if MODE == "managed":
-        _restore_env()
 
 
 def _client_or_skip(clients: dict, service: str) -> ServiceClient:

@@ -156,6 +156,7 @@ services:
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - ./.env.example:/app/.env.example:ro
       - ./.gitleaks.toml:/app/.gitleaks.toml:ro
+      - ./pytest.ini:/app/pytest.ini:ro
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     networks:

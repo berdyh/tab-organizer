@@ -11,12 +11,18 @@ class AuthDetectionResult:
     """Result of authentication detection."""
 
     requires_auth: bool
-    auth_type: Optional[str] = None  # basic, oauth, form, cookie
+    auth_type: Optional[str] = None  # basic, oauth, form, cookie, bot_challenge
     login_url: Optional[str] = None
     form_fields: Optional[list[str]] = None
     oauth_provider: Optional[str] = None
     confidence: float = 0.0
     details: dict = None
+    # Anti-scraping / bot-challenge interstitial (Cloudflare, PerimeterX, generic
+    # 403 "prove you are human" pages). These block a scraper but are NOT
+    # credential walls, so ``requires_auth`` stays False and the caller records a
+    # blocked status instead of enqueuing a credential prompt (WI0-B6).
+    blocked: bool = False
+    block_reason: Optional[str] = None
 
     def __post_init__(self):
         if self.details is None:
@@ -62,10 +68,85 @@ class AuthDetector:
         "apple": ["appleid.apple.com"],
     }
 
+    # Body markers for Cloudflare-style browser/JS challenges.
+    CLOUDFLARE_CHALLENGE_MARKERS = (
+        "/cdn-cgi/challenge-platform",
+        "cf-browser-verification",
+        "cf_chl_",
+        "just a moment",
+        "verifying you are human",
+        "checking your browser before accessing",
+        "enable javascript and cookies to continue",
+    )
+
+    # Body markers for PerimeterX / HUMAN "access denied" captcha walls.
+    PERIMETERX_CHALLENGE_MARKERS = (
+        "px-captcha",
+        "access to this page has been denied",
+        "_pxhd",
+        "perimeterx",
+    )
+
+    # Generic anti-bot interstitial phrasing (only trusted alongside a 403 so a
+    # legitimate page merely mentioning these words is not misclassified).
+    GENERIC_CHALLENGE_MARKERS = (
+        "please verify you are a human",
+        "verify you are a human",
+        "attention required",
+        "are you a robot",
+        "complete the action below",
+    )
+
     def __init__(self):
         self._login_patterns = [
             re.compile(p, re.IGNORECASE) for p in self.LOGIN_URL_PATTERNS
         ]
+
+    def _bot_challenge_reason(
+        self,
+        status_code: Optional[int],
+        headers: Optional[dict],
+        html: Optional[str],
+    ) -> Optional[str]:
+        """Return a bot-challenge reason string, or None if this is not a
+        bot-challenge / anti-scraping interstitial.
+
+        These pages block a scraper but never accept user credentials, so they
+        must not enter the credential queue (WI0-B6).
+        """
+        header_map = {
+            str(k).lower(): str(v).lower() for k, v in (headers or {}).items()
+        }
+        html_lower = (html or "").lower()
+
+        # Cloudflare's managed challenge is explicit in this response header.
+        cf_mitigated = header_map.get("cf-mitigated", "")
+        if "challenge" in cf_mitigated:
+            return "cloudflare_challenge"
+
+        if any(m in html_lower for m in self.CLOUDFLARE_CHALLENGE_MARKERS):
+            return "cloudflare_challenge"
+
+        if any(m in html_lower for m in self.PERIMETERX_CHALLENGE_MARKERS):
+            return "perimeterx_challenge"
+
+        if status_code == 403 and any(
+            m in html_lower for m in self.GENERIC_CHALLENGE_MARKERS
+        ):
+            return "bot_challenge"
+
+        return None
+
+    def _challenge_result(self, reason: str, url: str) -> AuthDetectionResult:
+        return AuthDetectionResult(
+            requires_auth=False,
+            auth_type="bot_challenge",
+            login_url=url,
+            confidence=0.9,
+            blocked=True,
+            block_reason=reason,
+            details={"reason": reason},
+        )
 
     def detect_from_url(self, url: str) -> AuthDetectionResult:
         """Detect auth requirements from URL patterns."""
@@ -105,6 +186,13 @@ class AuthDetector:
         url: str,
     ) -> AuthDetectionResult:
         """Detect auth requirements from HTTP response."""
+        # Bot-challenge / anti-scraping interstitials (e.g. a Cloudflare managed
+        # challenge advertised via the cf-mitigated header) are not auth walls,
+        # even when they arrive as a 401/403.
+        reason = self._bot_challenge_reason(status_code, headers, None)
+        if reason:
+            return self._challenge_result(reason, url)
+
         # Check for 401 Unauthorized
         if status_code == 401:
             www_auth = headers.get("www-authenticate", "").lower()
@@ -150,6 +238,12 @@ class AuthDetector:
     def detect_from_html(self, html: str, url: str) -> AuthDetectionResult:
         """Detect auth requirements from HTML content."""
         html_lower = html.lower()
+
+        # Bot-challenge / anti-scraping interstitials (Cloudflare "Just a
+        # moment...", PerimeterX "Access Denied" captcha) are not auth walls.
+        reason = self._bot_challenge_reason(None, None, html)
+        if reason:
+            return self._challenge_result(reason, url)
 
         # Check for login form
         form_indicators = [
@@ -238,6 +332,13 @@ class AuthDetector:
 
         Returns the highest confidence result.
         """
+        # A bot-challenge / anti-scraping interstitial short-circuits every
+        # other signal: it must never be treated as a credential wall, even if
+        # the page happens to carry a <form> or a login-shaped URL (WI0-B6).
+        reason = self._bot_challenge_reason(status_code, headers, html)
+        if reason:
+            return self._challenge_result(reason, url)
+
         results = []
 
         # URL-based detection

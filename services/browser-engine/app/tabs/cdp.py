@@ -94,14 +94,19 @@ def _cdp_connect_failure(cdp_url: str, error: Exception) -> CDPConnectionError:
         code="cdp_connect_failed",
         cause=f"could not attach to Chrome debug endpoint {cdp_url}: {error}",
         fix=(
-            "Chrome must expose its debug port on an interface reachable from "
-            "the container: launch it with "
-            "'--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0' "
-            "(0.0.0.0 is host-local only when firewalled), or run a host-side "
-            "bridge such as "
-            "'socat TCP-LISTEN:9222,fork,bind=0.0.0.0 TCP:127.0.0.1:9222'. "
-            "The default 127.0.0.1 bind is unreachable from Docker. Host-side "
-            "tab capture is the durable fix (plan decision 24)."
+            "Chrome's debug port defaults to 127.0.0.1, which is unreachable "
+            "from the container. Bridge it to the Docker bridge interface only "
+            "(never the whole LAN): run a host-side "
+            "'socat TCP-LISTEN:9222,fork,bind=172.17.0.1 TCP:127.0.0.1:9222' "
+            "(172.17.0.1 is the default docker0 bridge IP; confirm yours with "
+            "'docker network inspect bridge'). Headed Chrome ignores "
+            "--remote-debugging-address and stays on loopback, so the socat "
+            "bridge is the reliable path for a headed browser. Only as a last "
+            "resort bind the port to all interfaces "
+            "('--remote-debugging-address=0.0.0.0' or socat 'bind=0.0.0.0') -- "
+            "that exposes the UNAUTHENTICATED debug port to the LAN and must be "
+            "firewalled. Host-side tab capture is the durable fix "
+            "(plan decision 24)."
         ),
     )
 
