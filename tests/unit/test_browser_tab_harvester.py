@@ -153,6 +153,18 @@ def test_resolve_cdp_connect_url_reports_unresolvable_host(monkeypatch):
     assert error.fix
 
 
+def test_resolve_cdp_connect_url_rejects_non_local_resolved_address(monkeypatch):
+    # A poisoned/misconfigured resolver must not be able to point the
+    # local-only CDP client at a public/remote address.
+    monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "8.8.8.8")
+    with pytest.raises(CDPConnectionError) as excinfo:
+        resolve_cdp_connect_url("http://host.docker.internal:9222")
+    error = excinfo.value
+    assert error.code == "cdp_resolved_address_not_local"
+    assert "8.8.8.8" in error.cause
+    assert error.fix
+
+
 @pytest.mark.asyncio
 async def test_harvester_connects_via_resolved_ip(monkeypatch):
     monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "172.17.0.1")

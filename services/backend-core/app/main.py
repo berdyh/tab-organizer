@@ -1,5 +1,6 @@
 """Backend Core Service - Main Application."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -9,9 +10,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.config_loader import get_ai_config
 from services.observability import RequestIDMiddleware, configure_logging, log_event
 
+from .api import ingest
 from .api.routes import router
 
 configure_logging("backend-core")
+
+
+def _log_reconcile_done(task: "asyncio.Task") -> None:
+    """Startup reconcile is fire-and-forget: log its result, never propagate."""
+    try:
+        swept = task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception as error:  # noqa: BLE001 - observability only
+        log_event("ingest.reconcile_failed", level=logging.ERROR, reason=str(error))
+        return
+    log_event("ingest.reconcile_startup_complete", swept=swept)
 
 
 @asynccontextmanager
@@ -26,6 +40,17 @@ async def lifespan(_app: FastAPI):
     if errors:
         log_event("config.invalid", level=logging.CRITICAL, errors=errors)
         raise RuntimeError("AI model configuration is invalid: " + "; ".join(errors))
+
+    # Durable-outbox recovery: after a crash between "ledger row committed" and
+    # "POST to ai-engine", the pending row's BackgroundTask is gone. Sweep once
+    # at startup (all sessions, pending+failed) to re-forward orphans and give
+    # failed rows one bounded retry. Fire-and-forget so a booting/absent
+    # ai-engine never blocks or fails startup.
+    reconcile_task = asyncio.create_task(
+        ingest.reconcile_pending_forwards(None, ("pending", "failed"), 100)
+    )
+    reconcile_task.add_done_callback(_log_reconcile_done)
+    _app.state.ingest_reconcile_task = reconcile_task
     yield
 
 
@@ -36,9 +61,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Bind X-Request-ID for every request before other middleware runs.
-app.add_middleware(RequestIDMiddleware, service="backend-core")
-
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -47,6 +69,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Starlette wraps middleware in reverse add order (last added = outermost), so
+# RequestIDMiddleware must be added last to wrap CORS -- otherwise a CORS
+# preflight (OPTIONS) short-circuits inside CORSMiddleware before ever
+# reaching this middleware and comes back with no X-Request-ID.
+app.add_middleware(RequestIDMiddleware, service="backend-core")
 
 # Include routes
 app.include_router(router, prefix="/api/v1")

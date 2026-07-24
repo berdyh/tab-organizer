@@ -1,4 +1,4 @@
-.PHONY: help test test-unit test-integration test-e2e test-performance test-all smoke-test clean coverage dev dev-up dev-down build deploy lint format security
+.PHONY: help test test-unit test-integration test-e2e test-performance test-all smoke-test test-security clean coverage dev dev-up dev-down build deploy lint format security
 
 # Default target
 .DEFAULT_GOAL := help
@@ -96,6 +96,11 @@ test-ops: ## Run focused CLI/config/runtime unit tests
 		tests/unit/test_cli_host_ai.py \
 		tests/unit/test_init_script.py \
 		tests/unit/test_runtime_auth_config.py -q
+
+test-security: ## Run the frozen security-invariant suite (tests/security)
+	@echo "$(BLUE)Running security-invariant suite...$(NC)"
+	@docker compose --profile test-unit run --rm test-unit \
+		pytest tests/security -m "security and not integration" -q
 
 test-watch: ## Run tests in watch mode for development
 	@echo "$(BLUE)Running tests in watch mode...$(NC)"

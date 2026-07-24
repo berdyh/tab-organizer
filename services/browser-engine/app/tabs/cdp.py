@@ -1,6 +1,7 @@
 """Attach-mode Chromium DevTools Protocol tab import."""
 
 import asyncio
+import ipaddress
 import re
 import socket
 from dataclasses import dataclass, field
@@ -64,7 +65,10 @@ def resolve_cdp_connect_url(validated_url: str) -> str:
     `host.docker.internal` name a user configures), but Chrome's debug port
     rejects that name in the Host header. Resolve any non-IP, non-localhost
     host to its IP before connecting; leave localhost/IP forms untouched (WI0
-    B2).
+    B2). The resolved IP is then checked against `ipaddress` private/loopback
+    ranges -- CDP attach is a local-only security invariant, so a poisoned or
+    misconfigured resolver must not be able to point Playwright's connection
+    at a non-local address.
     """
     parsed = urlparse(validated_url)
     hostname = (parsed.hostname or "").lower()
@@ -83,6 +87,34 @@ def resolve_cdp_connect_url(validated_url: str) -> str:
                 "'--add-host=host.docker.internal:host-gateway'."
             ),
         ) from error
+
+    try:
+        resolved_addr = ipaddress.ip_address(ip)
+    except ValueError as error:
+        raise CDPConnectionError(
+            code="cdp_resolved_address_invalid",
+            cause=(
+                f"resolver returned a non-IP value {ip!r} for Chrome debug "
+                f"host {hostname!r}: {error}"
+            ),
+            fix="Check the container's resolver/hosts entry for the debug host.",
+        ) from error
+
+    if not (resolved_addr.is_private or resolved_addr.is_loopback):
+        raise CDPConnectionError(
+            code="cdp_resolved_address_not_local",
+            cause=(
+                f"Chrome debug host {hostname!r} resolved to {ip}, which is "
+                "not a private/loopback address; refusing to attach a "
+                "local-only CDP client to a non-local target"
+            ),
+            fix=(
+                "CDP attach is local-only by design. Confirm the container's "
+                "resolver/hosts file maps this debug host to the Docker "
+                "bridge gateway or loopback (e.g. 'docker network inspect "
+                "bridge'), not to a public or otherwise remote address."
+            ),
+        )
 
     netloc = f"{ip}:{parsed.port}" if parsed.port else ip
     return urlunparse((parsed.scheme, netloc, "", "", "", ""))

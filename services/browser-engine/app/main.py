@@ -55,9 +55,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Bind X-Request-ID for every request before other middleware runs.
-app.add_middleware(RequestIDMiddleware, service="browser-engine")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -65,6 +62,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Starlette wraps middleware in reverse add order (last added = outermost), so
+# RequestIDMiddleware must be added last to wrap CORS -- otherwise a CORS
+# preflight (OPTIONS) short-circuits inside CORSMiddleware before ever
+# reaching this middleware and comes back with no X-Request-ID.
+app.add_middleware(RequestIDMiddleware, service="browser-engine")
 
 # Global instances
 auth_detector = AuthDetector()

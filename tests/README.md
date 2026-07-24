@@ -12,6 +12,7 @@ is mirrored by `.github/workflows/ci-cd.yml`.
 ```
 tests/
 ├── unit/           # Fast, isolated unit tests (pytest)
+├── security/       # Frozen black-box security-invariant suite (SECSUITE_VERSION)
 ├── integration/    # Tests against running services
 ├── e2e/            # End-to-end workflow tests (full docker stack)
 ├── load/           # Locust scenarios (no CLI wrapper yet)
@@ -39,6 +40,8 @@ make test-ai
 make test-browser
 make test-web
 make test-ops
+make test-security   # tests/security -- run as its own CI job (security-tests),
+                      # NOT part of tests/unit or test-unit's default command
 ```
 
 Or invoke `docker compose` directly when you need to iterate on a single

@@ -57,3 +57,29 @@ pytest tests/security -q
   (module-gated on `SEC_ALLOW_NETWORK=1`). `sec_managed` — needs
   harness-controlled env. `sec_seam` — Python-seam exception with a TS-porting
   rule.
+
+## Seam exceptions
+
+Every probe here is meant to be black-box (HTTP status codes, response bodies,
+recorded subprocess argv/env/stdin/cwd). Three probes touch importable Python
+instead, for the reasons below — listed here so a reader doesn't mistake an
+accepted, reasoned exception for an oversight:
+
+- **SEC-26** (`test_credential_isolation.py::test_mcp_tool_surface_has_no_credential_verbs`,
+  `sec_seam`) — imports `scripts.mcp.tabs.TOOL_FUNCTIONS` directly. TS-porting
+  rule: run the TS MCP server over stdio, issue `tools/list`, apply the same
+  name-allowlist and forbidden-verb regex to the returned tool names.
+- **SEC-39** (`test_auth_wall_fixtures.py`, `sec_seam`) — feeds Python fixture
+  data through a Python auth-classifier function. TS-porting rule: feed the
+  same `fixtures/authwalls/*.json` to the TS auth-classifier seam with the
+  same assertions.
+- **SEC-25** (`test_credential_isolation.py::test_agent_subprocess_env_contains_no_secrets`,
+  *not yet marked* `sec_seam`) — imports
+  `AgentCLILLMProvider.ENV_ALLOWLIST` directly to check the recorded
+  subprocess env against it. No black-box process-introspection primitive
+  exists yet, and there is no second (TS) implementation to black-box test
+  against, so writing a TS-porting rule now would be speculative. This is
+  left as an acknowledged, undocumented-until-now gap rather than a fake
+  black-box wrapper around one Python import — revisit (and add the
+  `sec_seam` marker + a real TS-porting rule) when the TS Agent SDK adapter
+  lands.

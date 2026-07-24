@@ -114,6 +114,32 @@ def test_each_service_installs_request_id_middleware():
         assert obs.RequestIDMiddleware in classes
 
 
+@pytest.mark.parametrize(
+    "app",
+    [backend_main.app, ai_main.app, browser_main.app],
+    ids=["backend-core", "ai-engine", "browser-engine"],
+)
+def test_cors_preflight_still_carries_request_id(app):
+    """RequestIDMiddleware must be the outermost layer.
+
+    Starlette wraps middleware in reverse add order (last added = outermost).
+    CORSMiddleware answers an OPTIONS preflight itself, short-circuiting
+    before the route/app -- if it were added after (outside)
+    RequestIDMiddleware, the preflight response would never pick up
+    X-Request-ID, breaking the "every request gets one" contract.
+    """
+    client = TestClient(app)
+    resp = client.options(
+        "/",
+        headers={
+            "Origin": "http://example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("X-Request-ID")
+
+
 # --------------------------------------------------------------------------- #
 # Outbound propagation helper
 # --------------------------------------------------------------------------- #

@@ -5,6 +5,15 @@ genuinely observable: with every primary token configured, each door is opened
 by exactly one principal and refused (401) for all others. The browser/backend
 fallback chains are dormant while their primary tokens are set -- frozen as
 *permitted when primary is unset*, not *required*.
+
+This fallback is an intentional, documented design choice, not a bug:
+CLAUDE.md's Conventions section states "browser-engine scrape/auth control
+endpoints require BROWSER_ENGINE_API_TOKEN (with callback/AI token
+fallback)". Do not "fix" this suite by asserting the fallback must be
+rejected -- that would contradict the documented contract. See
+services/browser-engine/MODULE.md's security note for the accepted
+blast-radius tradeoff (a callback-only token holder can also reach
+scrape/CDP-control).
 """
 
 import os
@@ -30,6 +39,10 @@ def _principals() -> dict:
 # door -> (service fixture, method, path, body, {principals that must be allowed})
 DOORS = {
     "ai_embed": ("ai", "POST", "/embed", {"texts": ["x"]}, {"ai"}),
+    # Only "browser" is asserted here because managed mode sets a distinct
+    # primary browser token; the callback/AI fallback (see module docstring,
+    # CLAUDE.md) is dormant while that primary is set, so it correctly stays
+    # out of `allowed` for this matrix -- it is not disabled or removed.
     "browser_auth_pending": ("browser", "GET", "/auth/pending", None, {"browser"}),
     "backend_tabs_open": (
         "backend",

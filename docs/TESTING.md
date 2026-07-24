@@ -32,6 +32,7 @@ make test-ai
 make test-browser
 make test-web
 make test-ops
+make test-security  # frozen tests/security suite (SECSUITE_VERSION); own CI job
 make coverage
 ```
 
@@ -99,11 +100,14 @@ docker compose --profile test-unit --profile test-integration --profile test-e2e
 
 Pipeline stages (GitHub Actions):
 1. Unit tests + coverage
-2. Code quality (lint, format, type, security)
-3. Integration tests
-4. End-to-end tests
-5. Build & push images (main/develop)
-6. Deploy (staging=develop, prod=main)
+2. Security-invariant suite (`security-tests` job, `tests/security`) -- runs
+   independently of unit tests (it is not part of `tests/unit` or test-unit's
+   default command) and gates image builds
+3. Code quality (lint, format, type, security)
+4. Integration tests
+5. End-to-end tests
+6. Build & push images (main/develop)
+7. Deploy (staging=develop, prod=main)
 
 CI produces JUnit XML and coverage artifacts per run.
 

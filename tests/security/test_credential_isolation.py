@@ -40,6 +40,11 @@ def test_agent_subprocess_env_contains_no_secrets(ai, agent_cli_recorder, monkey
     """SEC-25: the spawned agent CLI env is allowlisted and secret-free."""
     import os
 
+    # Seam exception (undocumented until now, see tests/security/README.md's
+    # "Seam exceptions" section): this imports the allowlist directly instead
+    # of black-box-checking it, because no black-box process-introspection
+    # primitive exists yet and there is no second (TS) implementation to test
+    # against. Revisit when the TS Agent SDK adapter lands.
     from services.ai_engine.app.providers.agent_cli import AgentCLILLMProvider
 
     sentinels = {
