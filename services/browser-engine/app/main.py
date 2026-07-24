@@ -227,22 +227,38 @@ def _record_downstream_error(
     source: str,
     message: str,
     url: Optional[str] = None,
+    docs_affected: int = 1,
+    scope: Optional[str] = None,
 ) -> None:
-    """Record callback/index errors without aborting the scrape batch."""
+    """Record callback/index errors without aborting the scrape batch.
+
+    WI0 B5: indexing is one batched `/index` call covering every scraped
+    document, so a single failed call means every one of those documents went
+    unindexed. `*_failed` counters therefore track per-document consequence
+    (`docs_affected`), not call count, and batch-scoped errors carry
+    `scope="batch"` + `docs_in_failed_call` so status readers see the true
+    blast radius instead of a misleading "1 failure".
+    """
     task_info["downstream_error_count"] = task_info.get("downstream_error_count", 0) + 1
 
     if source == "backend_callback":
         task_info["backend_callback_failed"] = (
-            task_info.get("backend_callback_failed", 0) + 1
+            task_info.get("backend_callback_failed", 0) + docs_affected
         )
     elif source == "ai_index":
-        task_info["ai_index_failed"] = task_info.get("ai_index_failed", 0) + 1
+        task_info["ai_index_failed"] = (
+            task_info.get("ai_index_failed", 0) + docs_affected
+        )
 
     errors = task_info.setdefault("downstream_errors", [])
     if len(errors) < MAX_RECORDED_DOWNSTREAM_ERRORS:
         error = {"source": source, "message": message}
         if url:
             error["url"] = url
+        if scope:
+            error["scope"] = scope
+        if docs_affected != 1:
+            error["docs_in_failed_call"] = docs_affected
         errors.append(error)
     else:
         task_info["downstream_errors_truncated"] = True
@@ -444,6 +460,8 @@ async def scrape_urls_background(
                     scraping_tasks[session_id],
                     "ai_index",
                     str(e),
+                    docs_affected=len(documents),
+                    scope="batch",
                 )
 
         _finalize_scrape_status(scraping_tasks[session_id])

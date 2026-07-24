@@ -99,7 +99,7 @@ except ModuleNotFoundError:
     _install_playwright_stub()
 
 from services.browser_engine.app import main as browser_main
-from services.browser_engine.app.scraper.engine import ScrapeResult, ScraperEngine
+from services.browser_engine.app.scraper.engine import ScraperEngine, ScrapeResult
 
 
 def test_service_token_headers_use_ai_engine_token(monkeypatch):
@@ -254,7 +254,11 @@ async def test_safe_httpx_get_rejects_unsafe_redirect_target(monkeypatch):
         )
 
     assert calls == [
-        {"method": "GET", "url": "https://93.184.216.34/path", "follow_redirects": False}
+        {
+            "method": "GET",
+            "url": "https://93.184.216.34/path",
+            "follow_redirects": False,
+        }
     ]
 
 
@@ -618,6 +622,58 @@ async def test_ai_index_http_detail_payload_is_visible(monkeypatch):
         assert "OPENROUTER_API_KEY is not configured" in (
             status["downstream_errors"][0]["message"]
         )
+    finally:
+        browser_main.scraping_tasks.pop(session_id, None)
+
+
+@pytest.mark.asyncio
+async def test_ai_index_batch_failure_counts_every_document(monkeypatch):
+    # WI0 B5: one failed batched /index call leaves every document in that call
+    # unindexed. ai_index_failed must reflect per-document blast radius and the
+    # error entry must carry batch scope + docs_in_failed_call, not read as a
+    # single 1-in-N blip.
+    session_id = "index-batch-failure"
+    results = [
+        ScrapeResult(
+            url=f"https://example.com/doc-{index}",
+            status="success",
+            title=f"Doc {index}",
+            content=f"content {index}",
+            status_code=200,
+        )
+        for index in range(3)
+    ]
+    fake_scraper = FakeScraper(results)
+
+    def handler(url, kwargs):
+        if url.endswith("/callback/scrape-complete"):
+            return _response(url, json={"status": "updated"})
+        return _response(url, status_code=500, text="index failed")
+
+    _use_background_scraper(monkeypatch, fake_scraper)
+    monkeypatch.setattr(
+        browser_main.httpx,
+        "AsyncClient",
+        lambda: FakeAsyncClient(handler),
+    )
+    monkeypatch.setenv("AI_ENGINE_URL", "http://ai.test")
+    browser_main.scraping_tasks[session_id] = browser_main._new_scrape_task_info(3)
+
+    try:
+        await browser_main.scrape_urls_background(
+            session_id, [r.url for r in results], False
+        )
+
+        status = browser_main.scraping_tasks[session_id]
+        assert status["success"] == 3
+        assert status["status"] == "completed_with_downstream_errors"
+        # One failed call, but three documents unindexed.
+        assert status["downstream_error_count"] == 1
+        assert status["ai_index_failed"] == 3
+        error = status["downstream_errors"][0]
+        assert error["source"] == "ai_index"
+        assert error["scope"] == "batch"
+        assert error["docs_in_failed_call"] == 3
     finally:
         browser_main.scraping_tasks.pop(session_id, None)
 

@@ -605,6 +605,12 @@ async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTas
     # Get URLs to scrape
     if request.urls:
         urls = request.urls
+        # WI0 B3: inline urls must be registered before dispatch. Without this
+        # every scrape-complete callback fails "URL not found in session" and
+        # the scraped content is dropped while batch status still reads
+        # completed. add_urls_to_session dedupes against the existing session
+        # url store, so re-registering already-known urls is a no-op.
+        session_manager.add_urls_to_session(session.id, urls)
     else:
         pending = session.url_store.get_by_status("pending")
         urls = [r.original for r in pending]
@@ -761,6 +767,24 @@ async def _semantic_search(
             )
         response.raise_for_status()
         return response.json().get("results", [])
+
+
+def _semantic_failure_reason(error: Exception) -> str:
+    """Compact, log/response-safe reason for a failed semantic leg."""
+    if isinstance(error, httpx.HTTPStatusError):
+        response = error.response
+        detail = None
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            detail = payload.get("detail") or payload.get("message")
+        reason = f"ai-engine returned HTTP {response.status_code}"
+        return f"{reason}: {detail}" if detail else reason
+    if isinstance(error, httpx.RequestError):
+        return f"ai-engine unreachable: {error}"
+    return str(error) or error.__class__.__name__
 
 
 def _merge_search_results(
@@ -943,11 +967,39 @@ async def search_tabs(
 
     keyword_results: list[dict[str, Any]] = []
     semantic_results: list[dict[str, Any]] = []
+    degraded: Optional[str] = None
 
     if mode in {"hybrid", "keyword"}:
         keyword_results = session_manager.search_indexed_tabs(session_id, query, limit)
     if mode in {"hybrid", "semantic"}:
-        semantic_results = await _semantic_search(session_id, query, limit)
+        # WI0 B4: a dead semantic leg must not 500 the hybrid default. In
+        # hybrid mode degrade to keyword-only and surface the reason; in
+        # semantic-only mode there is nothing to fall back to, so raise a
+        # structured error the caller can act on.
+        try:
+            semantic_results = await _semantic_search(session_id, query, limit)
+        except Exception as error:  # noqa: BLE001 - degrade, don't propagate
+            reason = _semantic_failure_reason(error)
+            log_event(
+                "search.semantic_degraded",
+                level=logging.WARNING,
+                session_id=session_id,
+                mode=mode,
+                reason=reason,
+            )
+            if mode == "semantic":
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "code": "semantic_unavailable",
+                        "cause": reason,
+                        "fix": (
+                            "Verify the AI Engine embedding provider is "
+                            "configured and reachable, or use mode=keyword."
+                        ),
+                    },
+                ) from error
+            degraded = f"semantic_unavailable: {reason}"
 
     if mode == "keyword":
         results = keyword_results
@@ -956,7 +1008,14 @@ async def search_tabs(
     else:
         results = _merge_search_results(keyword_results, semantic_results, limit)
 
-    return {"results": results[:limit], "count": len(results[:limit]), "mode": mode}
+    response: dict[str, Any] = {
+        "results": results[:limit],
+        "count": len(results[:limit]),
+        "mode": mode,
+    }
+    if degraded:
+        response["degraded"] = degraded
+    return response
 
 
 # Chat endpoint (proxy to AI Engine; mirrors the /cluster proxy pattern)

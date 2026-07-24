@@ -5,9 +5,11 @@ import pytest
 from fastapi import HTTPException
 
 from services import url_safety
+from services.backend_core.app.api import routes
 from services.backend_core.app.api.routes import (
     ClusterRequest,
     ScrapeRequest,
+    SearchRequest,
     URLInput,
     _ai_engine_headers,
     _browser_engine_headers,
@@ -16,6 +18,7 @@ from services.backend_core.app.api.routes import (
     get_pending_auth,
     get_scrape_status,
     scrape_complete_callback,
+    search_tabs,
     session_manager,
     start_clustering,
     start_scraping,
@@ -319,3 +322,91 @@ async def test_clustering_reports_ai_engine_http_errors(monkeypatch):
         assert "Clustering failed" in exc_info.value.detail
     finally:
         session_manager.delete_session(session.id)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_degrades_to_keyword_when_semantic_leg_fails(monkeypatch):
+    # WI0 B4: a dead semantic leg must not 500 the hybrid default. Keyword hits
+    # are returned with a `degraded` diagnostic instead.
+    async def failing_semantic(session_id, query, top_k):
+        response = httpx.Response(
+            500,
+            request=httpx.Request("POST", "http://ai-engine:8090/search"),
+            json={"detail": "OPENROUTER_API_KEY is not configured"},
+        )
+        response.raise_for_status()
+
+    monkeypatch.setattr(routes, "_semantic_search", failing_semantic)
+    monkeypatch.setattr(
+        routes.session_manager,
+        "search_indexed_tabs",
+        lambda session_id, query, limit: [
+            {
+                "url": "https://example.com/kw",
+                "title": "Keyword Hit",
+                "content": "widgets keyword content",
+                "score": 1.0,
+                "source": "keyword",
+            }
+        ],
+    )
+
+    result = await search_tabs(SearchRequest(query="widgets", mode="hybrid"))
+
+    assert result["mode"] == "hybrid"
+    assert result["count"] == 1
+    assert result["results"][0]["url"] == "https://example.com/kw"
+    assert result["degraded"].startswith("semantic_unavailable:")
+    assert "OPENROUTER_API_KEY is not configured" in result["degraded"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_only_search_raises_structured_error_when_leg_fails(monkeypatch):
+    # Semantic-only has nothing to fall back to: surface a {code, cause, fix}
+    # HTTP error instead of a bare 500.
+    async def failing_semantic(session_id, query, top_k):
+        response = httpx.Response(
+            502,
+            request=httpx.Request("POST", "http://ai-engine:8090/search"),
+            text="ai-engine down",
+        )
+        response.raise_for_status()
+
+    monkeypatch.setattr(routes, "_semantic_search", failing_semantic)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await search_tabs(SearchRequest(query="widgets", mode="semantic"))
+
+    assert exc_info.value.status_code == 502
+    detail = exc_info.value.detail
+    assert detail["code"] == "semantic_unavailable"
+    assert "502" in detail["cause"]
+    assert detail["fix"]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_omits_degraded_field_when_semantic_leg_succeeds(
+    monkeypatch,
+):
+    async def ok_semantic(session_id, query, top_k):
+        return [
+            {
+                "url": "https://example.com/sem",
+                "title": "Semantic Hit",
+                "content": "semantic content",
+                "score": 0.9,
+                "source": "semantic",
+            }
+        ]
+
+    monkeypatch.setattr(routes, "_semantic_search", ok_semantic)
+    monkeypatch.setattr(
+        routes.session_manager,
+        "search_indexed_tabs",
+        lambda session_id, query, limit: [],
+    )
+
+    result = await search_tabs(SearchRequest(query="widgets", mode="hybrid"))
+
+    assert "degraded" not in result
+    assert result["count"] == 1

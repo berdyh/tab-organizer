@@ -308,6 +308,38 @@ server {
 }
 ```
 
+## Browser Tab Import (CDP) — Docker networking caveat
+
+Tab import attaches (read-only, attach-only) to a Chrome/Chromium you started
+yourself with remote debugging enabled:
+
+```bash
+google-chrome --remote-debugging-port=9222
+```
+
+The Browser Engine runs in a container, and two Docker realities make the
+default `http://host.docker.internal:9222` fail as-is:
+
+1. Chrome's debug HTTP server **rejects any `Host` header that is not an IP or
+   `localhost`** ("Host header is specified and is not an IP address or
+   localhost"). The engine works around this by resolving the configured host
+   to its IP before connecting — you keep configuring the friendly hostname.
+2. Chrome binds the debug port to `127.0.0.1` by default, which is **not
+   reachable from the container**. Expose it on a Docker-reachable interface,
+   e.g. run a host-side bridge:
+
+   ```bash
+   socat TCP-LISTEN:9222,fork,bind=0.0.0.0 TCP:127.0.0.1:9222
+   ```
+
+   (Only do this on a trusted/firewalled host — it widens who can reach the
+   debug port.) On Linux also ensure the container can resolve
+   `host.docker.internal` (`--add-host=host.docker.internal:host-gateway`).
+
+If attach still fails, the engine returns a `{code, cause, fix}` error naming
+these requirements. Host-side tab capture is the durable replacement and is
+tracked in the TypeScript migration plan.
+
 ## Next Steps
 
 - Read the [Development Guide](DEVELOPMENT.md) for contributing
