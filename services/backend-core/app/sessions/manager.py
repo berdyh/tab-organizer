@@ -1,15 +1,19 @@
 """Session management for organizing URLs into collections."""
 
+import copy
 import json
+import logging
 import os
 import re
 import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+from services.observability import log_event
 
 from ..url_input.store import URLRecord, URLStore
 
@@ -25,16 +29,47 @@ SCRAPE_STATUS_TO_URL_STATUS = {
 }
 
 
+def _parse_datetime_utc(value: str) -> datetime:
+    """Parse an ISO-8601 timestamp to a UTC-naive datetime.
+
+    tz-aware inputs are converted to UTC then made naive so every parsed value
+    is mutually comparable; unparseable inputs return ``datetime.min`` so any
+    pre-existing garbage ``fetched_at`` row ranks below every real capture
+    (inverting the "zzz pins forever" poison into "zzz loses forever").
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return datetime.min
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def capture_order_key(fetched_at: str, attempt: int) -> tuple[int, datetime, int]:
+    """Total order over captures; legacy (attempt 0) always loses to any v1.
+
+    ``source_rank`` is derived from ``attempt`` (the legacy shim writes
+    ``attempt=0``, v1 enforces ``attempt>=1``), so a legacy capture can never
+    outrank a v1 capture regardless of receipt-clock skew during rolling
+    deploy. Within a tier, newest ``fetched_at`` then highest attempt wins.
+    Comparison is always parse-based, never lexicographic.
+    """
+    source_rank = 1 if attempt >= 1 else 0
+    return (source_rank, _parse_datetime_utc(fetched_at), attempt)
+
+
 @dataclass
 class IngestCapture:
     """One fetch-attempt result offered to the idempotent ingest writer.
 
     ``attempt`` is the browser-engine per-(session,url) in-process counter
-    (legacy-mapped writes pass ``0`` so they lose every tie against a real v1
-    write). ``fetched_at`` is an ISO-8601 UTC string assigned by the single
-    browser-engine writer at fetch completion; the ordering rule assumes all
-    ``fetched_at`` values are mutually comparable because they come from one
-    writer's clock (see the sessions MODULE card).
+    (legacy-mapped writes pass ``0`` → ``source_rank=0`` in ``capture_order_key``
+    so they lose to every real v1 write). ``fetched_at`` is an ISO-8601 string;
+    v1 callers have it validated + normalized to canonical UTC-naive microsecond
+    ISO at the boundary, and ordering is always via ``capture_order_key`` (parse
+    based, never lexicographic), so cross-writer/legacy rows still compare
+    correctly (see the sessions MODULE card).
     """
 
     capture_id: str
@@ -668,6 +703,13 @@ class SessionManager:
             received_at = datetime.utcnow().isoformat()
             if self._db_path:
                 with self._connect() as conn:
+                    # Acquire the SQLite write lock BEFORE the duplicate/ordering
+                    # reads so the whole check-then-write is one serialized unit
+                    # even across processes / two SessionManager instances on one
+                    # DB (bounded by busy_timeout; contention -> OperationalError
+                    # -> 500 -> browser-engine retry). The RLock only guards
+                    # in-process memory state, not cross-process ordering.
+                    conn.execute("BEGIN IMMEDIATE")
                     return self._ingest_apply(
                         conn, session, capture, normalized, received_at
                     )
@@ -683,13 +725,12 @@ class SessionManager:
     ) -> IngestOutcome:
         existing = self._capture_lookup(conn, capture.capture_id)
         if existing is not None:
-            return self._duplicate_outcome(session, capture, normalized, existing)
+            return self._duplicate_outcome(conn, session, capture, normalized, existing)
 
         latest = self._latest_applied_lookup(conn, capture.session_id, normalized)
-        if latest is not None and (capture.fetched_at, capture.attempt) < (
-            latest[0],
-            latest[1],
-        ):
+        if latest is not None and capture_order_key(
+            capture.fetched_at, capture.attempt
+        ) < capture_order_key(latest[0], latest[1]):
             self._insert_capture(
                 conn, capture, normalized, received_at, "stale", "skipped"
             )
@@ -703,23 +744,39 @@ class SessionManager:
             metadata = {**capture.metadata, "content": capture.content}
         else:
             metadata = dict(capture.metadata)
-        session.url_store.update_status(capture.url, url_status, metadata=metadata)
-        session.updated_at = datetime.utcnow()
-        record = session.url_store.get(capture.url)
 
-        self._insert_capture(
-            conn, capture, normalized, received_at, "applied", index_state
-        )
-        self._set_latest_applied(conn, capture, normalized)
+        # Snapshot in-memory state so a failed SQLite write leaves memory AND DB
+        # at the pre-call state (the SQLite side rolls back via the connection
+        # context manager; without this, memory would report "scraped" while
+        # SQLite still says "pending"). All under the RLock, so no reader
+        # observes the intermediate.
+        snapshot = copy.deepcopy(session.url_store.get(capture.url))
+        prev_updated_at = session.updated_at
+        try:
+            session.url_store.update_status(capture.url, url_status, metadata=metadata)
+            session.updated_at = datetime.utcnow()
+            record = session.url_store.get(capture.url)
 
-        if conn is not None and record is not None:
-            self._save_session_row(conn, session)
-            self._save_url_record(conn, session.id, record)
-            self._save_state(conn)
+            self._insert_capture(
+                conn, capture, normalized, received_at, "applied", index_state
+            )
+            self._set_latest_applied(conn, capture, normalized)
+
+            if conn is not None and record is not None:
+                self._save_session_row(conn, session)
+                self._save_url_record(conn, session.id, record)
+                self._save_state(conn)
+        except Exception:
+            if snapshot is not None:
+                self._restore_url_record(session, capture.url, snapshot)
+            session.updated_at = prev_updated_at
+            raise
 
         forward_document = (
-            self._forward_document(capture, normalized, record)
-            if should_forward
+            self._forward_document(
+                record, normalized, capture.capture_id, capture.auth_used
+            )
+            if should_forward and record is not None
             else None
         )
         return IngestOutcome(
@@ -732,58 +789,127 @@ class SessionManager:
             session_id=capture.session_id,
         )
 
+    @staticmethod
+    def _restore_url_record(session: Session, url: str, snapshot: URLRecord) -> None:
+        """Copy a pre-mutation snapshot back onto the live record in place."""
+        live = session.url_store.get(url)
+        if live is None:
+            return
+        live.status = snapshot.status
+        live.metadata = snapshot.metadata
+        live.content_hash = snapshot.content_hash
+        live.embedding_id = snapshot.embedding_id
+        live.scraped_at = snapshot.scraped_at
+        live.original = snapshot.original
+        live.created_at = snapshot.created_at
+
     def _duplicate_outcome(
         self,
+        conn: Optional[sqlite3.Connection],
         session: Session,
         capture: IngestCapture,
         normalized: str,
         existing: dict,
     ) -> IngestOutcome:
-        """Replay of a known capture_id: no state change, maybe re-forward."""
-        should_forward = False
+        """Replay of a known capture_id: no state change, maybe re-forward.
+
+        ``capture_id`` is the ONLY field read from the incoming request; every
+        other value (session, url key, auth_used, content) comes from the stored
+        ledger row + record so a duplicate delivery carrying mutated content can
+        never overwrite or forward the wrong body.
+        """
+        stored_session_id = existing["session_id"]
+        stored_normalized = existing["normalized"]
+        if capture.session_id != stored_session_id or normalized != stored_normalized:
+            log_event(
+                "ingest.duplicate_key_mismatch",
+                level=logging.WARNING,
+                capture_id=capture.capture_id,
+                stored_session_id=stored_session_id,
+            )
+
         forward_document = None
-        record = session.url_store.get(capture.url)
+        should_forward = False
         if (
             existing["outcome"] == "applied"
             and existing["index_state"] in ("pending", "failed")
             and existing["status"] == "success"
-            and record is not None
-            and record.metadata.get("content")
         ):
-            should_forward = True
-            forward_document = self._forward_document(capture, normalized, record)
+            forward_document = self._build_forward_document(
+                conn, stored_session_id, stored_normalized, existing["capture_id"]
+            )
+            should_forward = forward_document is not None
         return IngestOutcome(
             "duplicate",
-            capture.capture_id,
-            normalized=normalized,
+            existing["capture_id"],
+            normalized=stored_normalized,
             index_state=existing["index_state"],
             should_forward=should_forward,
             forward_document=forward_document,
-            session_id=capture.session_id,
+            session_id=stored_session_id,
         )
+
+    def _build_forward_document(
+        self,
+        conn: Optional[sqlite3.Connection],
+        session_id: str,
+        normalized: str,
+        capture_id: str,
+    ) -> Optional[dict]:
+        """Build the /index doc for a stored capture, or None if it is no longer
+        the latest applied capture for its key / its record is gone."""
+        latest = self._latest_applied_lookup(conn, session_id, normalized)
+        if latest is None or latest[2] != capture_id:
+            return None
+        stored = self._capture_lookup(conn, capture_id)
+        if stored is None or stored["outcome"] != "applied":
+            return None
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        record = session.url_store.get(normalized)
+        if record is None:
+            return None
+        return self._forward_document(
+            record, normalized, capture_id, bool(stored["auth_used"])
+        )
+
+    def build_forward_document(
+        self, session_id: str, normalized: str, capture_id: str
+    ) -> Optional[dict]:
+        """Public wrapper (own lock/connection) for the outbox reconcile sweep."""
+        with self._lock:
+            if self._db_path:
+                with self._connect() as conn:
+                    return self._build_forward_document(
+                        conn, session_id, normalized, capture_id
+                    )
+            return self._build_forward_document(
+                None, session_id, normalized, capture_id
+            )
 
     @staticmethod
     def _forward_document(
-        capture: IngestCapture,
+        record: URLRecord,
         normalized: str,
-        record: Optional[URLRecord],
+        capture_id: str,
+        auth_used: bool,
     ) -> dict:
-        """Build the ai-engine /index document for an applied/replayed capture.
+        """Build the ai-engine /index document from STORED record state only.
 
         Row id is the normalized url so ai-engine's per-(session,url) upsert
         (delete-then-insert on the same document id) dedupes replays and newer
         attempts. auth_used + capture_id ride in metadata (finding 37 hook).
+        Never reads content/title/auth_used from an incoming replay request.
         """
-        source_metadata = dict(record.metadata) if record else {}
+        source_metadata = dict(record.metadata)
         content = source_metadata.pop("content", None)
-        if capture.content is not None:
-            content = capture.content
         title = str(source_metadata.get("title") or "")
-        source_metadata["auth_used"] = capture.auth_used
-        source_metadata["capture_id"] = capture.capture_id
+        source_metadata["auth_used"] = auth_used
+        source_metadata["capture_id"] = capture_id
         return {
             "id": normalized,
-            "url": record.original if record else capture.url,
+            "url": record.original,
             "title": title,
             "content": content or "",
             "metadata": source_metadata,
@@ -806,18 +932,21 @@ class SessionManager:
         normalized: str,
     ) -> Optional[tuple[str, int, str]]:
         if conn is not None:
-            row = conn.execute(
+            rows = conn.execute(
                 """
                 SELECT fetched_at, attempt, capture_id FROM ingest_captures
                 WHERE session_id = ? AND normalized = ? AND outcome = 'applied'
-                ORDER BY fetched_at DESC, attempt DESC
-                LIMIT 1
                 """,
                 (session_id, normalized),
-            ).fetchone()
-            if row is None:
+            ).fetchall()
+            if not rows:
                 return None
-            return (row["fetched_at"], row["attempt"], row["capture_id"])
+            # Pick the max via the parse-based order key in Python (the applied
+            # set per url is small) so no lexicographic ORDER BY survives.
+            best = max(
+                rows, key=lambda r: capture_order_key(r["fetched_at"], r["attempt"])
+            )
+            return (best["fetched_at"], best["attempt"], best["capture_id"])
         return self._latest_applied.get((session_id, normalized))
 
     def _insert_capture(
@@ -916,6 +1045,90 @@ class SessionManager:
                 capture["index_state"] = index_state
                 capture["index_error"] = error
 
+    def get_capture_index_state(self, capture_id: str) -> Optional[str]:
+        """Public read of a ledger row's index_state (post-lock forward guard)."""
+        with self._lock:
+            if self._db_path:
+                with self._connect() as conn:
+                    row = self._capture_lookup(conn, capture_id)
+            else:
+                row = self._capture_lookup(None, capture_id)
+            return row["index_state"] if row else None
+
+    def list_unforwarded_captures(
+        self,
+        session_id: Optional[str],
+        states: tuple[str, ...],
+        limit: int,
+    ) -> list[dict]:
+        """Outbox reader: applied captures whose index_state is un-settled.
+
+        Rows that are no longer the latest applied capture for their key are
+        marked ``superseded`` in the same pass (so they stop being reselected)
+        and excluded from the return. Oldest-received first, bounded by limit.
+        """
+        if not states:
+            return []
+        with self._lock:
+            if self._db_path:
+                with self._connect() as conn:
+                    placeholders = ",".join("?" for _ in states)
+                    params: list = list(states)
+                    sql = (
+                        "SELECT capture_id, session_id, normalized, auth_used "
+                        "FROM ingest_captures "
+                        "WHERE outcome = 'applied' "
+                        f"AND index_state IN ({placeholders})"
+                    )
+                    if session_id is not None:
+                        sql += " AND session_id = ?"
+                        params.append(session_id)
+                    sql += " ORDER BY received_at ASC LIMIT ?"
+                    params.append(limit)
+                    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+                    result = []
+                    for row in rows:
+                        latest = self._latest_applied_lookup(
+                            conn, row["session_id"], row["normalized"]
+                        )
+                        if latest is None or latest[2] != row["capture_id"]:
+                            conn.execute(
+                                "UPDATE ingest_captures SET index_state = "
+                                "'superseded' WHERE capture_id = ?",
+                                (row["capture_id"],),
+                            )
+                            continue
+                        result.append(row)
+                    return result
+
+            candidates = sorted(
+                (
+                    capture
+                    for capture in self._captures.values()
+                    if capture["outcome"] == "applied"
+                    and capture["index_state"] in states
+                    and (session_id is None or capture["session_id"] == session_id)
+                ),
+                key=lambda c: c["received_at"],
+            )[: max(0, limit)]
+            result = []
+            for capture in candidates:
+                latest = self._latest_applied_lookup(
+                    None, capture["session_id"], capture["normalized"]
+                )
+                if latest is None or latest[2] != capture["capture_id"]:
+                    capture["index_state"] = "superseded"
+                    continue
+                result.append(
+                    {
+                        "capture_id": capture["capture_id"],
+                        "session_id": capture["session_id"],
+                        "normalized": capture["normalized"],
+                        "auth_used": capture["auth_used"],
+                    }
+                )
+            return result
+
     def capture_index_counts(self, session_id: str) -> dict:
         """Ledger aggregates overlaid onto /scrape/status (B5 per-document).
 
@@ -929,7 +1142,8 @@ class SessionManager:
                     dict(row)
                     for row in conn.execute(
                         """
-                        SELECT normalized, index_state, index_error
+                        SELECT normalized, index_state, index_error,
+                               fetched_at, attempt
                         FROM ingest_captures
                         WHERE session_id = ? AND outcome = 'applied'
                         """,
@@ -944,10 +1158,22 @@ class SessionManager:
                 and capture["outcome"] == "applied"
             ]
 
+        # Count only the LATEST applied capture per url: a doc that failed on
+        # attempt 1 and succeeded on attempt 2 must not keep reporting a stale
+        # failure. Group by normalized, keep each group's max by order key.
+        latest_by_norm: dict[str, dict] = {}
+        for row in rows:
+            key = row["normalized"]
+            current = latest_by_norm.get(key)
+            if current is None or capture_order_key(
+                row["fetched_at"], row["attempt"]
+            ) > capture_order_key(current["fetched_at"], current["attempt"]):
+                latest_by_norm[key] = row
+
         failed = 0
         pending = 0
         downstream_errors: list[dict] = []
-        for row in rows:
+        for row in latest_by_norm.values():
             state = row["index_state"]
             if state == "failed":
                 failed += 1
@@ -1100,13 +1326,18 @@ class SessionManager:
         results = []
         for session in sessions:
             for record in session.url_store.get_all():
-                haystack = " ".join(
-                    [
-                        record.original,
-                        str(record.metadata.get("title") or ""),
-                        str(record.metadata.get("content") or ""),
-                    ]
-                ).lower()
+                # Match the SQLite FTS insertion condition EXACTLY so keyword
+                # hits are identical across backends: only scraped rows with a
+                # non-empty title/content, and the haystack is title+content
+                # only (the FTS url/domain columns are UNINDEXED, so URL-only
+                # term hits must not match in memory either).
+                if record.status != "scraped":
+                    continue
+                title = str(record.metadata.get("title") or "")
+                content = str(record.metadata.get("content") or "")
+                if not title and not content:
+                    continue
+                haystack = f"{title} {content}".lower()
                 if all(term in haystack for term in terms):
                     results.append(
                         {
@@ -1115,7 +1346,7 @@ class SessionManager:
                             "title": str(
                                 record.metadata.get("title") or record.original
                             ),
-                            "content": str(record.metadata.get("content") or ""),
+                            "content": content,
                             "domain": self._domain_for_url(record.normalized),
                             "score": 1.0 / float(len(results) + 1),
                             "source": "keyword",

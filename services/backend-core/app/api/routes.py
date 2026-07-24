@@ -1022,7 +1022,10 @@ async def search_tabs(
 
 # Chat endpoint (proxy to AI Engine; mirrors the /cluster proxy pattern)
 @router.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest,
+    _auth=Depends(_require_backend_agent_auth),
+):
     """Proxy chat to AI Engine so it stays behind Backend Core (WI0 B7).
 
     Web UI previously called `{ai_url}/chat` directly, bypassing the "Backend
@@ -1252,11 +1255,15 @@ def scrape_complete_callback(
 
     Old writers (and a rolling-deploy window's older browser-engine builds)
     still POST this legacy shape. It maps onto ``IngestCapture`` with a
-    synthetic ``capture_id`` and ``attempt=0`` (receipt-time newest-wins =
-    exactly the pre-ingest last-write-wins behavior; ``attempt=0`` loses every
-    tie against a real v1 write) and preserves the legacy response shape.
-    Browser-engine now calls ``/api/v1/ingest/v1`` directly, so this path only
-    serves legacy traffic.
+    synthetic ``capture_id`` and ``attempt=0``. Legacy is its OWN ordering
+    tier: ``attempt=0`` yields ``source_rank=0`` in ``capture_order_key``, so a
+    legacy capture loses to EVERY v1 capture unconditionally, regardless of
+    receipt-time clock skew during a rolling deploy (this closes the slow
+    old-callback-clobbers-newer-v1 window a same-clock receipt timestamp could
+    not). The receipt-time ``fetched_at`` now only orders legacy-vs-legacy
+    traffic among itself, preserving pre-ingest last-write-wins for pure-legacy
+    writers. The legacy response shape is unchanged. Browser-engine now calls
+    ``/api/v1/ingest/v1`` directly, so this path only serves legacy traffic.
     """
     log_event(
         "ingest.legacy_callback_deprecated",
@@ -1272,7 +1279,7 @@ def scrape_complete_callback(
         content=data.get("content"),
         metadata=data.get("metadata", {}) or {},
         auth_used=False,
-        fetched_at=datetime.utcnow().isoformat(),
+        fetched_at=datetime.utcnow().isoformat(timespec="microseconds"),
     )
     try:
         ingest.apply_capture(capture, background_tasks)

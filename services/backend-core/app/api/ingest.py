@@ -19,6 +19,7 @@ Contract (see the api/sessions MODULE cards):
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -63,6 +64,22 @@ class IngestResultV1(BaseModel):
         if value not in VALID_INGEST_STATUSES:
             raise ValueError(f"status must be one of {sorted(VALID_INGEST_STATUSES)}")
         return value
+
+    @field_validator("fetched_at")
+    @classmethod
+    def _valid_fetched_at(cls, value: str) -> str:
+        """Reject non-timestamps at the boundary (422) and normalize parseable
+        ones to a canonical fixed-width UTC-naive ISO string so stored values are
+        homogeneous. Ordering is still parse-based (never lexicographic); this
+        just stops garbage like ``fetched_at="zzz"`` from ever entering the
+        ledger and pinning poisoned content."""
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            raise ValueError("fetched_at must be an RFC3339/ISO8601 timestamp")
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed.isoformat(timespec="microseconds")
 
 
 def _require_backend_callback_auth(
@@ -122,6 +139,18 @@ async def forward_capture_index(
                 capture_id=capture_id,
             )
             return
+        # Re-read the ledger state AFTER acquiring the lock: a sweep racing the
+        # original BackgroundTask (or a duplicate re-forward) must not POST twice
+        # once the row is already indexed/superseded. ai-engine upserts by
+        # document id, so a residual double-forward is at worst duplicate work,
+        # never a stale vector — but this closes the common case.
+        if manager.get_capture_index_state(capture_id) not in ("pending", "failed"):
+            log_event(
+                "ingest.index_already_settled",
+                session_id=session_id,
+                capture_id=capture_id,
+            )
+            return
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -147,6 +176,49 @@ async def forward_capture_index(
                 capture_id=capture_id,
                 reason=str(error),
             )
+
+
+async def reconcile_pending_forwards(
+    session_id: Optional[str],
+    states: tuple[str, ...] = ("pending",),
+    limit: int = 100,
+    exclude: Optional[str] = None,
+) -> int:
+    """Sweep the ingest ledger (the durable outbox) for un-forwarded captures.
+
+    Recovers the crash-after-commit-before-forward orphan (a ``pending`` row
+    whose BackgroundTask never ran because the process died) and gives ``failed``
+    rows a bounded retry. Runs opportunistically at end of ``apply_capture``
+    (session-scoped, pending-only) and once at startup (all sessions,
+    pending+failed). Never raises out — ``forward_capture_index`` records its own
+    failures — so it is safe as a fire-and-forget startup task.
+    """
+    from . import routes
+
+    manager = routes.session_manager
+    rows = manager.list_unforwarded_captures(session_id, states, limit)
+    swept = 0
+    for row in rows:
+        if exclude is not None and row["capture_id"] == exclude:
+            continue
+        document = manager.build_forward_document(
+            row["session_id"], row["normalized"], row["capture_id"]
+        )
+        if document is None:
+            manager.update_capture_index_state(row["capture_id"], "superseded")
+            continue
+        await forward_capture_index(
+            row["session_id"], row["normalized"], row["capture_id"], document
+        )
+        swept += 1
+    if swept:
+        log_event(
+            "ingest.reconcile_swept",
+            session_scope=session_id or "all",
+            swept=swept,
+            considered=len(rows),
+        )
+    return swept
 
 
 def apply_capture(
@@ -182,6 +254,20 @@ def apply_capture(
             outcome.forward_document,
         )
 
+    # Opportunistic outbox sweep: an applied/duplicate ingest is a cheap moment
+    # to heal any OTHER orphaned pending forward in the same session (e.g. a row
+    # whose BackgroundTask died with the process). Pending-only + session-scoped
+    # + excluding the row we just scheduled -> no retry storm against a down
+    # ai-engine (failed rows heal via duplicate-receipt retry + startup sweep).
+    if background_tasks is not None and outcome.outcome in ("applied", "duplicate"):
+        background_tasks.add_task(
+            reconcile_pending_forwards,
+            capture.session_id,
+            ("pending",),
+            10,
+            outcome.capture_id,
+        )
+
     if outcome.outcome == "stale":
         log_event(
             "ingest.ignored_stale",
@@ -197,12 +283,15 @@ def apply_capture(
         log_event(
             "ingest.ignored_duplicate",
             session_id=capture.session_id,
-            capture_id=capture.capture_id,
+            capture_id=outcome.capture_id,
         )
+        # ``index`` is an additive summary of the STORED capture's ledger state,
+        # never an echo of the input. ``capture_id`` is the stored id.
         return {
             "status": "ignored",
             "reason": "duplicate_capture_id",
-            "capture_id": capture.capture_id,
+            "capture_id": outcome.capture_id,
+            "index": outcome.index_state,
         }
 
     log_event(

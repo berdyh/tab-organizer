@@ -5,14 +5,21 @@ Covers the replay/ordering rule (capture_id uniqueness + newest-wins
 status overlay, in-memory/SQLite parity, and the legacy callback adapter.
 """
 
+import threading
+import time
 import uuid
 
 import httpx
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from pydantic import ValidationError
 
 from services.backend_core.app.api import ingest, routes
-from services.backend_core.app.sessions.manager import IngestCapture, SessionManager
+from services.backend_core.app.sessions.manager import (
+    IngestCapture,
+    SessionManager,
+    capture_order_key,
+)
 
 T0 = "2026-07-24T09:00:00"
 T1 = "2026-07-24T10:00:00"
@@ -56,7 +63,9 @@ def _managers(tmp_path):
 
 @pytest.mark.parametrize("persist", [False, True])
 def test_late_attempt_is_stale_and_does_not_clobber(tmp_path, persist):
-    manager = SessionManager(db_path=str(tmp_path / "db")) if persist else SessionManager()
+    manager = (
+        SessionManager(db_path=str(tmp_path / "db")) if persist else SessionManager()
+    )
     session = manager.create_session("late clobber")
     url = "https://example.com/report"
     manager.add_urls_to_session(session.id, [url])
@@ -87,7 +96,9 @@ def test_late_attempt_is_stale_and_does_not_clobber(tmp_path, persist):
 
 @pytest.mark.parametrize("persist", [False, True])
 def test_replay_same_capture_id_is_duplicate(tmp_path, persist):
-    manager = SessionManager(db_path=str(tmp_path / "db")) if persist else SessionManager()
+    manager = (
+        SessionManager(db_path=str(tmp_path / "db")) if persist else SessionManager()
+    )
     session = manager.create_session("replay")
     url = "https://example.com/a"
     manager.add_urls_to_session(session.id, [url])
@@ -179,7 +190,9 @@ def test_concurrent_same_url_final_record_is_max(tmp_path, order):
     record = manager.get_session(session.id).url_store.get(url)
     assert record.metadata["content"] == "newer body"
     assert manager.is_latest_applied(session.id, record.normalized, newer.capture_id)
-    assert not manager.is_latest_applied(session.id, record.normalized, older.capture_id)
+    assert not manager.is_latest_applied(
+        session.id, record.normalized, older.capture_id
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +208,9 @@ def test_in_memory_and_sqlite_parity(tmp_path):
         session = manager.create_session("parity")
         manager.add_urls_to_session(session.id, [url])
         cap1 = _capture(session.id, url, attempt=1, fetched_at=T1, content="first body")
-        cap2 = _capture(session.id, url, attempt=2, fetched_at=T2, content="second body")
+        cap2 = _capture(
+            session.id, url, attempt=2, fetched_at=T2, content="second body"
+        )
         cap_old = _capture(
             session.id, url, attempt=1, fetched_at=T0, content="old body"
         )
@@ -207,14 +222,29 @@ def test_in_memory_and_sqlite_parity(tmp_path):
         ]
         record = manager.get_session(session.id).url_store.get(url)
         hits = [h["url"] for h in manager.search_indexed_tabs(session.id, "second", 5)]
-        return outcomes, record.status, record.metadata["content"], hits
+
+        # Parity also covers the duplicate-outcome forward doc (built from stored
+        # state) and the latest-only index counts.
+        manager.update_capture_index_state(cap2.capture_id, "failed")
+        dup = manager.ingest_scrape_result(cap2)
+        doc = dict(dup.forward_document)
+        doc["metadata"] = {
+            k: v for k, v in doc["metadata"].items() if k != "capture_id"
+        }
+        counts = manager.capture_index_counts(session.id)
+        # normalize the per-url downstream_errors url to the same key for compare
+        return outcomes, record.status, record.metadata["content"], hits, doc, counts
 
     assert sequence(mem) == sequence(sql)
-    outcomes, status, content, hits = sequence(mem)
+    outcomes, status, content, hits, doc, counts = sequence(mem)
     assert outcomes == ["applied", "duplicate", "applied", "stale"]
     assert status == "scraped"
     assert content == "second body"
     assert url in hits
+    assert doc["content"] == "second body"
+    assert doc["metadata"] == {"title": "Title", "auth_used": False}
+    assert counts["ai_index_failed"] == 1
+    assert counts["ai_index_pending"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -230,9 +260,7 @@ def test_legacy_adapter_applies_with_attempt_zero_and_loses_ties(tmp_path, monke
     monkeypatch.setattr(routes, "session_manager", manager)
 
     events = []
-    monkeypatch.setattr(
-        routes, "log_event", lambda name, **kw: events.append(name)
-    )
+    monkeypatch.setattr(routes, "log_event", lambda name, **kw: events.append(name))
 
     # A v1 write at attempt 1 lands first with the same fetched_at.
     manager.ingest_scrape_result(
@@ -492,3 +520,436 @@ class _FakeClient:
 async def _run(background_tasks: BackgroundTasks) -> None:
     for task in background_tasks.tasks:
         await task()
+
+
+def _ok_client(posted):
+    def handler(url_, kwargs):
+        posted.append(kwargs["json"]["documents"][0])
+        return httpx.Response(
+            200, request=httpx.Request("POST", url_), json={"indexed": 1}
+        )
+
+    return lambda: _FakeClient(handler)
+
+
+# ---------------------------------------------------------------------------
+# Round 2: ordering-race, stored-capture duplicate, fetched_at validation,
+# legacy tier, durable outbox sweep, latest-only counts, search parity,
+# snapshot rollback.
+# ---------------------------------------------------------------------------
+
+
+def test_two_writer_race_older_write_cannot_clobber(tmp_path):
+    """Two SessionManager instances on one DB: the older writer holds the SQLite
+    write lock (BEGIN IMMEDIATE) across the ordering check, so the newer write
+    that lands afterward wins and is_latest_applied agrees with actual content.
+    Pre-fix the check ran outside the transaction and the older write could
+    clobber the newer one."""
+    db = str(tmp_path / "race.db")
+    setup = SessionManager(db_path=db)
+    session = setup.create_session("race")
+    url = "https://example.com/race"
+    setup.add_urls_to_session(session.id, [url])
+
+    mgr_old = SessionManager(db_path=db)
+    mgr_new = SessionManager(db_path=db)
+
+    older = _capture(session.id, url, attempt=1, fetched_at=T1, content="older body")
+    newer = _capture(session.id, url, attempt=2, fetched_at=T2, content="newer body")
+
+    started = threading.Event()
+    original_lookup = mgr_old._latest_applied_lookup
+
+    def slow_lookup(conn, session_id, normalized):
+        started.set()
+        time.sleep(0.4)
+        return original_lookup(conn, session_id, normalized)
+
+    mgr_old._latest_applied_lookup = slow_lookup
+
+    def run_old():
+        mgr_old.ingest_scrape_result(older)
+
+    t_old = threading.Thread(target=run_old)
+    t_old.start()
+    assert started.wait(2.0)  # mgr_old now holds BEGIN IMMEDIATE and is sleeping
+
+    t_new = threading.Thread(target=lambda: mgr_new.ingest_scrape_result(newer))
+    t_new.start()
+    t_old.join(5.0)
+    t_new.join(5.0)
+
+    fresh = SessionManager(db_path=db)
+    record = fresh.get_session(session.id).url_store.get(url)
+    assert record.metadata["content"] == "newer body"
+    assert fresh.is_latest_applied(session.id, record.normalized, newer.capture_id)
+    assert not fresh.is_latest_applied(session.id, record.normalized, older.capture_id)
+
+
+@pytest.mark.parametrize("persist", [False, True])
+def test_duplicate_replay_forwards_stored_capture_not_mutated_body(tmp_path, persist):
+    """A duplicate delivery with mutated content/auth/url must forward the
+    ORIGINALLY STORED body, never the replay's."""
+    manager = (
+        SessionManager(db_path=str(tmp_path / "dup.db"))
+        if persist
+        else SessionManager()
+    )
+    session = manager.create_session("dup")
+    url_a = "https://example.com/a"
+    url_b = "https://example.com/b"
+    manager.add_urls_to_session(session.id, [url_a, url_b])
+
+    cid = str(uuid.uuid4())
+    cap = _capture(
+        session.id, url_a, capture_id=cid, content="AAA stored", auth_used=False
+    )
+    applied = manager.ingest_scrape_result(cap)
+    assert applied.outcome == "applied"
+    manager.update_capture_index_state(cid, "failed")
+
+    normalized_a = manager.get_session(session.id).url_store.get(url_a).normalized
+
+    # Replay: same capture_id, but mutated body / flipped auth / different url.
+    replay = _capture(
+        session.id, url_b, capture_id=cid, content="BBB mutated", auth_used=True
+    )
+    dup = manager.ingest_scrape_result(replay)
+
+    assert dup.outcome == "duplicate"
+    assert dup.index_state == "failed"
+    assert dup.should_forward is True
+    assert dup.forward_document["content"] == "AAA stored"
+    assert dup.forward_document["id"] == normalized_a
+    assert dup.forward_document["metadata"]["auth_used"] is False
+    # stored record untouched by the replay
+    assert (
+        manager.get_session(session.id).url_store.get(url_a).metadata["content"]
+        == "AAA stored"
+    )
+
+
+@pytest.mark.parametrize("bad", ["zzz", "", "2026-13-45T00:00:00", "not-a-date"])
+def test_ingest_v1_rejects_malformed_fetched_at_422(bad):
+    """Unparseable fetched_at is a pydantic ValidationError (FastAPI 422)."""
+    with pytest.raises(ValidationError):
+        ingest.IngestResultV1(
+            capture_id="c1",
+            attempt=1,
+            session_id="s1",
+            url="https://example.com",
+            status="success",
+            fetched_at=bad,
+        )
+
+
+def test_fetched_at_offsets_normalized_and_compared_chronologically(tmp_path):
+    """+02:00 input normalizes to UTC-naive; ordering is real-time not string
+    order; a garbage fetched_at ledger row ranks below any parseable capture."""
+    model = ingest.IngestResultV1(
+        capture_id="c1",
+        attempt=1,
+        session_id="s1",
+        url="https://example.com",
+        status="success",
+        fetched_at="2026-07-24T12:00:00+02:00",
+    )
+    assert model.fetched_at == "2026-07-24T10:00:00.000000"
+
+    # 10:00 UTC (from +02:00) is EARLIER than 11:00 UTC, though its raw string
+    # sorts lexicographically LATER — comparison must be chronological.
+    assert capture_order_key("2026-07-24T12:00:00+02:00", 1) < capture_order_key(
+        "2026-07-24T11:00:00", 1
+    )
+    # garbage loses to any real timestamp
+    assert capture_order_key("zzz", 9) < capture_order_key("2026-07-24T00:00:00", 1)
+
+    # end to end: a pre-seeded garbage applied row does not pin content — a real
+    # (even old) capture outranks it and wins.
+    manager = SessionManager(db_path=str(tmp_path / "poison.db"))
+    session = manager.create_session("poison")
+    url = "https://example.com/poison"
+    manager.add_urls_to_session(session.id, [url])
+    manager.ingest_scrape_result(
+        _capture(session.id, url, attempt=1, fetched_at="garbage", content="poison")
+    )
+    real = manager.ingest_scrape_result(
+        _capture(
+            session.id, url, attempt=1, fetched_at="2020-01-01T00:00:00", content="real"
+        )
+    )
+    assert real.outcome == "applied"
+    assert manager.get_session(session.id).url_store.get(url).metadata["content"] == (
+        "real"
+    )
+
+
+@pytest.mark.parametrize("persist", [False, True])
+def test_legacy_capture_never_outranks_v1_regardless_of_clock(tmp_path, persist):
+    """Legacy (attempt=0) is its own losing tier: a far-future legacy fetched_at
+    still loses to an older v1 capture, in both orders."""
+
+    def fresh():
+        manager = (
+            SessionManager(db_path=str(tmp_path / f"legacy-{uuid.uuid4()}.db"))
+            if persist
+            else SessionManager()
+        )
+        session = manager.create_session("legacy tier")
+        url = "https://example.com/legacy-tier"
+        manager.add_urls_to_session(session.id, [url])
+        return manager, session, url
+
+    # legacy first, then v1
+    m1, s1, u1 = fresh()
+    m1.ingest_scrape_result(
+        _capture(
+            s1.id, u1, attempt=0, fetched_at="2099-01-01T00:00:00", content="legacy"
+        )
+    )
+    v1 = m1.ingest_scrape_result(
+        _capture(s1.id, u1, attempt=1, fetched_at="2026-07-24T10:00:00", content="v1")
+    )
+    assert v1.outcome == "applied"
+    assert m1.get_session(s1.id).url_store.get(u1).metadata["content"] == "v1"
+
+    # v1 first, then legacy
+    m2, s2, u2 = fresh()
+    m2.ingest_scrape_result(
+        _capture(s2.id, u2, attempt=1, fetched_at="2026-07-24T10:00:00", content="v1")
+    )
+    legacy = m2.ingest_scrape_result(
+        _capture(
+            s2.id, u2, attempt=0, fetched_at="2099-01-01T00:00:00", content="legacy"
+        )
+    )
+    assert legacy.outcome == "stale"
+    assert m2.get_session(s2.id).url_store.get(u2).metadata["content"] == "v1"
+
+
+@pytest.mark.asyncio
+async def test_startup_reconcile_forwards_orphaned_pending(tmp_path, monkeypatch):
+    """Crash between commit and forward leaves a pending ledger row with no task;
+    a restart-time reconcile sweep re-forwards it."""
+    db = str(tmp_path / "orphan.db")
+    mgr = SessionManager(db_path=db)
+    session = mgr.create_session("orphan")
+    url = "https://example.com/orphan"
+    mgr.add_urls_to_session(session.id, [url])
+    cid = str(uuid.uuid4())
+    monkeypatch.setattr(routes, "session_manager", mgr)
+
+    # crash-equivalent: apply with no BackgroundTasks -> pending, no forward.
+    ingest.apply_capture(_capture(session.id, url, capture_id=cid), None)
+    assert mgr.get_capture_index_state(cid) == "pending"
+
+    # restart-equivalent: a fresh manager on the same DB runs the sweep.
+    fresh = SessionManager(db_path=db)
+    monkeypatch.setattr(routes, "session_manager", fresh)
+    posted = []
+    monkeypatch.setattr(ingest.httpx, "AsyncClient", _ok_client(posted))
+
+    swept = await ingest.reconcile_pending_forwards(None, ("pending", "failed"), 100)
+    assert swept == 1
+    assert len(posted) == 1
+    assert fresh.get_capture_index_state(cid) == "indexed"
+
+
+@pytest.mark.asyncio
+async def test_opportunistic_sweep_recovers_pending_on_next_ingest(
+    tmp_path, monkeypatch
+):
+    """An orphaned pending forward for url1 is healed when url2 is ingested."""
+    mgr = SessionManager(db_path=str(tmp_path / "sweep.db"))
+    session = mgr.create_session("sweep")
+    url1 = "https://example.com/one"
+    url2 = "https://example.com/two"
+    mgr.add_urls_to_session(session.id, [url1, url2])
+    monkeypatch.setattr(routes, "session_manager", mgr)
+
+    cid1 = str(uuid.uuid4())
+    ingest.apply_capture(_capture(session.id, url1, capture_id=cid1), None)  # orphan
+    assert mgr.get_capture_index_state(cid1) == "pending"
+
+    posted = []
+    monkeypatch.setattr(ingest.httpx, "AsyncClient", _ok_client(posted))
+
+    norm1 = mgr.get_session(session.id).url_store.get(url1).normalized
+    bt = BackgroundTasks()
+    ingest.apply_capture(_capture(session.id, url2, capture_id=str(uuid.uuid4())), bt)
+    await _run(bt)
+
+    posted_ids = [doc["id"] for doc in posted]
+    assert norm1 in posted_ids
+    assert mgr.get_capture_index_state(cid1) == "indexed"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_marks_non_latest_superseded(tmp_path, monkeypatch):
+    """A pending orphan superseded by a newer applied capture is marked
+    superseded during the sweep and never POSTed."""
+    mgr = SessionManager(db_path=str(tmp_path / "supersweep.db"))
+    session = mgr.create_session("supersweep")
+    url = "https://example.com/s"
+    mgr.add_urls_to_session(session.id, [url])
+    monkeypatch.setattr(routes, "session_manager", mgr)
+
+    old_id = str(uuid.uuid4())
+    new_id = str(uuid.uuid4())
+    ingest.apply_capture(
+        _capture(
+            session.id,
+            url,
+            capture_id=old_id,
+            attempt=1,
+            fetched_at=T1,
+            content="older",
+        ),
+        None,
+    )
+    ingest.apply_capture(
+        _capture(
+            session.id,
+            url,
+            capture_id=new_id,
+            attempt=2,
+            fetched_at=T2,
+            content="newer",
+        ),
+        None,
+    )
+
+    posted = []
+    monkeypatch.setattr(ingest.httpx, "AsyncClient", _ok_client(posted))
+    await ingest.reconcile_pending_forwards(None, ("pending", "failed"), 100)
+
+    assert mgr.get_capture_index_state(old_id) == "superseded"
+    assert mgr.get_capture_index_state(new_id) == "indexed"
+    assert [doc["content"] for doc in posted] == ["newer"]
+
+
+@pytest.mark.asyncio
+async def test_forward_skips_when_already_indexed_after_lock(tmp_path, monkeypatch):
+    """Two forwards scheduled for the same capture: the second exits on the
+    post-lock ledger-state re-check without a second POST."""
+    mgr = SessionManager(db_path=str(tmp_path / "double.db"))
+    session = mgr.create_session("double")
+    url = "https://example.com/d"
+    mgr.add_urls_to_session(session.id, [url])
+    monkeypatch.setattr(routes, "session_manager", mgr)
+
+    cid = str(uuid.uuid4())
+    outcome = mgr.ingest_scrape_result(_capture(session.id, url, capture_id=cid))
+    normalized = outcome.normalized
+    doc = outcome.forward_document
+
+    posted = []
+    monkeypatch.setattr(ingest.httpx, "AsyncClient", _ok_client(posted))
+
+    await ingest.forward_capture_index(session.id, normalized, cid, doc)
+    await ingest.forward_capture_index(session.id, normalized, cid, doc)
+
+    assert len(posted) == 1
+    assert mgr.get_capture_index_state(cid) == "indexed"
+
+
+@pytest.mark.parametrize("persist", [False, True])
+def test_index_counts_reflect_only_latest_applied_capture(tmp_path, persist):
+    """attempt 1 failed then attempt 2 indexed -> no stale failure reported."""
+    manager = (
+        SessionManager(db_path=str(tmp_path / "counts.db"))
+        if persist
+        else SessionManager()
+    )
+    session = manager.create_session("counts")
+    url = "https://example.com/counts"
+    manager.add_urls_to_session(session.id, [url])
+
+    cid1 = str(uuid.uuid4())
+    cid2 = str(uuid.uuid4())
+    manager.ingest_scrape_result(
+        _capture(
+            session.id, url, capture_id=cid1, attempt=1, fetched_at=T1, content="v1"
+        )
+    )
+    manager.update_capture_index_state(cid1, "failed")
+    manager.ingest_scrape_result(
+        _capture(
+            session.id, url, capture_id=cid2, attempt=2, fetched_at=T2, content="v2"
+        )
+    )
+    manager.update_capture_index_state(cid2, "indexed")
+
+    counts = manager.capture_index_counts(session.id)
+    assert counts["ai_index_failed"] == 0
+    assert counts["ai_index_pending"] == 0
+    assert counts["downstream_errors"] == []
+
+
+@pytest.mark.parametrize("probe", ["findmepending", "zzuniquezz"])
+def test_keyword_search_parity_pending_and_url_only_matches_excluded(tmp_path, probe):
+    """In-memory keyword search matches the SQLite FTS row set exactly: a
+    pending-status record and a URL-only term hit are excluded by both."""
+
+    def build(manager):
+        session = manager.create_session("parity search")
+        url_pending = "https://example.com/pendingdoc"
+        url_scraped = "https://zzuniquezz.example.com/page"
+        manager.add_urls_to_session(session.id, [url_pending, url_scraped])
+        # pending record with matching metadata but non-scraped status
+        manager.update_url_status(
+            session.id,
+            url_pending,
+            "pending",
+            metadata={"title": "findmepending", "content": "findmepending body"},
+        )
+        # scraped record whose term appears ONLY in the URL (not title/content)
+        manager.ingest_scrape_result(
+            _capture(
+                session.id,
+                url_scraped,
+                metadata={"title": "Regular", "content": "regular body about widgets"},
+            )
+        )
+        return session
+
+    mem = SessionManager()
+    sql = SessionManager(db_path=str(tmp_path / "search.db"))
+    s_mem = build(mem)
+    s_sql = build(sql)
+
+    mem_hits = [h["url"] for h in mem.search_indexed_tabs(s_mem.id, probe, 10)]
+    sql_hits = [h["url"] for h in sql.search_indexed_tabs(s_sql.id, probe, 10)]
+    assert mem_hits == sql_hits == []
+
+
+def test_forced_write_failure_keeps_memory_and_sqlite_consistent(tmp_path):
+    """A forced SQLite write failure rolls back BOTH the in-memory record and
+    the transaction: status stays pending, no applied ledger row."""
+    db = str(tmp_path / "rollback.db")
+    mgr = SessionManager(db_path=db)
+    session = mgr.create_session("rollback")
+    url = "https://example.com/rollback"
+    mgr.add_urls_to_session(session.id, [url])
+
+    cid = str(uuid.uuid4())
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("forced write failure")
+
+    mgr._save_url_record = boom
+
+    with pytest.raises(RuntimeError):
+        mgr.ingest_scrape_result(_capture(session.id, url, capture_id=cid))
+
+    # in-memory record restored to pre-call state
+    assert mgr.get_session(session.id).url_store.get(url).status == "pending"
+
+    # DB rolled back: url still pending, no applied ledger row
+    fresh = SessionManager(db_path=db)
+    assert fresh.get_session(session.id).url_store.get(url).status == "pending"
+    with fresh._connect() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM ingest_captures WHERE capture_id = ?", (cid,)
+        ).fetchone()["n"]
+    assert count == 0
