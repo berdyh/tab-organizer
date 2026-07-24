@@ -8,6 +8,7 @@ status overlay, in-memory/SQLite parity, and the legacy callback adapter.
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta
 
 import httpx
 import pytest
@@ -681,6 +682,167 @@ def test_fetched_at_offsets_normalized_and_compared_chronologically(tmp_path):
     assert real.outcome == "applied"
     assert manager.get_session(session.id).url_store.get(url).metadata["content"] == (
         "real"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 12. Future fetched_at clamp (security finding C5: permanent-pinning fix)
+#
+# `_valid_fetched_at` now rejects a `fetched_at` more than
+# `ingest.MAX_FUTURE_CLOCK_SKEW` ahead of the server clock. Boundary
+# assertions inject a fixed reference instant via `ingest._now_utc` (a
+# monkeypatchable indirection point added for exactly this purpose) instead
+# of comparing against the real wall clock, so these tests cannot go flaky.
+# ---------------------------------------------------------------------------
+
+FIXED_NOW = datetime(2026, 7, 24, 12, 0, 0)
+
+
+@pytest.fixture
+def frozen_now(monkeypatch):
+    monkeypatch.setattr(ingest, "_now_utc", lambda: FIXED_NOW)
+    return FIXED_NOW
+
+
+def _build_v1(**overrides):
+    fields = dict(
+        capture_id=str(uuid.uuid4()),
+        attempt=1,
+        session_id="s1",
+        url="https://example.com",
+        status="success",
+        content="body",
+        fetched_at=T1,
+    )
+    fields.update(overrides)
+    return ingest.IngestResultV1(**fields)
+
+
+def test_ingest_v1_rejects_far_future_fetched_at_422():
+    """The exploit payload from the C5 finding: an arbitrarily far-future
+    fetched_at must be rejected at the pydantic boundary (422), not stored."""
+    with pytest.raises(ValidationError):
+        _build_v1(fetched_at="9999-12-31T23:59:59")
+
+
+def test_fetched_at_exactly_at_skew_boundary_is_accepted(frozen_now):
+    boundary = (frozen_now + ingest.MAX_FUTURE_CLOCK_SKEW).isoformat()
+    model = _build_v1(fetched_at=boundary)
+    assert model.fetched_at == boundary + ".000000"
+
+
+def test_fetched_at_just_inside_skew_boundary_is_accepted(frozen_now):
+    inside = (
+        frozen_now + ingest.MAX_FUTURE_CLOCK_SKEW - timedelta(seconds=1)
+    ).isoformat()
+    model = _build_v1(fetched_at=inside)
+    assert model.fetched_at == inside + ".000000"
+
+
+def test_fetched_at_just_beyond_skew_boundary_is_rejected(frozen_now):
+    beyond = (
+        frozen_now + ingest.MAX_FUTURE_CLOCK_SKEW + timedelta(seconds=1)
+    ).isoformat()
+    with pytest.raises(ValidationError):
+        _build_v1(fetched_at=beyond)
+
+
+def test_fetched_at_at_current_time_is_unaffected(frozen_now):
+    """A normal, non-future fetched_at (== "now") is untouched by the clamp."""
+    model = _build_v1(fetched_at=frozen_now.isoformat())
+    assert model.fetched_at == frozen_now.isoformat() + ".000000"
+
+
+def test_ingest_v1_rejects_attempt_above_bound():
+    """`attempt` is capped too (defense-in-depth tie-breaker bound, see
+    MAX_INGEST_ATTEMPT's comment); a nonsensical attempt is rejected at 422
+    just like an unbounded future fetched_at."""
+    with pytest.raises(ValidationError):
+        _build_v1(attempt=ingest.MAX_INGEST_ATTEMPT + 1)
+    # the bound itself is still a legal attempt value
+    assert _build_v1(attempt=ingest.MAX_INGEST_ATTEMPT).attempt == (
+        ingest.MAX_INGEST_ATTEMPT
+    )
+
+
+def test_pinning_attack_rejected_end_to_end(tmp_path, monkeypatch, frozen_now):
+    """Full regression for security finding C5. Pre-fix: a caller with the
+    callback token could POST a far-future `fetched_at` (e.g. year 9999) that
+    got applied, wrote to the FTS index / RAG corpus, and then permanently
+    out-ranked every subsequent genuine recapture in `capture_order_key`
+    forever (silently dropped as `ignored: stale_capture`, 200 OK). Post-fix:
+    the poisoned payload is rejected before it ever reaches the ledger, so it
+    never applies and never pins -- a following genuine capture (and the one
+    after that) both apply normally."""
+    manager = SessionManager(db_path=str(tmp_path / "pin.db"))
+    session = manager.create_session("pin")
+    url = "https://example.com/pin"
+    manager.add_urls_to_session(session.id, [url])
+    monkeypatch.setattr(routes, "session_manager", manager)
+
+    def as_capture(result: "ingest.IngestResultV1") -> IngestCapture:
+        return IngestCapture(
+            capture_id=result.capture_id,
+            attempt=result.attempt,
+            session_id=result.session_id,
+            url=result.url,
+            status=result.status,
+            content=result.content,
+            metadata=result.metadata,
+            auth_used=result.auth_used,
+            fetched_at=result.fetched_at,
+        )
+
+    # 1. The attacker's payload (far-future fetched_at) is rejected at
+    #    construction time -- it never reaches apply_capture, so it can never
+    #    be applied and can never pin. `attempt` is deliberately an ordinary
+    #    in-bound value here so this assertion isolates the fetched_at clamp
+    #    specifically, independent of the separate attempt-bound check.
+    with pytest.raises(ValidationError):
+        _build_v1(
+            session_id=session.id,
+            url=url,
+            content="attacker poison",
+            fetched_at="9999-12-31T23:59:59",
+            attempt=1,
+        )
+    record = manager.get_session(session.id).url_store.get(url)
+    assert record.status == "pending"
+    assert "content" not in record.metadata
+
+    # 2. A genuine capture at (the frozen) "now" applies normally.
+    genuine = as_capture(
+        _build_v1(
+            session_id=session.id,
+            url=url,
+            content="legit content",
+            fetched_at=frozen_now.isoformat(),
+        )
+    )
+    outcome = ingest.apply_capture(genuine, BackgroundTasks())
+    assert outcome["status"] == "applied"
+    assert (
+        manager.get_session(session.id).url_store.get(url).metadata["content"]
+        == "legit content"
+    )
+
+    # 3. And the pinning attack's whole point -- EVERY subsequent genuine
+    #    recapture, forever -- also still applies: a second, later-still
+    #    genuine capture supersedes the first.
+    later = as_capture(
+        _build_v1(
+            session_id=session.id,
+            url=url,
+            content="even newer legit content",
+            fetched_at=(frozen_now + timedelta(seconds=1)).isoformat(),
+            attempt=2,
+        )
+    )
+    outcome2 = ingest.apply_capture(later, BackgroundTasks())
+    assert outcome2["status"] == "applied"
+    assert (
+        manager.get_session(session.id).url_store.get(url).metadata["content"]
+        == "even newer legit content"
     )
 
 

@@ -19,7 +19,7 @@ Contract (see the api/sessions MODULE cards):
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -33,6 +33,34 @@ from ..sessions.manager import IngestCapture
 router = APIRouter()
 
 VALID_INGEST_STATUSES = {"success", "failed", "auth_required", "timeout", "blocked"}
+
+# Maximum allowed clock skew for a `fetched_at` reported as being ahead of the
+# server's clock. Ordering (`capture_order_key`) sorts newest `fetched_at`
+# first, so an unbounded future timestamp would let one poisoned capture
+# permanently pin content: it would outrank every subsequent *genuine*
+# recapture forever, since a real scraper's `fetched_at` can never catch up to
+# an arbitrary future date (security finding C5). Five minutes is generous
+# slack for real clock drift between browser-engine and backend-core while
+# keeping the pin window bounded and short.
+MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
+
+# Upper bound on the per-(session, url) attempt counter (Field `ge=1` below
+# sets the lower bound). `attempt` is only a tie-breaker within an identical
+# `fetched_at` (see `capture_order_key`), so on its own it is a much weaker
+# pinning primitive than an unbounded `fetched_at` -- once `fetched_at` is
+# clamped above, an inflated `attempt` can win ties only inside the same
+# MAX_FUTURE_CLOCK_SKEW window, not forever. Bounding it anyway costs nothing:
+# browser-engine's real counter (`_next_ingest_attempt` in browser-engine's
+# main.py) starts at 1 and increments per retry of one URL within a process
+# lifetime, so it never legitimately approaches this bound.
+MAX_INGEST_ATTEMPT = 100_000
+
+
+def _now_utc() -> datetime:
+    """Indirection point for "now" so tests can inject a fixed, deterministic
+    reference instant instead of asserting against wall-clock proximity."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 
 # Per-(session_id, normalized) forward locks serialize LanceDB delete/add so a
 # retry forward and a newer-attempt forward cannot interleave. The event loop is
@@ -49,7 +77,7 @@ class IngestResultV1(BaseModel):
     """
 
     capture_id: str
-    attempt: int = Field(ge=1)
+    attempt: int = Field(ge=1, le=MAX_INGEST_ATTEMPT)
     session_id: str
     url: str
     status: str
@@ -72,13 +100,23 @@ class IngestResultV1(BaseModel):
         ones to a canonical fixed-width UTC-naive ISO string so stored values are
         homogeneous. Ordering is still parse-based (never lexicographic); this
         just stops garbage like ``fetched_at="zzz"`` from ever entering the
-        ledger and pinning poisoned content."""
+        ledger and pinning poisoned content.
+
+        Also rejects timestamps more than ``MAX_FUTURE_CLOCK_SKEW`` ahead of the
+        server clock (422) -- see that constant's comment: an unbounded future
+        ``fetched_at`` is the permanent-content-pinning primitive (security
+        finding C5)."""
         try:
             parsed = datetime.fromisoformat(value)
         except (ValueError, TypeError):
             raise ValueError("fetched_at must be an RFC3339/ISO8601 timestamp")
         if parsed.tzinfo is not None:
             parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        if parsed > _now_utc() + MAX_FUTURE_CLOCK_SKEW:
+            raise ValueError(
+                "fetched_at must not be more than "
+                f"{MAX_FUTURE_CLOCK_SKEW} ahead of the server clock"
+            )
         return parsed.isoformat(timespec="microseconds")
 
 
