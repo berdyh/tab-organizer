@@ -24,19 +24,93 @@ def _host_ai_args(**overrides):
     return argparse.Namespace(**values)
 
 
-def test_ensure_host_ai_token_reuses_configured_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("AI_ENGINE_API_TOKEN", "configured-token")
+def _stub_service_tokens(monkeypatch):
+    """Mint a deterministic, per-scope-distinct token without touching disk."""
+    for env_name in cli.SERVICE_TOKEN_ENVS:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr(cli, "ensure_service_token", lambda name: f"token-{name}")
+
+
+def _isolate_token_store(monkeypatch, tmp_path):
+    """Point both the new and legacy token stores at a temp directory."""
     monkeypatch.setattr(cli, "HOST_AI_TOKEN_FILE", tmp_path / "host-ai-token")
+    monkeypatch.setattr(cli, "SERVICE_TOKEN_FILE", tmp_path / "service-tokens.json")
+    for env_name in cli.SERVICE_TOKEN_ENVS:
+        monkeypatch.delenv(env_name, raising=False)
+    return tmp_path
+
+
+def test_ensure_host_ai_token_reuses_configured_env(monkeypatch, tmp_path):
+    _isolate_token_store(monkeypatch, tmp_path)
+    monkeypatch.setenv("AI_ENGINE_API_TOKEN", "configured-token")
 
     assert cli.ensure_host_ai_token() == "configured-token"
     assert not (tmp_path / "host-ai-token").exists()
+    assert not (tmp_path / "service-tokens.json").exists()
+
+
+def test_service_env_mints_four_distinct_tokens_in_stock_env(monkeypatch, tmp_path):
+    """Stock-env regression guard for the collapsed-token privilege bug.
+
+    A single shared value made BACKEND_AGENT_API_TOKEN equal to the token
+    browser-engine accepts, so an agent principal reached the scrape, CDP and
+    credential control plane. Every scope must get its own value.
+    """
+    _isolate_token_store(monkeypatch, tmp_path)
+
+    env = cli.service_env_with_tokens()
+
+    tokens = {name: env[name] for name in cli.SERVICE_TOKEN_ENVS}
+    assert set(tokens) == {
+        "AI_ENGINE_API_TOKEN",
+        "BACKEND_CALLBACK_TOKEN",
+        "BACKEND_AGENT_API_TOKEN",
+        "BROWSER_ENGINE_API_TOKEN",
+    }
+    assert all(value.strip() for value in tokens.values())
+    assert len(set(tokens.values())) == 4, f"tokens are not pairwise distinct: {tokens}"
+
+    # Stable across restarts: a second call reuses the persisted store.
+    assert {
+        name: cli.service_env_with_tokens()[name] for name in cli.SERVICE_TOKEN_ENVS
+    } == tokens
+
+
+def test_service_env_seeds_ai_token_from_legacy_single_token_file(
+    monkeypatch, tmp_path
+):
+    """Existing installs keep their ai-engine token; the rest are newly minted."""
+    _isolate_token_store(monkeypatch, tmp_path)
+    (tmp_path / "host-ai-token").write_text("legacy-single-token\n")
+
+    env = cli.service_env_with_tokens()
+
+    assert env["AI_ENGINE_API_TOKEN"] == "legacy-single-token"
+    others = {
+        name: env[name]
+        for name in cli.SERVICE_TOKEN_ENVS
+        if name != "AI_ENGINE_API_TOKEN"
+    }
+    assert "legacy-single-token" not in others.values()
+    assert len(set(others.values())) == 3
+    assert (tmp_path / "service-tokens.json").exists()
+
+
+def test_service_env_never_clobbers_user_supplied_tokens(monkeypatch, tmp_path):
+    _isolate_token_store(monkeypatch, tmp_path)
+    monkeypatch.setenv("BACKEND_AGENT_API_TOKEN", "user-agent-token")
+
+    env = cli.service_env_with_tokens()
+
+    assert env["BACKEND_AGENT_API_TOKEN"] == "user-agent-token"
+    assert env["BROWSER_ENGINE_API_TOKEN"] != "user-agent-token"
 
 
 def test_host_ai_rewrites_docker_ollama_host_and_sets_token(monkeypatch):
     calls = []
 
     monkeypatch.setattr(cli, "load_env_file", lambda: None)
-    monkeypatch.setattr(cli, "ensure_host_ai_token", lambda: "host-token")
+    _stub_service_tokens(monkeypatch)
     monkeypatch.setenv("OLLAMA_HOST", "http://ollama:11434")
     monkeypatch.setattr(
         cli,
@@ -51,15 +125,16 @@ def test_host_ai_rewrites_docker_ollama_host_and_sets_token(monkeypatch):
     assert env["AI_PROVIDER"] == "codex_acp"
     assert env["EMBEDDING_PROVIDER"] == "ollama"
     assert env["OLLAMA_HOST"] == "http://localhost:11434"
-    assert env["AI_ENGINE_API_TOKEN"] == "host-token"
-    assert env["BACKEND_CALLBACK_TOKEN"] == "host-token"
+    assert env["AI_ENGINE_API_TOKEN"] == "token-AI_ENGINE_API_TOKEN"
+    assert env["BACKEND_CALLBACK_TOKEN"] == "token-BACKEND_CALLBACK_TOKEN"
+    assert env["AI_ENGINE_API_TOKEN"] != env["BACKEND_CALLBACK_TOKEN"]
 
 
 def test_start_host_ai_sets_container_url_token_and_disables_ai_container(monkeypatch):
     calls = []
 
     monkeypatch.setattr(cli, "load_env_file", lambda: None)
-    monkeypatch.setattr(cli, "ensure_host_ai_token", lambda: "host-token")
+    _stub_service_tokens(monkeypatch)
     monkeypatch.setattr(
         cli,
         "docker_compose",
@@ -86,16 +161,17 @@ def test_start_host_ai_sets_container_url_token_and_disables_ai_container(monkey
     )
     assert calls[0]["profiles"] == ["default"]
     assert calls[0]["env"]["AI_ENGINE_URL"] == "http://host.docker.internal:8090"
-    assert calls[0]["env"]["AI_ENGINE_API_TOKEN"] == "host-token"
-    assert calls[0]["env"]["BACKEND_CALLBACK_TOKEN"] == "host-token"
-    assert calls[0]["env"]["BACKEND_AGENT_API_TOKEN"] == "host-token"
+    env = calls[0]["env"]
+    minted = [env[name] for name in cli.SERVICE_TOKEN_ENVS]
+    assert minted == [f"token-{name}" for name in cli.SERVICE_TOKEN_ENVS]
+    assert len(set(minted)) == 4
 
 
 def test_start_populates_service_tokens_for_default_stack(monkeypatch):
     calls = []
 
     monkeypatch.setattr(cli, "load_env_file", lambda: None)
-    monkeypatch.setattr(cli, "ensure_host_ai_token", lambda: "service-token")
+    _stub_service_tokens(monkeypatch)
     monkeypatch.delenv("AI_ENGINE_URL", raising=False)
     monkeypatch.setattr(
         cli,
@@ -117,23 +193,23 @@ def test_start_populates_service_tokens_for_default_stack(monkeypatch):
 
     assert calls[0]["args"] == ("up", "-d")
     assert calls[0]["profiles"] == ["default"]
-    assert calls[0]["env"]["AI_ENGINE_API_TOKEN"] == "service-token"
-    assert calls[0]["env"]["BACKEND_CALLBACK_TOKEN"] == "service-token"
-    assert calls[0]["env"]["BACKEND_AGENT_API_TOKEN"] == "service-token"
-    assert "AI_ENGINE_URL" not in calls[0]["env"]
+    env = calls[0]["env"]
+    minted = [env[name] for name in cli.SERVICE_TOKEN_ENVS]
+    assert minted == [f"token-{name}" for name in cli.SERVICE_TOKEN_ENVS]
+    assert len(set(minted)) == 4
+    assert "AI_ENGINE_URL" not in env
 
 
 def test_service_env_replaces_blank_env_tokens_from_dotenv(monkeypatch):
-    monkeypatch.setenv("AI_ENGINE_API_TOKEN", "")
-    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "")
-    monkeypatch.setenv("BACKEND_AGENT_API_TOKEN", "")
-    monkeypatch.setattr(cli, "ensure_host_ai_token", lambda: "generated-token")
+    _stub_service_tokens(monkeypatch)
+    for env_name in cli.SERVICE_TOKEN_ENVS:
+        monkeypatch.setenv(env_name, "")
 
     env = cli.service_env_with_tokens()
 
-    assert env["AI_ENGINE_API_TOKEN"] == "generated-token"
-    assert env["BACKEND_CALLBACK_TOKEN"] == "generated-token"
-    assert env["BACKEND_AGENT_API_TOKEN"] == "generated-token"
+    for env_name in cli.SERVICE_TOKEN_ENVS:
+        assert env[env_name] == f"token-{env_name}"
+    assert len({env[name] for name in cli.SERVICE_TOKEN_ENVS}) == 4
 
 
 def test_integration_test_waits_for_default_stack(monkeypatch):

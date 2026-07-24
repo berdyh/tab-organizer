@@ -34,11 +34,22 @@ def test_ai_engine_headers_use_configured_token(monkeypatch):
     assert _ai_engine_headers() == {"Authorization": "Bearer shared-token"}
 
 
-def test_browser_engine_headers_prefer_callback_token(monkeypatch):
+def test_browser_engine_headers_send_only_browser_scope(monkeypatch):
+    """Backend must send the browser scope, never a cross-scope fallback.
+
+    Replaces the old `prefer_callback_token` assertion: browser-engine no
+    longer ACCEPTS BACKEND_CALLBACK_TOKEN/AI_ENGINE_API_TOKEN, so sending them
+    could only produce a misleading 401. Sending no header when the browser
+    token is unset keeps the failure diagnosable.
+    """
     monkeypatch.setenv("AI_ENGINE_API_TOKEN", "ai-token")
     monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "callback-token")
+    monkeypatch.setenv("BROWSER_ENGINE_API_TOKEN", "browser-token")
 
-    assert _browser_engine_headers() == {"Authorization": "Bearer callback-token"}
+    assert _browser_engine_headers() == {"Authorization": "Bearer browser-token"}
+
+    monkeypatch.delenv("BROWSER_ENGINE_API_TOKEN")
+    assert _browser_engine_headers() == {}
 
 
 def test_backend_callback_auth_requires_shared_token(monkeypatch):
@@ -410,3 +421,42 @@ async def test_hybrid_search_omits_degraded_field_when_semantic_leg_succeeds(
 
     assert "degraded" not in result
     assert result["count"] == 1
+
+
+def _route_dependency_calls(route) -> set:
+    """Collect every dependency callable a FastAPI route resolves."""
+    calls = set()
+    stack = list(route.dependant.dependencies)
+    while stack:
+        dependency = stack.pop()
+        if dependency.call is not None:
+            calls.add(dependency.call)
+        stack.extend(dependency.dependencies)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/auth/pending"),
+        ("POST", "/auth/credentials"),
+    ],
+)
+def test_backend_auth_proxy_requires_agent_token(method, path):
+    """C3: the credential proxy must not be a confused deputy.
+
+    These handlers attach the privileged Browser Engine service token
+    server-side, so an unauthenticated caller could read the pending-auth
+    queue and plant credentials for any domain.
+    """
+    matches = [
+        route
+        for route in routes.router.routes
+        if getattr(route, "path", None) == path
+        and method in getattr(route, "methods", set())
+    ]
+    assert matches, f"{method} {path} not registered"
+    for route in matches:
+        assert routes._require_backend_agent_auth in _route_dependency_calls(
+            route
+        ), f"{method} {path} is missing the backend agent auth dependency"

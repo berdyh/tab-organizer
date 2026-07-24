@@ -124,7 +124,14 @@ def test_service_token_headers_support_callback_token_fallback(monkeypatch):
     ) == {"Authorization": "Bearer ai-token"}
 
 
-def test_browser_engine_auth_requires_shared_token(monkeypatch):
+def test_browser_engine_auth_requires_browser_scope_token(monkeypatch):
+    """Only BROWSER_ENGINE_API_TOKEN opens the control plane; unset fails closed.
+
+    Tightened from the previous `requires_shared_token` version, which asserted
+    that AI_ENGINE_API_TOKEN alone was accepted. That cross-scope acceptance is
+    exactly the privilege collapse being removed (the stock CLI minted one
+    value for all scopes, so the agent principal reached CDP/credentials).
+    """
     monkeypatch.delenv("BROWSER_ENGINE_API_TOKEN", raising=False)
     monkeypatch.delenv("AI_ENGINE_API_TOKEN", raising=False)
     monkeypatch.delenv("BACKEND_CALLBACK_TOKEN", raising=False)
@@ -133,16 +140,22 @@ def test_browser_engine_auth_requires_shared_token(monkeypatch):
         browser_main._require_browser_engine_auth(None)
     assert unconfigured.value.status_code == 401
 
-    monkeypatch.setenv("AI_ENGINE_API_TOKEN", "shared-token")
-    with pytest.raises(browser_main.HTTPException) as missing:
-        browser_main._require_browser_engine_auth(None)
-    assert missing.value.status_code == 401
+    # Other scopes must NOT configure or open this door.
+    monkeypatch.setenv("AI_ENGINE_API_TOKEN", "ai-token")
+    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "callback-token")
+    assert browser_main._browser_engine_token() == ""
+    for header in (None, "Bearer ai-token", "Bearer callback-token"):
+        with pytest.raises(browser_main.HTTPException) as cross_scope:
+            browser_main._require_browser_engine_auth(header)
+        assert cross_scope.value.status_code == 401
 
-    with pytest.raises(browser_main.HTTPException) as wrong:
-        browser_main._require_browser_engine_auth("Bearer wrong")
-    assert wrong.value.status_code == 401
+    monkeypatch.setenv("BROWSER_ENGINE_API_TOKEN", "browser-token")
+    for header in (None, "Bearer wrong", "Bearer ai-token", "Bearer callback-token"):
+        with pytest.raises(browser_main.HTTPException) as rejected:
+            browser_main._require_browser_engine_auth(header)
+        assert rejected.value.status_code == 401
 
-    assert browser_main._require_browser_engine_auth("Bearer shared-token") is None
+    assert browser_main._require_browser_engine_auth("Bearer browser-token") is None
 
 
 @pytest.mark.parametrize(

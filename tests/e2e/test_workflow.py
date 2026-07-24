@@ -12,11 +12,8 @@ TERMINAL_URL_STATUSES = {"scraped", "failed", "auth_required"}
 
 
 def browser_headers() -> dict[str, str]:
-    token = (
-        os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
-        or os.getenv("BACKEND_CALLBACK_TOKEN", "").strip()
-        or os.getenv("AI_ENGINE_API_TOKEN", "").strip()
-    )
+    """Browser Engine accepts BROWSER_ENGINE_API_TOKEN only (no cross-scope fallback)."""
+    token = os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 

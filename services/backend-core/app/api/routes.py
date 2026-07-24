@@ -61,12 +61,16 @@ def _ai_engine_headers() -> dict[str, str]:
 
 
 def _browser_engine_headers() -> dict[str, str]:
-    """Return bearer auth headers for Browser Engine control endpoints."""
-    token = (
-        os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
-        or os.getenv("BACKEND_CALLBACK_TOKEN", "").strip()
-        or os.getenv("AI_ENGINE_API_TOKEN", "").strip()
-    )
+    """Return bearer auth headers for Browser Engine control endpoints.
+
+    Sole token-header builder for the six backend->browser call sites (all of
+    them go through `_browser_engine_request_headers`). It sends
+    `BROWSER_ENGINE_API_TOKEN` and nothing else: browser-engine's
+    `_browser_engine_token()` now accepts only that scope, so a callback/AI
+    fallback here could never authenticate — it would only make a
+    misconfiguration look like an auth bug instead of a missing token.
+    """
+    token = os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
@@ -1212,9 +1216,13 @@ async def get_scrape_status(session_id: str):
     }
 
 
-# Auth queue endpoints (proxy to browser engine)
+# Auth queue endpoints (proxy to browser engine).
+# Both require the agent bearer token: this proxy attaches the privileged
+# Browser Engine service token server-side, so an unauthenticated caller here
+# would be a confused deputy able to read the pending-auth queue and plant
+# credentials for any domain (C3).
 @router.get("/auth/pending")
-async def get_pending_auth():
+async def get_pending_auth(_auth=Depends(_require_backend_agent_auth)):
     """Get pending authentication requests from browser engine."""
     try:
         async with httpx.AsyncClient() as client:
@@ -1229,7 +1237,11 @@ async def get_pending_auth():
 
 
 @router.post("/auth/credentials")
-async def submit_credentials(domain: str, credentials: dict):
+async def submit_credentials(
+    domain: str,
+    credentials: dict,
+    _auth=Depends(_require_backend_agent_auth),
+):
     """Submit credentials for a domain."""
     try:
         async with httpx.AsyncClient() as client:

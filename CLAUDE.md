@@ -30,7 +30,7 @@ Everything runs in Docker; `scripts/cli.py` is the wrapper CI also uses.
 ./scripts/cli.py check-provider --provider codex_acp --generate
 ```
 
-`start` / `host-ai` generate the local bearer tokens (`AI_ENGINE_API_TOKEN`, `BACKEND_CALLBACK_TOKEN`, `BACKEND_AGENT_API_TOKEN`) — services fail closed without them, so prefer these over raw `docker compose up`.
+`start` / `host-ai` generate **four independent** local bearer tokens (`AI_ENGINE_API_TOKEN`, `BACKEND_CALLBACK_TOKEN`, `BACKEND_AGENT_API_TOKEN`, `BROWSER_ENGINE_API_TOKEN`), persisted per scope in `data/service-tokens.json` (0600) so they stay stable across restarts — services fail closed without them, so prefer these over raw `docker compose up`. The four values must never be equal: one shared value makes the agent token also open browser-engine's scrape/CDP/credential control plane.
 
 ### Tests
 
@@ -99,7 +99,7 @@ LLM-only providers (`claude_code`, `codex_cli`, `codex_acp`) shell out to locall
 - **Underscore compatibility packages**: `services/ai_engine/`, `services/backend_core/`, `services/browser_engine/`, `services/web_ui/` are `__init__.py` shims that repoint `__path__` at the hyphenated directories. Tests and CLI import via `services.backend_core.app...` — do not delete them, and add one if you add a hyphenated service.
 - **Docker build context**: backend-core, ai-engine, and browser-engine build from the *repo root* (they copy `services/url_safety.py` / `config/`); web-ui builds from its own directory. Adding a shared module means updating those Dockerfiles.
 - **Outbound URL safety**: all scrape targets go through `services/url_safety.py` (scheme allowlist, private/loopback rejection, DNS-rebinding-safe resolution). `SCRAPE_ALLOW_PRIVATE_NETWORKS=true` is the only escape hatch and defaults off.
-- **Auth is fail-closed**: ai-engine endpoints (except `/health`) require `AI_ENGINE_API_TOKEN`; browser-engine scrape/auth control endpoints require `BROWSER_ENGINE_API_TOKEN` (with callback/AI token fallback); backend agent tab APIs require `BACKEND_AGENT_API_TOKEN`. Never route agent browser-control calls through unauthenticated paths, and never print generated tokens from `scripts/`.
+- **Auth is fail-closed and scope-isolated**: ai-engine endpoints (except `/health`) require `AI_ENGINE_API_TOKEN`; browser-engine scrape/auth control endpoints require `BROWSER_ENGINE_API_TOKEN` **and nothing else** (the former callback/AI accept-fallback was removed — it collapsed all four principals into one because the CLI minted a single shared value); backend agent tab APIs *and* the backend `/api/v1/auth/pending` + `/api/v1/auth/credentials` proxies require `BACKEND_AGENT_API_TOKEN`. Each service must accept exactly its own scope on the receive side; outbound token *selection* (which token backend/browser sends downstream) is a separate concern and may still fall back. Never route agent browser-control calls through unauthenticated paths, and never print generated tokens from `scripts/`.
 - **CDP is attach-only and local-only** — never launch or close the user's browser/profile; reject non-local CDP endpoints.
 - **Known monoliths** (`backend-core/app/api/routes.py`, both `app/main.py` files, `platform/store.py`, `web-ui/src/pages/platform.py`) are slated for behavior-preserving splits behind compatible routes — keep `routes.py` working as a compatibility aggregator.
 - Conventional commits (`feat(scope): ...`, `fix(scope): ...`).

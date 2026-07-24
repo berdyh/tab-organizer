@@ -241,7 +241,7 @@ The system uses these environment variables:
 - `CODEX_ACP_QUEUE_TTL_SECONDS`: ACPX queue-owner TTL for each prompt turn, defaults to `0.1`
 - `CODEX_ACP_SESSION_NAME`: Optional persistent ACP session name. If unset, each app LLM call creates and closes a unique ACP session to avoid cross-request context bleed.
 - `AGENT_CLI_WORKDIR`: Working directory for local agent CLI calls, defaults to `/tmp/tab-organizer-agent-cli`
-- `AI_ENGINE_API_TOKEN`: Bearer token required by generation, indexing, clustering, chat, search, summarization, document deletion, and provider-switch endpoints. `scripts/cli.py start` and `scripts/cli.py host-ai` generate `data/host-ai-token` automatically.
+- `AI_ENGINE_API_TOKEN`: Bearer token required by generation, indexing, clustering, chat, search, summarization, document deletion, and provider-switch endpoints. `scripts/cli.py start` and `scripts/cli.py host-ai` generate it automatically, storing one independent token per service scope in `data/service-tokens.json` (0600). The four scopes (`AI_ENGINE_API_TOKEN`, `BACKEND_CALLBACK_TOKEN`, `BACKEND_AGENT_API_TOKEN`, `BROWSER_ENGINE_API_TOKEN`) must stay distinct.
 - `BACKEND_CALLBACK_TOKEN`: Bearer token required for browser-engine scrape callbacks into backend-core. Defaults operationally to the same generated local token when started through `scripts/cli.py`.
 - `BACKEND_AGENT_API_TOKEN`: Bearer token required for local agent/CLI tab-management endpoints in backend-core. Defaults operationally to the same generated local token when started through `scripts/cli.py`.
 
@@ -262,7 +262,7 @@ For a host-run local subscription mode:
 ./scripts/cli.py check-provider --provider codex_acp --generate
 ```
 
-Use `--provider codex_cli` for one-shot Codex CLI or `--provider claude_code` for Claude Code print mode. `--host-ai` sets the Docker services to call `http://host.docker.internal:8090`, while the AI Engine process itself runs on the host and can access your authenticated CLI state. The CLI creates a local `data/host-ai-token` and passes it as `AI_ENGINE_API_TOKEN` so containers can call the host AI Engine without exposing unauthenticated generation and provider-switching endpoints.
+Use `--provider codex_cli` for one-shot Codex CLI or `--provider claude_code` for Claude Code print mode. `--host-ai` sets the Docker services to call `http://host.docker.internal:8090`, while the AI Engine process itself runs on the host and can access your authenticated CLI state. The CLI creates a local `data/service-tokens.json` and passes its `AI_ENGINE_API_TOKEN` entry so containers can call the host AI Engine without exposing unauthenticated generation and provider-switching endpoints.
 
 ## Model Metadata
 

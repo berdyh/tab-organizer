@@ -1,6 +1,6 @@
 # Security-Invariant Suite (FROZEN)
 
-This suite is **FROZEN** at `SECSUITE_VERSION = "1.2.0"` (see `__init__.py`). It
+This suite is **FROZEN** at `SECSUITE_VERSION = "1.3.0"` (see `__init__.py`). It
 is the black-box security contract for the Tab Organizer backend. The
 TypeScript reimplementation **must pass the same probes** by pointing the
 harness env vars at its own servers/boot commands — the test IDs and fixture

@@ -19,8 +19,13 @@
     TS port substitutes `SEC_BOOT_*_CMD` real servers with the same env
     contract.
   - Distinct per-scope tokens are mandatory in managed mode so cross-acceptance
-    is observable; the browser/backend token fallback chains are frozen as
-    *permitted when the primary is unset*, not required.
+    is observable. As of SECSUITE 1.3.0 this also mirrors deployment:
+    browser-engine's cross-scope ACCEPT fallback was removed (it accepts only
+    `BROWSER_ENGINE_API_TOKEN`) and `scripts/cli.py` mints four independent
+    tokens, so the `browser_auth_pending` door is load-bearing in the real
+    stock configuration, not only under this harness's synthetic env.
+    Outbound token *selection* fallbacks (which token a service SENDS
+    downstream) are a separate concern and are not frozen here.
   - A session-teardown audit asserts no configured token value appears in any
     recorded response body (SEC-27).
   - The prompt-envelope invariant's GATING probes are SEC-40/41 (hermetic,

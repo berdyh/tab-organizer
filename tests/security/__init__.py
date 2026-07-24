@@ -6,4 +6,4 @@ requires a decision-log row in `docs/MODULE_INDEX.md` and a bump of
 pointing the harness env vars at its own servers/boot commands.
 """
 
-SECSUITE_VERSION = "1.2.0"
+SECSUITE_VERSION = "1.3.0"

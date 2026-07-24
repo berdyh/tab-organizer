@@ -2,18 +2,20 @@
 
 Managed mode sets a distinct random token per scope, so cross-acceptance is
 genuinely observable: with every primary token configured, each door is opened
-by exactly one principal and refused (401) for all others. The browser/backend
-fallback chains are dormant while their primary tokens are set -- frozen as
-*permitted when primary is unset*, not *required*.
+by exactly one principal and refused (401) for all others.
 
-This fallback is an intentional, documented design choice, not a bug:
-CLAUDE.md's Conventions section states "browser-engine scrape/auth control
-endpoints require BROWSER_ENGINE_API_TOKEN (with callback/AI token
-fallback)". Do not "fix" this suite by asserting the fallback must be
-rejected -- that would contradict the documented contract. See
-services/browser-engine/MODULE.md's security note for the accepted
-blast-radius tradeoff (a callback-only token holder can also reach
-scrape/CDP-control).
+HISTORY (SECSUITE 1.3.0): browser-engine used to ACCEPT a cross-scope
+fallback (BROWSER_ENGINE_API_TOKEN -> BACKEND_CALLBACK_TOKEN ->
+AI_ENGINE_API_TOKEN), previously described here as an intentional documented
+tradeoff. That fallback has been REMOVED. It was not merely a widened blast
+radius: `scripts/cli.py` minted ONE value for all four scopes in every stock
+deployment, so BACKEND_AGENT_API_TOKEN *was* the value browser-engine
+accepted, and an agent principal opened the entire credential and CDP control
+plane. The CLI now mints four independent tokens and browser-engine accepts
+only its own scope (fail-closed 401 when unset). The `browser_auth_pending`
+door below is therefore now load-bearing in the deployed configuration, not
+just under this harness's synthetic per-scope tokens. Do not reintroduce a
+cross-scope accept fallback.
 """
 
 import os
@@ -39,10 +41,10 @@ def _principals() -> dict:
 # door -> (service fixture, method, path, body, {principals that must be allowed})
 DOORS = {
     "ai_embed": ("ai", "POST", "/embed", {"texts": ["x"]}, {"ai"}),
-    # Only "browser" is asserted here because managed mode sets a distinct
-    # primary browser token; the callback/AI fallback (see module docstring,
-    # CLAUDE.md) is dormant while that primary is set, so it correctly stays
-    # out of `allowed` for this matrix -- it is not disabled or removed.
+    # Only "browser" is allowed, and that is now the real runtime contract:
+    # the callback/AI accept-fallback was removed (see module docstring), so
+    # every other principal is refused here in deployment too, not only under
+    # this harness's per-scope tokens.
     "browser_auth_pending": ("browser", "GET", "/auth/pending", None, {"browser"}),
     "backend_tabs_open": (
         "backend",

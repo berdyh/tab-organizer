@@ -134,12 +134,19 @@ class TabOpenRequest(BaseModel):
 
 
 def _browser_engine_token() -> str:
-    """Resolve the token required for Browser Engine control endpoints."""
-    return (
-        os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
-        or os.getenv("BACKEND_CALLBACK_TOKEN", "").strip()
-        or os.getenv("AI_ENGINE_API_TOKEN", "").strip()
-    )
+    """Resolve the token required for Browser Engine control endpoints.
+
+    Accepts `BROWSER_ENGINE_API_TOKEN` ONLY. The former cross-scope fallback
+    (`BACKEND_CALLBACK_TOKEN`, then `AI_ENGINE_API_TOKEN`) was removed: in the
+    stock deployment `scripts/cli.py` minted one value for every scope, so the
+    agent/callback principals were accepted here too and could reach scrape,
+    CDP tab control, and the credential/auth-queue endpoints. Accepting only
+    the browser scope keeps that blast radius inside one principal. When the
+    variable is unset, `_require_browser_engine_auth` fails CLOSED with 401 —
+    never open. This is the ACCEPT side only; outbound token selection in
+    `_service_token_headers` is unrelated and keeps its fallback.
+    """
+    return os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
 
 
 def _require_browser_engine_auth(
