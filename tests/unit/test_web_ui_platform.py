@@ -436,6 +436,7 @@ def test_platform_authenticated_client_request_shapes(monkeypatch):
 def test_ai_client_request_shapes_include_shared_token(monkeypatch):
     client, calls = _client_with_request_spy(monkeypatch)
     monkeypatch.setenv("AI_ENGINE_API_TOKEN", "ai-token")
+    monkeypatch.setenv("BACKEND_AGENT_API_TOKEN", "agent-token")
     client = importlib.import_module("services.web_ui.src.api.client").SyncAPIClient()
 
     client.chat("hello", session_id="sess_1")
@@ -444,11 +445,14 @@ def test_ai_client_request_shapes_include_shared_token(monkeypatch):
     assert calls == [
         {
             # WI0 B7: chat is proxied through Backend Core, not called on
-            # ai_url directly, so no client-side AI Engine token header.
+            # ai_url directly, so no client-side AI Engine token header --
+            # but /chat requires the backend agent scope, so the agent token
+            # must ride along or the Streamlit chat page 401s.
             "method": "POST",
             "url": "http://backend.test/api/v1/chat",
             "timeout": 7.0,
             "json": {"query": "hello", "session_id": "sess_1"},
+            "headers": {"Authorization": "Bearer agent-token"},
         },
         {
             "method": "POST",
@@ -456,6 +460,40 @@ def test_ai_client_request_shapes_include_shared_token(monkeypatch):
             "timeout": 7.0,
             "json": {"llm_provider": "claude_code", "embedding_provider": None},
             "headers": {"Authorization": "Bearer ai-token"},
+        },
+    ]
+
+
+def test_backend_agent_scoped_calls_carry_the_agent_token(monkeypatch):
+    """Regression: /auth/pending and /auth/credentials require the agent scope.
+
+    Backend Core gained `Depends(_require_backend_agent_auth)` on both auth
+    proxies (they attach the privileged Browser Engine token server-side), so
+    the Streamlit auth-handling page 401s unless the client sends the token
+    docker-compose now grants the web-ui service.
+    """
+    client, calls = _client_with_request_spy(monkeypatch)
+    monkeypatch.setenv("BACKEND_AGENT_API_TOKEN", "agent-token")
+    client = importlib.import_module("services.web_ui.src.api.client").SyncAPIClient()
+
+    client.get_pending_auth()
+    client.submit_credentials("example.com", {"username": "u", "password": "p"})
+
+    auth_header = {"Authorization": "Bearer agent-token"}
+    assert calls == [
+        {
+            "method": "GET",
+            "url": "http://backend.test/api/v1/auth/pending",
+            "timeout": 7.0,
+            "headers": auth_header,
+        },
+        {
+            "method": "POST",
+            "url": "http://backend.test/api/v1/auth/credentials",
+            "timeout": 7.0,
+            "params": {"domain": "example.com"},
+            "json": {"username": "u", "password": "p"},
+            "headers": auth_header,
         },
     ]
 
@@ -496,6 +534,7 @@ def _client_with_request_spy(monkeypatch):
     monkeypatch.setenv("AI_ENGINE_URL", "http://ai-engine:8090")
     monkeypatch.setenv("UI_API_TIMEOUT", "7")
     monkeypatch.delenv("AI_ENGINE_API_TOKEN", raising=False)
+    monkeypatch.delenv("BACKEND_AGENT_API_TOKEN", raising=False)
 
     calls = []
 

@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from config.config_loader import get_ai_config
+from services.cors import allowed_origins
 from services.observability import RequestIDMiddleware, configure_logging, log_event
 
 from .chatbot.rag import Document, RAGChatbot
@@ -68,10 +69,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS middleware. Scoped to the Web UI origin, credentials never allowed --
+# `allow_origins=["*"]` + `allow_credentials=True` made every endpoint here
+# reachable from any page the user had open. Web UI calls this service
+# server-side, so no browser-side caller is lost. See services/cors.py.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=allowed_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -1,6 +1,6 @@
 # Security-Invariant Suite (FROZEN)
 
-This suite is **FROZEN** at `SECSUITE_VERSION = "1.3.0"` (see `__init__.py`). It
+This suite is **FROZEN** at `SECSUITE_VERSION = "1.4.0"` (see `__init__.py`). It
 is the black-box security contract for the Tab Organizer backend. The
 TypeScript reimplementation **must pass the same probes** by pointing the
 harness env vars at its own servers/boot commands — the test IDs and fixture
@@ -20,6 +20,25 @@ in `docs/MODULE_INDEX.md`'s ledger and a bump of `SECSUITE_VERSION`. See
 `sec_seam` exceptions (SEC-26 MCP tool surface, SEC-39 auth classifier, SEC-40
 RAG chat prompt-assembly seam, SEC-41 cluster-label prompt-assembly seam,
 SEC-42 agent env-allowlist drift check).
+
+## New in 1.4.0 (wk0 batch B)
+
+Three black-box probes closing self-blind spots the suite had no coverage for:
+
+- **SEC-43** (`test_cors_policy.py`) — no probe issued an `Origin` header
+  anywhere, so `allow_origins=["*"]` + `allow_credentials=True` on all three
+  services was invisible. Asserts a foreign origin is neither echoed nor
+  wildcarded and credentials are never allowed, plus a `sec_managed`
+  non-vacuity check that the configured UI origin *is* granted.
+- **SEC-44** (`test_route_exposure.py`) — no probe would have caught a
+  newly-added unauthenticated route (two credential proxies shipped that way).
+  Enumerates the route table from the service's own `/openapi.json` and
+  requires every route to answer 401 anonymously unless it is on the reviewed,
+  commented `PUBLIC_ROUTES` allowlist. New routes fail until classified.
+- **SEC-45** (`test_route_exposure.py`) — `GET /api/v1/urls/{session_id}`
+  returned stored metadata verbatim, including the full captured page body.
+  Ingests a capture with a known body and asserts the listing carries neither
+  that text, a `content` key, nor any unreviewed metadata key.
 
 ## Running
 

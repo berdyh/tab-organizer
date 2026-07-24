@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config.config_loader import get_ai_config
+from services.cors import allowed_origins
 from services.observability import RequestIDMiddleware, configure_logging, log_event
 
 from .api import ingest
@@ -61,11 +62,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+# CORS middleware. Scoped to the Web UI origin, credentials never allowed:
+# `allow_origins=["*"]` + `allow_credentials=True` let any site the user had
+# open read this service's responses, and the unauthenticated session/url reads
+# here return stored page content. Streamlit calls us server-side, so no
+# browser-side caller is lost. See services/cors.py.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=allowed_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -32,13 +32,19 @@
     `sec_seam`, drive the prompt-assembly seam directly with no live embedder
     needed); SEC-34/35 are live-stack certification probes only (`sec_managed`
     + an embedding-backend skip stack them so they can never fail CI alone).
+  - SEC-44's route table is enumerated from the service's own `/openapi.json`,
+    never a hand-maintained list, so an added route is unclassified and fails
+    until someone protects it or puts it on `PUBLIC_ROUTES` with a reason. The
+    allowlist is also checked for staleness and for still being genuinely
+    anonymous-reachable, so it cannot drift into a rubber stamp.
   - SEC-25's contract is data, not Python: it asserts the observed agent
     subprocess env is a subset of `fixtures/agent_env_allowlist.json`. SEC-42
     (`sec_seam`) separately pins `AgentCLILLMProvider.ENV_ALLOWLIST` to equal
     that same fixture, so a Python-side drift from the frozen contract fails
     loudly instead of silently changing what SEC-25 permits.
 - invariants: SEC-1..10 (`test_url_safety_scrape.py`), SEC-11..15
-  (`test_cdp_local_only.py`), SEC-16..23 (`test_token_scopes.py`), SEC-24..27,
+  (`test_cdp_local_only.py`), SEC-16..23 (`test_token_scopes.py`), SEC-43
+  (`test_cors_policy.py`), SEC-44..45 (`test_route_exposure.py`), SEC-24..27,
   SEC-42 (`test_credential_isolation.py` + `fixtures/agent_env_allowlist.json`),
   SEC-28..33 (`test_agent_subprocess_hardening.py`), SEC-34..36, SEC-40..41
   (`test_prompt_envelope.py`), SEC-37..38 (`test_repo_hygiene.py` +

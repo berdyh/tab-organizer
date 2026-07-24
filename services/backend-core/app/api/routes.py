@@ -579,6 +579,26 @@ def add_urls(request: URLInput):
     )
 
 
+# Deny-by-default projection for the URL listing. `SessionManager` stores the
+# full captured page body under `metadata["content"]`, so returning `r.metadata`
+# verbatim turned this list endpoint into a full-corpus content dump. Only keys
+# a list view legitimately renders are echoed; everything else -- page text, meta
+# description/keywords/OG tags, and any field a future capture path adds -- is
+# dropped. Callers that genuinely need page content use `/export`, which exists
+# for exactly that.
+URL_LIST_METADATA_FIELDS = (
+    "title",
+    "status_code",
+    "auth_type",
+    "auth_used",
+    "capture_id",
+)
+
+
+def _project_url_metadata(metadata: dict) -> dict:
+    return {key: metadata[key] for key in URL_LIST_METADATA_FIELDS if key in metadata}
+
+
 @router.get("/urls/{session_id}")
 def get_urls(session_id: str, status: Optional[str] = None):
     session = session_manager.get_session(session_id)
@@ -595,7 +615,7 @@ def get_urls(session_id: str, status: Optional[str] = None):
             "original": r.original,
             "normalized": r.normalized,
             "status": r.status,
-            "metadata": r.metadata,
+            "metadata": _project_url_metadata(r.metadata),
         }
         for r in records
     ]

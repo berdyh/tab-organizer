@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from services import observability as obs
+from services.cors import DEFAULT_ALLOWED_ORIGINS
 
 
 def _install_playwright_stub():
@@ -129,10 +130,15 @@ def test_cors_preflight_still_carries_request_id(app):
     X-Request-ID, breaking the "every request gets one" contract.
     """
     client = TestClient(app)
+    # Must be an allowed origin: allow_origins is now the Web UI allowlist from
+    # services/cors.py, not "*", so a foreign origin gets a 400 "Disallowed CORS
+    # origin" preflight. Which origins are allowed is asserted by SEC-43 in
+    # tests/security/test_cors_policy.py; this test only pins the middleware
+    # ordering.
     resp = client.options(
         "/",
         headers={
-            "Origin": "http://example.com",
+            "Origin": DEFAULT_ALLOWED_ORIGINS[0],
             "Access-Control-Request-Method": "GET",
         },
     )

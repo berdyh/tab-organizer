@@ -26,6 +26,10 @@ class SyncAPIClient:
             "BROWSER_ENGINE_URL", DEFAULT_BROWSER_ENGINE_URL
         ).rstrip("/")
         self.ai_engine_token = os.getenv("AI_ENGINE_API_TOKEN", "").strip()
+        # Backend Core's agent scope. /chat, /auth/pending and /auth/credentials
+        # now require it; without this the Streamlit chat and auth pages 401.
+        # Streamlit runs server-side, so the token never reaches a browser.
+        self.backend_agent_token = os.getenv("BACKEND_AGENT_API_TOKEN", "").strip()
         self.timeout = float(os.getenv("UI_API_TIMEOUT", "30"))
 
     def _request(self, method: str, url: str, **kwargs):
@@ -44,6 +48,11 @@ class SyncAPIClient:
         if not self.ai_engine_token:
             return {}
         return {"Authorization": f"Bearer {self.ai_engine_token}"}
+
+    def _backend_agent_headers(self) -> dict[str, str]:
+        if not self.backend_agent_token:
+            return {}
+        return {"Authorization": f"Bearer {self.backend_agent_token}"}
 
     def _clean_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in payload.items() if value is not None}
@@ -104,7 +113,11 @@ class SyncAPIClient:
             }
 
     def get_pending_auth(self) -> dict:
-        return self._request("GET", f"{self.backend_url}/auth/pending")
+        return self._request(
+            "GET",
+            f"{self.backend_url}/auth/pending",
+            headers=self._backend_agent_headers(),
+        )
 
     def submit_credentials(self, domain: str, credentials: dict) -> dict:
         return self._request(
@@ -112,6 +125,7 @@ class SyncAPIClient:
             f"{self.backend_url}/auth/credentials",
             params={"domain": domain},
             json=credentials,
+            headers=self._backend_agent_headers(),
         )
 
     # AI features
@@ -133,6 +147,7 @@ class SyncAPIClient:
             "POST",
             f"{self.backend_url}/chat",
             json={"query": query, "session_id": session_id},
+            headers=self._backend_agent_headers(),
         )
 
     def search(self, query: str, session_id: Optional[str] = None) -> dict:
