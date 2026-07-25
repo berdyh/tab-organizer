@@ -1,7 +1,10 @@
 """Contracts for importing live Chromium tabs through CDP."""
 
+import ipaddress
+import socket
 import sys
 import types
+from urllib.parse import urlparse
 
 import pytest
 
@@ -120,10 +123,50 @@ def test_validate_cdp_url_allows_only_local_control_plane():
         validate_cdp_url("file:///tmp/socket")
 
 
+def test_validate_cdp_url_rebrackets_ipv6_loopback():
+    # urlparse strips brackets when exposing .hostname; rebuilding the netloc
+    # from that unbracketed form must re-add them, or the result round-trips
+    # into a broken host:port split ("::1:9222" instead of "[::1]:9222").
+    validated = validate_cdp_url("http://[::1]:9222")
+    assert validated == "http://[::1]:9222"
+
+    reparsed = urlparse(validated)
+    assert reparsed.hostname == "::1"
+    assert reparsed.port == 9222
+
+
+def test_resolve_cdp_connect_url_leaves_bracketed_ipv6_loopback_untouched(
+    monkeypatch,
+):
+    def _fail(host, port, family=None, type=None):
+        raise AssertionError("IPv6 loopback must not be DNS-resolved")
+
+    monkeypatch.setattr(cdp_module.socket, "getaddrinfo", _fail)
+    connect_url = resolve_cdp_connect_url(validate_cdp_url("http://[::1]:9222"))
+    assert connect_url == "http://[::1]:9222"
+    assert urlparse(connect_url).port == 9222
+
+
+def _fake_getaddrinfo(*ips):
+    """Build a socket.getaddrinfo stand-in returning the given IP literals."""
+
+    def _resolve(host, port, family=None, type=None):
+        infos = []
+        for ip in ips:
+            fam = socket.AF_INET6 if ":" in ip else socket.AF_INET
+            sockaddr = (ip, 0, 0, 0) if fam == socket.AF_INET6 else (ip, 0)
+            infos.append((fam, socket.SOCK_STREAM, 6, "", sockaddr))
+        return infos
+
+    return _resolve
+
+
 def test_resolve_cdp_connect_url_rewrites_host_docker_internal_to_ip(monkeypatch):
     # WI0 B2: the validator accepts host.docker.internal as input, but Chrome's
     # debug port rejects that Host header. Connect via the resolved IP instead.
-    monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "172.17.0.1")
+    monkeypatch.setattr(
+        cdp_module.socket, "getaddrinfo", _fake_getaddrinfo("172.17.0.1")
+    )
     assert (
         resolve_cdp_connect_url("http://host.docker.internal:9222")
         == "http://172.17.0.1:9222"
@@ -132,19 +175,19 @@ def test_resolve_cdp_connect_url_rewrites_host_docker_internal_to_ip(monkeypatch
 
 def test_resolve_cdp_connect_url_leaves_localhost_untouched(monkeypatch):
     # localhost/IP forms are valid Chrome Host headers and must not be resolved.
-    def _fail(host):
+    def _fail(host, port, family=None, type=None):
         raise AssertionError("localhost must not be DNS-resolved")
 
-    monkeypatch.setattr(cdp_module.socket, "gethostbyname", _fail)
+    monkeypatch.setattr(cdp_module.socket, "getaddrinfo", _fail)
     assert resolve_cdp_connect_url("http://localhost:9222") == "http://localhost:9222"
     assert resolve_cdp_connect_url("http://127.0.0.1:9222") == "http://127.0.0.1:9222"
 
 
 def test_resolve_cdp_connect_url_reports_unresolvable_host(monkeypatch):
-    def _raise(host):
+    def _raise(host, port, family=None, type=None):
         raise OSError("Name or service not known")
 
-    monkeypatch.setattr(cdp_module.socket, "gethostbyname", _raise)
+    monkeypatch.setattr(cdp_module.socket, "getaddrinfo", _raise)
     with pytest.raises(CDPConnectionError) as excinfo:
         resolve_cdp_connect_url("http://host.docker.internal:9222")
     error = excinfo.value
@@ -153,21 +196,122 @@ def test_resolve_cdp_connect_url_reports_unresolvable_host(monkeypatch):
     assert error.fix
 
 
-def test_resolve_cdp_connect_url_rejects_non_local_resolved_address(monkeypatch):
-    # A poisoned/misconfigured resolver must not be able to point the
-    # local-only CDP client at a public/remote address.
-    monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "8.8.8.8")
+@pytest.mark.parametrize(
+    "dangerous_ip",
+    [
+        # Every address below satisfies `is_private == True` in Python's
+        # ipaddress module, so an `is_private or is_loopback` allow predicate
+        # accepts all of them. They are also all `is_global == False`, so
+        # `not is_global` accepts them too. Only an allowlist of genuinely
+        # local networks refuses them.
+        "198.18.0.1",  # benchmark range 198.18.0.0/15: routable off-host
+        "192.0.0.170",  # 192.0.0.0/24 (NAT64/DS-Lite assignments): routable
+        "2002:808:808::",  # 6to4 for the GLOBAL IPv4 8.8.8.8
+        "2001:db8::1",  # IPv6 documentation range
+        "2001:2::1",  # IPv6 benchmark range
+        "169.254.169.254",  # IPv4 link-local: cloud metadata service
+        "fe80::1",  # IPv6 link-local
+        "0.0.0.0",  # unspecified
+        "::",  # unspecified (v6)
+        "240.0.0.1",  # reserved (Class E)
+        "8.8.8.8",  # plain public address (regression guard)
+        "224.0.0.1",  # multicast (regression guard; is_private is False)
+    ],
+)
+def test_resolve_cdp_connect_url_rejects_addresses_outside_local_allowlist(
+    monkeypatch, dangerous_ip
+):
+    monkeypatch.setattr(
+        cdp_module.socket, "getaddrinfo", _fake_getaddrinfo(dangerous_ip)
+    )
     with pytest.raises(CDPConnectionError) as excinfo:
         resolve_cdp_connect_url("http://host.docker.internal:9222")
     error = excinfo.value
     assert error.code == "cdp_resolved_address_not_local"
-    assert "8.8.8.8" in error.cause
+    assert dangerous_ip in error.cause
     assert error.fix
+
+
+@pytest.mark.parametrize(
+    "local_ip",
+    [
+        "172.17.0.1",  # default docker0 bridge -- MUST keep working
+        "172.31.255.254",  # top of RFC1918 172.16.0.0/12
+        "10.1.2.3",
+        "192.168.1.10",
+        "127.0.0.53",  # resolver-provided loopback
+        "fd00::1",  # IPv6 unique-local
+    ],
+)
+def test_resolve_cdp_connect_url_accepts_allowlisted_local_addresses(
+    monkeypatch, local_ip
+):
+    monkeypatch.setattr(cdp_module.socket, "getaddrinfo", _fake_getaddrinfo(local_ip))
+    expected_host = f"[{local_ip}]" if ":" in local_ip else local_ip
+    assert (
+        resolve_cdp_connect_url("http://host.docker.internal:9222")
+        == f"http://{expected_host}:9222"
+    )
+
+
+def test_local_cdp_networks_exclude_link_local():
+    # fe80::/10 sits outside fc00::/7, so IPv6 link-local is excluded by the
+    # shape of the allowlist rather than by a carve-out. Pin that, because a
+    # future "widen the IPv6 range" edit would silently re-admit it.
+    for address in ("fe80::1", "fe80::dead:beef", "169.254.169.254"):
+        parsed_address = ipaddress.ip_address(address)
+        assert not any(
+            parsed_address in network for network in cdp_module.LOCAL_CDP_NETWORKS
+        )
+
+
+def test_resolve_cdp_connect_url_filters_unsafe_answers_and_keeps_safe_one(monkeypatch):
+    # A dual-stack host.docker.internal answering A=172.17.0.1 plus
+    # AAAA=fe80::1 is a real, working configuration. Filter the unsafe answer
+    # instead of refusing the host outright: the returned URL pins the safe IP
+    # literal, so the rejected answer is never dialed.
+    monkeypatch.setattr(
+        cdp_module.socket,
+        "getaddrinfo",
+        _fake_getaddrinfo("fe80::1", "172.17.0.1", "8.8.8.8"),
+    )
+    assert (
+        resolve_cdp_connect_url("http://host.docker.internal:9222")
+        == "http://172.17.0.1:9222"
+    )
+
+
+def test_resolve_cdp_connect_url_prefers_ipv4_among_safe_answers(monkeypatch):
+    # AF_UNSPEC + RFC 6724 ordering puts the IPv6 answer first. The documented
+    # bridge ('socat ... bind=172.17.0.1') is IPv4-only, so selection must not
+    # silently follow the resolver's preference.
+    monkeypatch.setattr(
+        cdp_module.socket,
+        "getaddrinfo",
+        _fake_getaddrinfo("fd00::1", "172.17.0.1"),
+    )
+    assert (
+        resolve_cdp_connect_url("http://host.docker.internal:9222")
+        == "http://172.17.0.1:9222"
+    )
+
+
+def test_resolve_cdp_connect_url_uses_ipv6_when_it_is_the_only_safe_answer(monkeypatch):
+    monkeypatch.setattr(
+        cdp_module.socket,
+        "getaddrinfo",
+        _fake_getaddrinfo("fd00::1", "8.8.8.8"),
+    )
+    connect_url = resolve_cdp_connect_url("http://host.docker.internal:9222")
+    assert connect_url == "http://[fd00::1]:9222"
+    assert urlparse(connect_url).port == 9222
 
 
 @pytest.mark.asyncio
 async def test_harvester_connects_via_resolved_ip(monkeypatch):
-    monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "172.17.0.1")
+    monkeypatch.setattr(
+        cdp_module.socket, "getaddrinfo", _fake_getaddrinfo("172.17.0.1")
+    )
     browser = FakeBrowser([FakePage("https://example.com/a", "A", "content a")])
     playwright = FakePlaywright(browser)
 
@@ -185,8 +329,43 @@ async def test_harvester_connects_via_resolved_ip(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_harvester_attaches_over_bracketed_ipv6_loopback(monkeypatch):
+    # End-to-end: an IPv6 loopback endpoint must survive validation, connect
+    # resolution, and the actual attach with its brackets intact. An
+    # unbracketed "::1:9222" would reparse into a different host.
+    real_getaddrinfo = socket.getaddrinfo
+
+    def _guarded(host, port, *args, **kwargs):
+        # Page URLs still go through scrape URL safety, which resolves them;
+        # only the CDP host must never reach the resolver.
+        assert host != "::1", "IPv6 loopback must not be DNS-resolved"
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(cdp_module.socket, "getaddrinfo", _guarded)
+    browser = FakeBrowser([FakePage("https://example.com/a", "A", "content a")])
+    playwright = FakePlaywright(browser)
+
+    harvester = CDPTabHarvester(
+        cdp_url="http://[::1]:9222",
+        playwright_factory=FakePlaywrightFactory(playwright),
+        max_concurrent=1,
+    )
+
+    result = await harvester.harvest()
+
+    assert harvester.cdp_url == "http://[::1]:9222"
+    assert playwright.chromium.connected_urls == ["http://[::1]:9222"]
+    assert urlparse(playwright.chromium.connected_urls[0]).hostname == "::1"
+    assert urlparse(playwright.chromium.connected_urls[0]).port == 9222
+    assert result.total == 1
+    assert browser.closed is False
+
+
+@pytest.mark.asyncio
 async def test_harvester_connect_failure_raises_actionable_error(monkeypatch):
-    monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "172.17.0.1")
+    monkeypatch.setattr(
+        cdp_module.socket, "getaddrinfo", _fake_getaddrinfo("172.17.0.1")
+    )
 
     class FailingChromium:
         def __init__(self):

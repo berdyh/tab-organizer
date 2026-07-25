@@ -10,7 +10,14 @@ from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
 
-# OS keyring coordinates for the durable credential-store key.
+# OS keyring coordinates for the durable credential-store key. DORMANT in the
+# shipped image: `keyring` is not listed in services/browser-engine/requirements.txt
+# (verified: it appears in no requirements*.txt under services/), so the `import
+# keyring` in `_load_key_from_keyring` below always raises ImportError in every
+# built container and this path is skipped. Resolution falls through to
+# CREDENTIAL_ENCRYPTION_KEY (see .env.example), which ships blank -- so the
+# credential store is fail-closed and the auth-scraping feature is INOPERATIVE
+# until an operator sets that variable. See ../MODULE.md for the full picture.
 _KEYRING_SERVICE = "tab-organizer-credential-store"
 _KEYRING_USERNAME = "fernet-key"
 
@@ -77,7 +84,11 @@ class CredentialStore:
         """Return a durable Fernet key from the OS keyring, if reachable.
 
         Returns None when no keyring backend is available in-process, so the
-        caller falls through to CREDENTIAL_ENCRYPTION_KEY / fail-closed.
+        caller falls through to CREDENTIAL_ENCRYPTION_KEY / fail-closed. In the
+        shipped image this ALWAYS returns None: `keyring` is not an installed
+        dependency (not in requirements.txt), so the import below always raises
+        ImportError. The branch is kept for a future environment that installs
+        it explicitly, not one this repo builds today.
         """
         try:
             import keyring
@@ -102,7 +113,10 @@ class CredentialStore:
     def _resolve_fernet(self, encryption_key: Optional[str]) -> Fernet:
         """Resolve the encryption key: explicit arg, OS keyring, then env var.
 
-        Raises CredentialStoreError (fail-closed) when none is available.
+        The OS-keyring step is a no-op in the shipped image (see
+        `_load_key_from_keyring`), so in practice this resolves to
+        CREDENTIAL_ENCRYPTION_KEY or nothing. Raises CredentialStoreError
+        (fail-closed) when none is available.
         """
         key = encryption_key or self._load_key_from_keyring()
         if not key:

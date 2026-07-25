@@ -1,6 +1,7 @@
 """Non-blocking web scraper with parallel auth support."""
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -12,6 +13,7 @@ from playwright.async_api import Browser, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 
+from services.observability import log_event
 from services.url_safety import resolve_scrape_targets, validate_scrape_url
 
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
@@ -39,6 +41,68 @@ RESPONSE_HEADERS_TO_DROP = {
     "transfer-encoding",
     "upgrade",
 }
+# Everything a hop that has LEFT the credential origin may keep. An ALLOWLIST,
+# not a denylist: `{"authorization", "cookie"}` closed two instances and left
+# the class open — `x-api-key`, `x-csrf-token`, `x-auth-*` and every vendor
+# token header rode a cross-host redirect untouched, and unlike the client
+# cookie jar this needs no shared IP, only a redirect. Each entry must be
+# something an anonymous client sends to any host on the internet:
+#   accept, accept-encoding — content/transfer negotiation for THIS hop; they
+#     describe what we can parse, not who we are.
+#   accept-language — every browser sends it cross-origin; dropping it makes the
+#     redirect target serve a different language than the origin did.
+#   user-agent — sent to every host; on the httpx path it is our own static
+#     `ScraperEngine.USER_AGENT`, and hosts routinely 403 a UA-less client.
+# `referer` is deliberately NOT here: see `_referer_scoped_headers`.
+CROSS_ORIGIN_HEADER_ALLOWLIST = frozenset(
+    {"accept", "accept-encoding", "accept-language", "user-agent"}
+)
+# CR/LF end a header line and NUL truncates it, so a value carrying one is
+# header injection, not content — RFC 6265 excludes CTLs from cookie-value.
+HEADER_UNSAFE_CHARACTERS = re.compile(r"[\r\n\x00]")
+
+
+@dataclass
+class CredentialHopTrace:
+    """Whether stored credentials survived a redirect chain.
+
+    `_origin_keeps_credentials` is deliberately strict — the credential store
+    holds a bare `{name: value}` dict with no domain/path/Secure metadata, so
+    there is no basis to infer that a cookie stored for `example.com` was meant
+    for `www.example.com`. Strictness is right, but silence is not: an
+    apex -> www canonical redirect then returns the logged-OUT page, and without
+    this trace it is indexed as an authenticated capture.
+    """
+
+    credential_origin: Optional[str] = None
+    hops: int = 0
+    dropped_at: Optional[str] = None
+
+    @property
+    def credentials_dropped(self) -> bool:
+        return self.dropped_at is not None
+
+    def record_hop(self, url: str, credentials_live: bool) -> None:
+        self.hops += 1
+        if not credentials_live and self.dropped_at is None:
+            self.dropped_at = url
+
+
+def _credential_drop_fields(trace: CredentialHopTrace) -> dict:
+    """Operator-facing description of a drop — hosts only, never full URLs.
+
+    A redirect target's path and query can carry tokens; the host is enough to
+    answer "why did my authenticated scrape return public content?".
+    """
+    return {
+        "credential_origin_host": _host_of(trace.credential_origin),
+        "dropped_at_host": _host_of(trace.dropped_at),
+        "hops": trace.hops,
+    }
+
+
+def _host_of(url: Optional[str]) -> Optional[str]:
+    return (urlparse(url).hostname or None) if url else None
 
 
 async def _safe_httpx_get(
@@ -53,20 +117,65 @@ async def _safe_httpx_request(
     client: httpx.AsyncClient,
     method: str,
     url: str,
+    *,
+    auth: Optional[httpx.Auth] = None,
+    cookies: Optional[dict] = None,
+    trace: Optional[CredentialHopTrace] = None,
     **kwargs,
 ) -> httpx.Response:
-    """Follow redirects while connecting only to vetted network targets."""
+    """Follow redirects while connecting only to vetted network targets.
+
+    `auth`/`cookies` must be handed to this function, never to the client:
+    httpx applies client-level auth and a bare-domain cookie jar to every
+    request unconditionally, so a redirect naming an attacker host would be
+    served the user's stored credentials. Credentials ride only while a hop
+    stays on the origin the request started at, and are never re-armed after
+    the first crossing (see `_origin_keeps_credentials`). Caller-supplied
+    headers — the browser route handler forwards page headers verbatim — are
+    reduced by the same rule to `CROSS_ORIGIN_HEADER_ALLOWLIST` once the chain
+    has left that origin, so a bearer token in a non-standard header does not
+    survive where `Authorization` would not.
+
+    Pass a `CredentialHopTrace` to learn whether the credentials survived; a
+    silent drop makes a logged-out page look like an authenticated capture.
+    """
     current_url = validate_scrape_url(url)
+    credential_origin = current_url
+    credentials_live = True
     current_method = method.upper()
     current_kwargs = dict(kwargs)
+    if trace is not None:
+        trace.credential_origin = credential_origin
 
     for _ in range(10):
+        # The client's jar is not a second credential store; it is an ambient
+        # one. `resolve_scrape_targets` rewrites every hop to a vetted IP
+        # literal, so a jar entry is keyed on the ADDRESS and cannot tell
+        # intranet.example from attacker.tld when they share a CDN edge, load
+        # balancer, reverse proxy, or host. Worse, `add_cookie_header` injects
+        # only when the request has no `Cookie` header — exactly the hop the
+        # rule below strips. Cleared on EVERY hop, not just on a crossing: a
+        # jar that cannot scope has nothing to contribute on any hop, keeping
+        # one rule instead of two interacting ones, and making the invariant
+        # "credentials are per-request, never per-client" literally true. Cost
+        # is a mid-chain server-set cookie not carried forward on a same-origin
+        # redirect; no scraper flow depends on that (stored cookies are
+        # re-attached per live hop, and the browser path builds a fresh client
+        # per intercepted request while Playwright keeps its own jar).
+        client.cookies.clear()
+        credentials_live = credentials_live and _origin_keeps_credentials(
+            credential_origin, current_url
+        )
+        if trace is not None:
+            trace.record_hop(current_url, credentials_live)
         targets = resolve_scrape_targets(current_url)
         response = await _request_first_safe_target(
             client,
             current_method,
             targets,
-            **current_kwargs,
+            **_credential_scoped_kwargs(
+                current_kwargs, auth, cookies, credentials_live, current_url
+            ),
         )
         location = response.headers.get("location")
         if response.status_code not in REDIRECT_STATUS_CODES or not location:
@@ -80,6 +189,177 @@ async def _safe_httpx_request(
             }
         current_url = validate_scrape_url(urljoin(current_url, location))
     raise httpx.TooManyRedirects("Exceeded safe redirect limit")
+
+
+def _origin_keeps_credentials(origin_url: str, target_url: str) -> bool:
+    """Whether stored credentials may ride to `target_url`.
+
+    Compared against the ORIGIN THE REQUEST STARTED AT, and the caller drops
+    them permanently on the first mismatch rather than re-arming on a later
+    hop that returns. Credentials belong to the origin the user stored them
+    for, not to the redirect chain: with a "same as the previous hop" rule a
+    chain a.example -> attacker.tld -> a.example would hand the attacker the
+    choice of which authenticated a.example request gets made and captured.
+    Browsers likewise never restore `Authorization` after a cross-origin hop.
+
+    A scheme downgrade is a crossing: https -> http on the same host puts the
+    Basic credential and the session cookie on the wire in cleartext, which is
+    the disclosure being prevented. An http -> https upgrade of an otherwise
+    identical origin keeps them, since it strictly increases confidentiality.
+    """
+    origin = urlparse(origin_url)
+    target = urlparse(target_url)
+    if (origin.hostname or "").lower() != (target.hostname or "").lower():
+        return False
+
+    origin_scheme = origin.scheme.lower()
+    target_scheme = target.scheme.lower()
+    if origin_scheme == target_scheme:
+        return _effective_port(origin) == _effective_port(target)
+    return (
+        (origin_scheme, target_scheme) == ("http", "https")
+        and origin.port is None
+        and target.port is None
+    )
+
+
+def _effective_port(parsed) -> int:
+    return parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+
+
+def _credential_scoped_kwargs(kwargs, auth, cookies, credentials_live, target_url):
+    """Attach or strip every credential-bearing input for a single hop.
+
+    On a hop that has left the credential origin the caller's headers are
+    reduced to `CROSS_ORIGIN_HEADER_ALLOWLIST` rather than having known-bad
+    names removed. Enumerating the bad ones only ever closes the instances
+    named: the route handler forwards a page's headers verbatim, and a page
+    authenticated by `X-Api-Key` or carrying an `X-Csrf-Token` handed both to
+    the redirect target while `Authorization` and `Cookie` were correctly
+    absent. An allowlist makes the default deny, so the next header a site
+    invents is covered without an edit here.
+
+    Live hops are untouched apart from `Referer`: those headers are going back
+    to the host they came from, and stripping them would break ordinary
+    scraping.
+    """
+    headers = dict(kwargs.get("headers") or {})
+    if not credentials_live:
+        return {
+            **kwargs,
+            "headers": {
+                key: value
+                for key, value in headers.items()
+                if key.lower() in CROSS_ORIGIN_HEADER_ALLOWLIST
+            },
+        }
+
+    headers = _referer_scoped_headers(headers, target_url)
+    hop_kwargs = dict(kwargs)
+    if auth is not None:
+        hop_kwargs["auth"] = auth
+    if cookies:
+        headers = _headers_with_cookies(headers, cookies)
+    hop_kwargs["headers"] = headers
+    return hop_kwargs
+
+
+def _referer_scoped_headers(headers: dict, target_url: str) -> dict:
+    """Reduce a cross-origin `Referer` to its origin before it leaves.
+
+    `Referer` is the one caller header that names a DIFFERENT host than the one
+    it is being sent to, so the allowlist above is not enough on its own. A page
+    on `https://intranet.example/secret-page` pulling an image from
+    `cdn.example` sends the full secret URL — path, query, and any token in it —
+    on hop 1, which is a LIVE hop for that fetch, so no redirect is involved and
+    the cross-origin rule never fires. Browsers default to
+    `strict-origin-when-cross-origin` for exactly this reason and we match it:
+    origin only when the target is a different origin, nothing at all on an
+    https -> http downgrade (the origin would travel in cleartext). Same-origin
+    requests keep the full value — that host already knows its own paths, and
+    hotlink checks read the origin either way.
+    """
+    if not any(key.lower() == "referer" for key in headers):
+        return headers
+
+    scoped = {key: value for key, value in headers.items() if key.lower() != "referer"}
+    value = next(
+        headers[key] for key in reversed(list(headers)) if key.lower() == "referer"
+    )
+    referer = urlparse(value)
+    target = urlparse(target_url)
+    referer_origin = _origin_of(referer)
+    if referer_origin is None:
+        return scoped
+    if referer_origin == _origin_of(target):
+        scoped["Referer"] = value
+    elif not (referer.scheme.lower() == "https" and target.scheme.lower() == "http"):
+        scoped["Referer"] = referer_origin
+    return scoped
+
+
+def _origin_of(parsed) -> Optional[str]:
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return None
+    scheme = parsed.scheme.lower()
+    port = _effective_port(parsed)
+    netloc = host if port == (443 if scheme == "https" else 80) else f"{host}:{port}"
+    return f"{scheme}://{netloc}/"
+
+
+def _reject_control_characters(label: str, value: str) -> str:
+    """Fail the request rather than silently dropping the offending value.
+
+    Dropping a poisoned cookie would produce a logged-OUT capture still reported
+    as an authenticated success — the silent-degradation failure this module
+    already had to fix once — whereas CR/LF/NUL in a cookie or header value is
+    never legitimate content, so refusing costs no real scrape. The message
+    names the field and never the value: the value is the credential, and it
+    travels on into `ScrapeResult.error` and the logs.
+    """
+    if HEADER_UNSAFE_CHARACTERS.search(value):
+        raise ValueError(f"{label} contains control characters (CR, LF, or NUL)")
+    return value
+
+
+def _headers_with_cookies(headers: dict, cookies) -> dict:
+    """Fold stored cookies into ONE `Cookie` header, case-insensitively.
+
+    Header names are case-insensitive, so writing the key `"Cookie"` next to a
+    caller-supplied `"cookie"` leaves two dict entries and httpx emits two
+    `Cookie` header lines. RFC 6265 allows at most one, and a server that reads
+    only the first silently serves logged-out content. The caller's value is
+    merged rather than replaced: on a live hop both it and the stored cookie
+    belong to the same origin, and they are dropped together on a crossing.
+    """
+    merged = {key: value for key, value in headers.items() if key.lower() != "cookie"}
+    existing = "; ".join(
+        value for key, value in headers.items() if key.lower() == "cookie" and value
+    )
+    rendered = _cookie_header(cookies)
+    merged["Cookie"] = f"{existing}; {rendered}" if existing else rendered
+    return merged
+
+
+def _cookie_header(cookies) -> str:
+    """Render cookies as one header instead of seeding the client's jar.
+
+    A jar keyed on the request URL cannot work here: `resolve_scrape_targets`
+    rewrites the URL to a vetted IP literal, so a domain-scoped cookie would
+    never match, and a bare-domain cookie matches every host.
+
+    Rendering by hand means rendering CR/LF by hand too: a stored value of
+    `"v\\r\\nX-Injected: yes"` became a literal second header line, since httpx
+    does not validate header values. Checked per cookie rather than only at the
+    wire choke point so the error can say WHICH cookie is poisoned.
+    """
+    rendered = []
+    for name, value in httpx.Cookies(cookies).items():
+        _reject_control_characters("A stored cookie name", name)
+        _reject_control_characters(f"Stored cookie {name!r}", value)
+        rendered.append(f"{name}={value}")
+    return "; ".join(rendered)
 
 
 async def _request_first_safe_target(
@@ -109,6 +389,7 @@ def _request_kwargs_for_target(target, kwargs):
     headers = dict(kwargs.get("headers") or {})
     if target.host_header:
         headers = {**headers, "Host": target.host_header}
+    _reject_header_injection(headers)
 
     extensions = dict(kwargs.get("extensions") or {})
     if target.sni_hostname:
@@ -118,6 +399,21 @@ def _request_kwargs_for_target(target, kwargs):
     if extensions:
         request_kwargs = {**request_kwargs, "extensions": extensions}
     return request_kwargs
+
+
+def _reject_header_injection(headers: dict) -> None:
+    """Last stop before the wire: no header name or value may carry CR/LF/NUL.
+
+    Placed at the one choke point every outbound hop passes through, so a value
+    smuggled in through ANY of the paths that build headers — stored cookies,
+    page headers forwarded verbatim by the route handler, the resolved `Host` —
+    is caught without each path having to be audited separately. The auth path
+    needs no equivalent: `httpx.BasicAuth` base64-encodes the credential, so a
+    CR/LF in a username or password cannot reach the header line.
+    """
+    for key, value in headers.items():
+        _reject_control_characters("A header name", str(key))
+        _reject_control_characters(f"Header {str(key).lower()!r} value", str(value))
 
 
 def _safe_browser_route_handler(timeout: int):
@@ -677,6 +973,64 @@ class ScraperEngine:
         else:
             return await self._scrape_with_httpx(url, session_id)
 
+    def _authenticated_result(
+        self,
+        *,
+        url: str,
+        title: str,
+        content: str,
+        html: str,
+        status_code: Optional[int],
+        metadata: dict,
+        trace: CredentialHopTrace,
+        auth_type: str,
+    ) -> ScrapeResult:
+        """Build a credential-store result, telling the truth about the drop.
+
+        When the chain left the credential origin, the body that was actually
+        captured came from an UNAUTHENTICATED request, so `auth_used` stays
+        false: it feeds the "authenticated capture => local embeddings" gate,
+        and a false positive there mislabels public content as sensitive while
+        hiding that the scrape silently returned the logged-out page. The drop
+        is recorded in `metadata` and logged so an operator can see why.
+        """
+        if not trace.credentials_dropped:
+            return ScrapeResult(
+                url=url,
+                status="success",
+                title=title,
+                content=content,
+                html=html,
+                status_code=status_code,
+                metadata=metadata,
+                auth_used=True,
+            )
+
+        fields = _credential_drop_fields(trace)
+        log_event(
+            "scrape.credentials_dropped_on_redirect",
+            level=logging.WARNING,
+            auth_type=auth_type,
+            **fields,
+        )
+        return ScrapeResult(
+            url=url,
+            status="success",
+            title=title,
+            content=content,
+            html=html,
+            status_code=status_code,
+            metadata={
+                **metadata,
+                "credential_scope_drop": {
+                    "reason": "redirect_left_credential_origin",
+                    "auth_type": auth_type,
+                    **fields,
+                },
+            },
+            auth_used=False,
+        )
+
     async def _scrape_basic_auth(
         self,
         url: str,
@@ -689,14 +1043,16 @@ class ScraperEngine:
                 credentials.get("password", ""),
             )
 
-            async with httpx.AsyncClient(
-                timeout=self.timeout,
-                auth=auth,
-            ) as client:
+            # auth goes to the request, not the client: a client-level auth is
+            # replayed onto whatever host a redirect names.
+            trace = CredentialHopTrace()
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await _safe_httpx_get(
                     client,
                     url,
                     headers={"User-Agent": self.USER_AGENT},
+                    auth=auth,
+                    trace=trace,
                 )
 
                 html = response.text
@@ -704,15 +1060,15 @@ class ScraperEngine:
                 content = self._extractor.extract_text(html)
                 metadata = self._extractor.extract_metadata(html)
 
-                return ScrapeResult(
+                return self._authenticated_result(
                     url=url,
-                    status="success",
                     title=title,
                     content=content,
                     html=html,
                     status_code=response.status_code,
                     metadata=metadata,
-                    auth_used=True,
+                    trace=trace,
+                    auth_type="basic",
                 )
 
         except Exception as e:
@@ -731,14 +1087,16 @@ class ScraperEngine:
         try:
             cookies = credentials.get("cookies", {})
 
-            async with httpx.AsyncClient(
-                timeout=self.timeout,
-                cookies=cookies,
-            ) as client:
+            # cookies go to the request, not the client jar: a bare-domain jar
+            # is replayed onto whatever host a redirect names.
+            trace = CredentialHopTrace()
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await _safe_httpx_get(
                     client,
                     url,
                     headers={"User-Agent": self.USER_AGENT},
+                    cookies=cookies,
+                    trace=trace,
                 )
 
                 html = response.text
@@ -746,15 +1104,15 @@ class ScraperEngine:
                 content = self._extractor.extract_text(html)
                 metadata = self._extractor.extract_metadata(html)
 
-                return ScrapeResult(
+                return self._authenticated_result(
                     url=url,
-                    status="success",
                     title=title,
                     content=content,
                     html=html,
                     status_code=response.status_code,
                     metadata=metadata,
-                    auth_used=True,
+                    trace=trace,
+                    auth_type="cookie",
                 )
 
         except Exception as e:
