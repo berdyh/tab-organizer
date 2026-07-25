@@ -7,12 +7,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_ci_cross_service_jobs_export_local_service_tokens():
+CI_TOKEN_ENVS = (
+    "AI_ENGINE_API_TOKEN",
+    "BACKEND_CALLBACK_TOKEN",
+    "BACKEND_AGENT_API_TOKEN",
+    "BROWSER_ENGINE_API_TOKEN",
+)
+
+
+def test_ci_cross_service_jobs_export_distinct_service_tokens():
+    """CI must exercise four separate scopes, not one value wearing four names.
+
+    Browser Engine no longer accepts the callback or AI token, so it needs its
+    own or every cross-service browser call 401s. Just as important: if the
+    values were equal, every cross-scope assertion in the suite would pass
+    vacuously -- CI would certify a separation it never ran.
+    """
     workflow = (ROOT / ".github" / "workflows" / "ci-cd.yml").read_text()
 
-    assert "AI_ENGINE_API_TOKEN: local-test-token" in workflow
-    assert "BACKEND_CALLBACK_TOKEN: local-test-token" in workflow
-    assert "BACKEND_AGENT_API_TOKEN: local-test-token" in workflow
+    values = {}
+    for env in CI_TOKEN_ENVS:
+        match = re.search(rf"^\s+{env}:\s*(\S+)\s*$", workflow, flags=re.MULTILINE)
+        assert match, f"{env} is not exported by the CI workflow"
+        values[env] = match.group(1)
+
+    assert len(set(values.values())) == len(CI_TOKEN_ENVS), (
+        f"CI service tokens must be pairwise distinct, got {values}"
+    )
     assert "PLATFORM_MAINTAINER_SIGNUP_CODE: local-maintainer" in workflow
 
 
@@ -29,9 +50,14 @@ def test_direct_compose_docs_show_required_local_service_tokens():
     test_readme = (ROOT / "tests" / "README.md").read_text()
 
     for text in (testing_doc, test_readme):
-        assert "AI_ENGINE_API_TOKEN=local-test-token" in text
-        assert "BACKEND_CALLBACK_TOKEN=local-test-token" in text
-        assert "BACKEND_AGENT_API_TOKEN=local-test-token" in text
+        values = {}
+        for env in CI_TOKEN_ENVS:
+            match = re.search(rf"\b{env}=(\S+)", text)
+            assert match, f"{env} missing from the documented compose invocation"
+            values[env] = match.group(1)
+        assert len(set(values.values())) == len(CI_TOKEN_ENVS), (
+            f"documented tokens must be pairwise distinct, got {values}"
+        )
         assert "PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer" in text
 
 

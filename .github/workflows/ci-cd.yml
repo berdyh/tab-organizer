@@ -14,9 +14,15 @@ permissions:
 env:
   DOCKER_BUILDKIT: 1
   COMPOSE_DOCKER_CLI_BUILD: 1
-  AI_ENGINE_API_TOKEN: local-test-token
-  BACKEND_CALLBACK_TOKEN: local-test-token
-  BACKEND_AGENT_API_TOKEN: local-test-token
+  # Four DISTINCT values on purpose. Sharing one value across scopes is the
+  # exact collapse `scripts/cli.py` used to ship: every cross-scope check
+  # passes vacuously because the tokens compare equal, so CI would certify a
+  # separation it never exercised. Browser Engine no longer falls back to the
+  # callback or AI token, so it needs its own or every browser call 401s.
+  AI_ENGINE_API_TOKEN: local-test-ai-token
+  BACKEND_CALLBACK_TOKEN: local-test-callback-token
+  BACKEND_AGENT_API_TOKEN: local-test-agent-token
+  BROWSER_ENGINE_API_TOKEN: local-test-browser-token
   PLATFORM_MAINTAINER_SIGNUP_CODE: local-maintainer
 
 jobs:

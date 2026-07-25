@@ -49,9 +49,9 @@ profile:
 
 ```bash
 docker compose --profile test-unit up --build --abort-on-container-exit test-unit
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-integration run --rm test-integration
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-e2e run --rm test-e2e
 ```
 
