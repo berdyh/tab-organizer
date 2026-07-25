@@ -108,6 +108,22 @@ class FakePlaywrightFactory:
         return self.playwright
 
 
+def _stub_debug_version(monkeypatch, ws_url: str = None):
+    """Answer `/json/version` the way Chrome does: echo the attached host:port.
+
+    The harvester now reads that document itself and hands Playwright a
+    validated ws:// endpoint, so every attach test needs a debug endpoint to
+    answer. See `tests/unit/test_cdp_second_hop.py` for the validation rules.
+    """
+
+    async def _fake_fetch(connect_url: str) -> dict:
+        parsed = urlparse(connect_url)
+        advertised = ws_url or f"ws://{parsed.netloc}/devtools/browser/stub"
+        return {"webSocketDebuggerUrl": advertised}
+
+    monkeypatch.setattr(cdp_module, "_fetch_cdp_version", _fake_fetch)
+
+
 def test_validate_cdp_url_allows_only_local_control_plane():
     assert validate_cdp_url("http://localhost:9222") == "http://localhost:9222"
     assert validate_cdp_url("http://127.0.0.1:9222/") == "http://127.0.0.1:9222"
@@ -312,6 +328,7 @@ async def test_harvester_connects_via_resolved_ip(monkeypatch):
     monkeypatch.setattr(
         cdp_module.socket, "getaddrinfo", _fake_getaddrinfo("172.17.0.1")
     )
+    _stub_debug_version(monkeypatch)
     browser = FakeBrowser([FakePage("https://example.com/a", "A", "content a")])
     playwright = FakePlaywright(browser)
 
@@ -325,7 +342,9 @@ async def test_harvester_connects_via_resolved_ip(monkeypatch):
 
     # Validator keeps the friendly form; the wire connection uses the IP.
     assert harvester.cdp_url == "http://host.docker.internal:9222"
-    assert playwright.chromium.connected_urls == ["http://172.17.0.1:9222"]
+    assert playwright.chromium.connected_urls == [
+        "ws://172.17.0.1:9222/devtools/browser/stub"
+    ]
 
 
 @pytest.mark.asyncio
@@ -342,6 +361,7 @@ async def test_harvester_attaches_over_bracketed_ipv6_loopback(monkeypatch):
         return real_getaddrinfo(host, port, *args, **kwargs)
 
     monkeypatch.setattr(cdp_module.socket, "getaddrinfo", _guarded)
+    _stub_debug_version(monkeypatch)
     browser = FakeBrowser([FakePage("https://example.com/a", "A", "content a")])
     playwright = FakePlaywright(browser)
 
@@ -354,7 +374,9 @@ async def test_harvester_attaches_over_bracketed_ipv6_loopback(monkeypatch):
     result = await harvester.harvest()
 
     assert harvester.cdp_url == "http://[::1]:9222"
-    assert playwright.chromium.connected_urls == ["http://[::1]:9222"]
+    assert playwright.chromium.connected_urls == [
+        "ws://[::1]:9222/devtools/browser/stub"
+    ]
     assert urlparse(playwright.chromium.connected_urls[0]).hostname == "::1"
     assert urlparse(playwright.chromium.connected_urls[0]).port == 9222
     assert result.total == 1
@@ -366,6 +388,7 @@ async def test_harvester_connect_failure_raises_actionable_error(monkeypatch):
     monkeypatch.setattr(
         cdp_module.socket, "getaddrinfo", _fake_getaddrinfo("172.17.0.1")
     )
+    _stub_debug_version(monkeypatch)
 
     class FailingChromium:
         def __init__(self):
@@ -401,7 +424,8 @@ async def test_harvester_connect_failure_raises_actionable_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_harvester_imports_visible_tabs_without_closing_user_browser():
+async def test_harvester_imports_visible_tabs_without_closing_user_browser(monkeypatch):
+    _stub_debug_version(monkeypatch)
     browser = FakeBrowser(
         [
             FakePage(
@@ -423,7 +447,9 @@ async def test_harvester_imports_visible_tabs_without_closing_user_browser():
 
     result = await harvester.harvest()
 
-    assert playwright.chromium.connected_urls == ["http://localhost:9222"]
+    assert playwright.chromium.connected_urls == [
+        "ws://localhost:9222/devtools/browser/stub"
+    ]
     assert playwright.stopped is True
     assert browser.closed is False
     assert result.total == 1
@@ -434,7 +460,10 @@ async def test_harvester_imports_visible_tabs_without_closing_user_browser():
 
 
 @pytest.mark.asyncio
-async def test_harvester_opens_urls_in_attached_browser_without_new_profile():
+async def test_harvester_opens_urls_in_attached_browser_without_new_profile(
+    monkeypatch,
+):
+    _stub_debug_version(monkeypatch)
     existing_page = FakePage("https://example.com/current", "Current", "Current")
     browser = FakeBrowser([existing_page])
     playwright = FakePlaywright(browser)
