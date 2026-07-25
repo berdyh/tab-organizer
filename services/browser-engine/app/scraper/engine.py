@@ -16,6 +16,8 @@ from playwright.async_api import async_playwright
 from services.observability import log_event
 from services.url_safety import resolve_scrape_targets, validate_scrape_url
 
+from ..auth.queue import CredentialScope
+
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 REQUEST_HEADERS_TO_DROP = {
     "connection",
@@ -66,17 +68,17 @@ HEADER_UNSAFE_CHARACTERS = re.compile(r"[\r\n\x00]")
 class CredentialHopTrace:
     """Whether stored credentials survived a redirect chain.
 
-    `_origin_keeps_credentials` is deliberately strict — the credential store
-    holds a bare `{name: value}` dict with no domain/path/Secure metadata, so
-    there is no basis to infer that a cookie stored for `example.com` was meant
-    for `www.example.com`. Strictness is right, but silence is not: an
-    apex -> www canonical redirect then returns the logged-OUT page, and without
-    this trace it is indexed as an authenticated capture.
+    `_origin_keeps_credentials` admits exactly the hosts inside the scope the
+    credential was SUBMITTED for (`CredentialScope`), and falls back to exact
+    host when no scope was recorded. A drop is therefore rarer than it was, but
+    it is still not rare: a hop outside the scope returns the logged-OUT page,
+    and without this trace that is indexed as an authenticated capture.
     """
 
     credential_origin: Optional[str] = None
     hops: int = 0
     dropped_at: Optional[str] = None
+    scope: Optional[CredentialScope] = None
 
     @property
     def credentials_dropped(self) -> bool:
@@ -98,6 +100,13 @@ def _credential_drop_fields(trace: CredentialHopTrace) -> dict:
         "credential_origin_host": _host_of(trace.credential_origin),
         "dropped_at_host": _host_of(trace.dropped_at),
         "hops": trace.hops,
+        # Flat scalars, not a nested object: these are splatted into a
+        # JSON-lines log event as well as into result metadata. A null domain
+        # means no scope was recorded and the strict exact-host rule applied.
+        "credential_scope_domain": trace.scope.domain if trace.scope else None,
+        "credential_scope_subdomains": bool(
+            trace.scope and trace.scope.include_subdomains
+        ),
     }
 
 
@@ -120,6 +129,7 @@ async def _safe_httpx_request(
     *,
     auth: Optional[httpx.Auth] = None,
     cookies: Optional[dict] = None,
+    credential_scope: Optional[CredentialScope] = None,
     trace: Optional[CredentialHopTrace] = None,
     **kwargs,
 ) -> httpx.Response:
@@ -129,8 +139,10 @@ async def _safe_httpx_request(
     httpx applies client-level auth and a bare-domain cookie jar to every
     request unconditionally, so a redirect naming an attacker host would be
     served the user's stored credentials. Credentials ride only while a hop
-    stays on the origin the request started at, and are never re-armed after
-    the first crossing (see `_origin_keeps_credentials`). Caller-supplied
+    stays inside `credential_scope` — the scope recorded when the user
+    submitted them — and are never re-armed after the first crossing (see
+    `_origin_keeps_credentials`). Omitting the scope means exact host, which is
+    what every caller with no recorded scope gets. Caller-supplied
     headers — the browser route handler forwards page headers verbatim — are
     reduced by the same rule to `CROSS_ORIGIN_HEADER_ALLOWLIST` once the chain
     has left that origin, so a bearer token in a non-standard header does not
@@ -146,6 +158,7 @@ async def _safe_httpx_request(
     current_kwargs = dict(kwargs)
     if trace is not None:
         trace.credential_origin = credential_origin
+        trace.scope = credential_scope
 
     for _ in range(10):
         # The client's jar is not a second credential store; it is an ambient
@@ -164,7 +177,7 @@ async def _safe_httpx_request(
         # per intercepted request while Playwright keeps its own jar).
         client.cookies.clear()
         credentials_live = credentials_live and _origin_keeps_credentials(
-            credential_origin, current_url
+            credential_origin, current_url, credential_scope
         )
         if trace is not None:
             trace.record_hop(current_url, credentials_live)
@@ -191,16 +204,28 @@ async def _safe_httpx_request(
     raise httpx.TooManyRedirects("Exceeded safe redirect limit")
 
 
-def _origin_keeps_credentials(origin_url: str, target_url: str) -> bool:
+def _origin_keeps_credentials(
+    origin_url: str,
+    target_url: str,
+    scope: Optional[CredentialScope] = None,
+) -> bool:
     """Whether stored credentials may ride to `target_url`.
 
-    Compared against the ORIGIN THE REQUEST STARTED AT, and the caller drops
-    them permanently on the first mismatch rather than re-arming on a later
-    hop that returns. Credentials belong to the origin the user stored them
-    for, not to the redirect chain: with a "same as the previous hop" rule a
-    chain a.example -> attacker.tld -> a.example would hand the attacker the
-    choice of which authenticated a.example request gets made and captured.
-    Browsers likewise never restore `Authorization` after a cross-origin hop.
+    The host question is "is this host inside the scope the credential was
+    submitted for" (`CredentialScope.covers`), NOT "is it the host I started
+    on". With no scope recorded the answer falls back to exact host — the
+    pre-scope rule — so anything the store wrote before scopes existed, and the
+    caller-header path (`_safe_browser_route_handler` forwards a page's ambient
+    headers, which carry no recorded scope at all), keeps the strict behavior.
+
+    Everything else is still compared against the ORIGIN THE REQUEST STARTED
+    AT, and the caller drops credentials permanently on the first mismatch
+    rather than re-arming on a later hop that returns: with a "same as the
+    previous hop" rule a chain a.example -> attacker.tld -> a.example would
+    hand the attacker the choice of which authenticated a.example request gets
+    made and captured. Browsers likewise never restore `Authorization` after a
+    cross-origin hop. The scope widens WHICH HOSTS qualify; it does not make a
+    drop recoverable.
 
     A scheme downgrade is a crossing: https -> http on the same host puts the
     Basic credential and the session cookie on the wire in cleartext, which is
@@ -209,7 +234,7 @@ def _origin_keeps_credentials(origin_url: str, target_url: str) -> bool:
     """
     origin = urlparse(origin_url)
     target = urlparse(target_url)
-    if (origin.hostname or "").lower() != (target.hostname or "").lower():
+    if not _host_in_credential_scope(origin, target, scope):
         return False
 
     origin_scheme = origin.scheme.lower()
@@ -221,6 +246,24 @@ def _origin_keeps_credentials(origin_url: str, target_url: str) -> bool:
         and origin.port is None
         and target.port is None
     )
+
+
+def _host_in_credential_scope(origin, target, scope: Optional[CredentialScope]) -> bool:
+    """Host half of the live/dead-hop decision.
+
+    A missing scope is the strictest answer, never the most permissive one, so
+    every path that never learned about scopes keeps exact-host behavior. When
+    a scope IS present it is authoritative in both directions: a hop the scope
+    does not cover is dead even if it is the very origin the request started
+    at, so a credential can never be spent outside the scope it was submitted
+    for.
+    """
+    target_host = (target.hostname or "").lower()
+    if not target_host:
+        return False
+    if scope is None:
+        return (origin.hostname or "").lower() == target_host
+    return scope.covers(target_host)
 
 
 def _effective_port(parsed) -> int:
@@ -758,7 +801,12 @@ class ScraperEngine:
             # Check for existing credentials
             if self._auth_queue and self._auth_queue.has_credentials(url):
                 credentials = self._auth_queue.get_credentials(url)
-                return await self._scrape_with_auth(url, credentials, session_id)
+                return await self._scrape_with_auth(
+                    url,
+                    credentials,
+                    session_id,
+                    scope=self._credential_scope_for(url),
+                )
 
             # Try scraping
             if use_browser:
@@ -955,19 +1003,32 @@ class ScraperEngine:
                 error=str(e),
             )
 
+    def _credential_scope_for(self, url: str) -> Optional[CredentialScope]:
+        """Scope recorded when these credentials were submitted, or None.
+
+        None means "no scope recorded", which the redirect rule reads as exact
+        host. Resolved through `getattr` so an injected auth queue that predates
+        scopes degrades to the strict rule instead of raising.
+        """
+        getter = getattr(self._auth_queue, "get_credential_scope", None)
+        if getter is None:
+            return None
+        return getter(url)
+
     async def _scrape_with_auth(
         self,
         url: str,
         credentials: dict,
         session_id: Optional[str] = None,
+        scope: Optional[CredentialScope] = None,
     ) -> ScrapeResult:
         """Scrape URL with authentication."""
         auth_type = credentials.get("type", "basic")
 
         if auth_type == "basic":
-            return await self._scrape_basic_auth(url, credentials)
+            return await self._scrape_basic_auth(url, credentials, scope)
         elif auth_type == "cookie":
-            return await self._scrape_cookie_auth(url, credentials)
+            return await self._scrape_cookie_auth(url, credentials, scope)
         elif auth_type == "form":
             return await self._scrape_form_auth(url, credentials, session_id)
         else:
@@ -1035,6 +1096,7 @@ class ScraperEngine:
         self,
         url: str,
         credentials: dict,
+        scope: Optional[CredentialScope] = None,
     ) -> ScrapeResult:
         """Scrape with HTTP Basic Auth."""
         try:
@@ -1052,6 +1114,7 @@ class ScraperEngine:
                     url,
                     headers={"User-Agent": self.USER_AGENT},
                     auth=auth,
+                    credential_scope=scope,
                     trace=trace,
                 )
 
@@ -1082,6 +1145,7 @@ class ScraperEngine:
         self,
         url: str,
         credentials: dict,
+        scope: Optional[CredentialScope] = None,
     ) -> ScrapeResult:
         """Scrape with cookie authentication."""
         try:
@@ -1096,6 +1160,7 @@ class ScraperEngine:
                     url,
                     headers={"User-Agent": self.USER_AGENT},
                     cookies=cookies,
+                    credential_scope=scope,
                     trace=trace,
                 )
 
