@@ -592,6 +592,11 @@ URL_LIST_METADATA_FIELDS = (
     "auth_type",
     "auth_used",
     "capture_id",
+    # Set when a redirect carried the fetch off the origin the credentials
+    # belong to, so they were dropped. Surfacing it is what keeps a logged-out
+    # capture from reading as an authenticated one; it holds hostnames only,
+    # never paths or queries, which can carry tokens.
+    "credential_scope_drop",
 )
 
 

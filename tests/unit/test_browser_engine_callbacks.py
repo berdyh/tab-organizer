@@ -196,6 +196,11 @@ async def test_safe_httpx_get_connects_to_vetted_ip_with_host_and_sni(monkeypatc
     calls = []
 
     class CapturingClient:
+        # `_safe_httpx_request` clears the client jar on every hop (the jar is
+        # keyed on the resolved IP, so it cannot scope credentials by host); a
+        # fake client without one would not exercise that path.
+        cookies = httpx.Cookies()
+
         async def request(self, method, url, follow_redirects=False, **_kwargs):
             calls.append(
                 {
@@ -249,6 +254,8 @@ async def test_safe_httpx_get_rejects_unsafe_redirect_target(monkeypatch):
     calls = []
 
     class RedirectingClient:
+        cookies = httpx.Cookies()
+
         async def request(self, method, url, follow_redirects=False, **_kwargs):
             calls.append(
                 {"method": method, "url": url, "follow_redirects": follow_redirects}
@@ -299,7 +306,7 @@ async def test_safe_browser_route_fetches_public_hostname_through_safe_httpx(
 
     class CapturingAsyncClient:
         def __init__(self, **_kwargs):
-            return None
+            self.cookies = httpx.Cookies()
 
         async def __aenter__(self):
             return self
