@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import os
 import secrets
@@ -37,6 +38,11 @@ DEFAULT_STACK_HEALTHCHECKS = (
     ("Browser Engine", "http://localhost:8083/health"),
 )
 WEB_UI_HEALTHCHECK = ("Web UI", "http://localhost:8089/_stcore/health")
+# docker-compose.yml's `networks:` key, before Compose namespaces it as
+# "<project>_tab-organizer-network" (project defaults to the checkout's
+# directory name, so it differs per worktree/clone). `host-ai` discovers this
+# network's gateway address to bind to instead of hardcoding a bridge IP.
+COMPOSE_BRIDGE_NETWORK_SUFFIX = "tab-organizer-network"
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -243,6 +249,110 @@ def cmd_start(args):
         print("   LanceDB:        embedded in AI Engine (volume: lancedb-data)")
 
 
+def discover_docker_bridge_gateway() -> str | None:
+    """Return this checkout's Docker bridge network gateway IP, or None.
+
+    `host-ai` binds its uvicorn here instead of 0.0.0.0. Docker resolves the
+    `host.docker.internal` extra_hosts entry every container gets to this
+    same per-network gateway address (not a fixed constant -- Compose
+    allocates each project's own subnet, so never hardcode e.g. 172.17.0.1,
+    which is only the *default* bridge's address and may not even be the
+    network this project's containers are attached to). Binding to the
+    discovered gateway keeps the host-run AI Engine reachable from containers
+    while nothing else on the LAN can route to it.
+    """
+    try:
+        listed = subprocess.run(
+            ["docker", "network", "ls", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if listed.returncode != 0:
+        return None
+
+    candidates = [
+        name
+        for name in (line.strip() for line in listed.stdout.splitlines())
+        if name == COMPOSE_BRIDGE_NETWORK_SUFFIX
+        or name.endswith(f"_{COMPOSE_BRIDGE_NETWORK_SUFFIX}")
+    ]
+    if len(candidates) != 1:
+        # Zero: stack never started (network not created yet). More than
+        # one: an ambiguous match we should not guess between either --
+        # both fail closed via the None return.
+        return None
+
+    try:
+        inspected = subprocess.run(
+            [
+                "docker",
+                "network",
+                "inspect",
+                candidates[0],
+                "--format",
+                "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if inspected.returncode != 0:
+        return None
+
+    gateway = inspected.stdout.strip()
+    try:
+        ipaddress.ip_address(gateway)
+    except ValueError:
+        return None
+    return gateway
+
+
+def resolve_host_ai_bind_host(requested: str | None) -> str:
+    """Resolve the host `host-ai`'s uvicorn should bind.
+
+    An explicit `--host` always wins verbatim, including "0.0.0.0" for an
+    operator who deliberately wants LAN reach (the AI Engine is still
+    token-authenticated either way -- this binding choice is defense in
+    depth, not the only control). Left unset, this must never fall back to
+    0.0.0.0: every other published port in this repo is loopback-only for
+    exactly the reason a host-run AI Engine would otherwise be reachable from
+    the whole LAN. Discovery failing must fail loudly rather than guess a
+    default, so a misconfigured host never silently binds wide open.
+    """
+    if requested is not None:
+        if requested == "0.0.0.0":
+            print(
+                "WARNING: --host 0.0.0.0 exposes the host AI Engine to the "
+                "whole network (defense in depth still applies via "
+                "AI_ENGINE_API_TOKEN, but this widens the attack surface "
+                "beyond Docker on purpose).",
+                file=sys.stderr,
+            )
+        return requested
+
+    gateway = discover_docker_bridge_gateway()
+    if gateway is None:
+        raise SystemExit(
+            "Could not determine the Docker bridge gateway to bind host-ai "
+            f"to (looked for a Docker network named "
+            f"'{COMPOSE_BRIDGE_NETWORK_SUFFIX}' or "
+            f"'<project>_{COMPOSE_BRIDGE_NETWORK_SUFFIX}'). Run "
+            "'./scripts/cli.py start -d --host-ai' once first so Compose "
+            "creates the network, or pass --host explicitly (127.0.0.1 for "
+            "host-only access, or the address 'docker network inspect "
+            f"{COMPOSE_BRIDGE_NETWORK_SUFFIX}' reports for container "
+            "access)."
+        )
+    return gateway
+
+
 def cmd_host_ai(args):
     """Run the AI engine on the host so it can use authenticated local CLIs."""
     load_env_file()
@@ -283,10 +393,12 @@ def cmd_host_ai(args):
     if args.codex_acp_command:
         env["CODEX_ACP_COMMAND"] = args.codex_acp_command
 
+    bind_host = resolve_host_ai_bind_host(args.host)
     print(
         "Host AI engine mode uses your local CLI auth state. "
         "Start Docker with './scripts/cli.py start -d --host-ai' in another terminal."
     )
+    print(f"   Binding to {bind_host}:{args.port} (see --host for other options)")
     run_command(
         [
             sys.executable,
@@ -294,7 +406,7 @@ def cmd_host_ai(args):
             "uvicorn",
             "services.ai_engine.app.main:app",
             "--host",
-            args.host,
+            bind_host,
             "--port",
             str(args.port),
         ],
@@ -629,7 +741,15 @@ Examples:
         "--codex-acp-command",
         help="Override CODEX_ACP_COMMAND, for example an absolute acpx path",
     )
-    host_ai_parser.add_argument("--host", default="0.0.0.0", help="Bind host")
+    host_ai_parser.add_argument(
+        "--host",
+        default=None,
+        help=(
+            "Bind host. Default: auto-discover this checkout's Docker bridge "
+            "gateway, so containers reach it via host.docker.internal but "
+            "the LAN cannot; pass 0.0.0.0 explicitly to widen that on purpose"
+        ),
+    )
     host_ai_parser.add_argument("--port", type=int, default=8090, help="Bind port")
     host_ai_parser.set_defaults(func=cmd_host_ai)
 

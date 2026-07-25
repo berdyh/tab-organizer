@@ -143,6 +143,41 @@ def test_api_client_chat_routes_through_backend_not_ai_engine(monkeypatch):
     assert result == {"answer": "ok"}
 
 
+def test_api_client_search_routes_through_backend_not_ai_engine(monkeypatch):
+    """search() must go through Backend Core's /search, which merges SQLite
+    FTS keyword hits with ai-engine semantic hits; calling ai_url directly
+    silently dropped the keyword leg (same class of bug as WI0 B7's chat)."""
+    from services.web_ui.src.api.client import SyncAPIClient
+
+    calls = []
+
+    def fake_request(method, url, timeout=None, **kwargs):
+        calls.append({"method": method, "url": url, "kwargs": kwargs})
+
+        class Response:
+            content = b'{"results": [], "count": 0, "mode": "hybrid"}'
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"results": [], "count": 0, "mode": "hybrid"}
+
+        return Response()
+
+    monkeypatch.setattr("services.web_ui.src.api.client.requests.request", fake_request)
+    monkeypatch.setenv("BACKEND_AGENT_API_TOKEN", "agent-token")
+
+    client = SyncAPIClient()
+    result = client.search("cats", session_id="session-1")
+
+    assert calls[0]["url"] == f"{client.backend_url}/search"
+    assert client.ai_url not in calls[0]["url"]
+    assert calls[0]["kwargs"]["json"] == {"query": "cats", "session_id": "session-1"}
+    assert calls[0]["kwargs"]["headers"] == {"Authorization": "Bearer agent-token"}
+    assert result == {"results": [], "count": 0, "mode": "hybrid"}
+
+
 def test_api_client_scrape_status_reports_unavailable_on_backend_http_error(
     monkeypatch,
 ):
