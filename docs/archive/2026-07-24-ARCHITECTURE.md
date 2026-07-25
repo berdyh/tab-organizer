@@ -1,3 +1,5 @@
+> ARCHIVED 2026-07-24 — superseded by the reviewed architecture plan (see docs/ARCHITECTURE_PLAN.md). Retained for reference.
+
 # Architecture Documentation
 
 For development boundaries, load [MODULE_INDEX.md](MODULE_INDEX.md) first, then
@@ -183,6 +185,16 @@ sequenceDiagram
     
     BE->>UI: Processing complete
 ```
+
+**Single-writer ingest.** Browser Engine sends each scrape result to Backend
+Core's `POST /api/v1/ingest/v1` (never to AI Engine): a client-generated
+`capture_id` gives replay protection and `(fetched_at, attempt)` gives
+newest-wins ordering, so a late or duplicated delivery is acknowledged and
+ignored rather than clobbering a newer capture. Backend Core applies the result
+(ledger row + URL record + FTS row in one transaction) and is the **only**
+writer that forwards content to AI Engine `/index`; capture never writes vectors
+directly. AI-index success/failure is recorded in the `ingest_captures` ledger
+and surfaced through `GET /api/v1/scrape/status/{id}`.
 
 ## Core Services
 
@@ -407,7 +419,8 @@ The tab-management endpoints require bearer auth with `BACKEND_AGENT_API_TOKEN`.
 | `/api/v1/export` | POST | Export session |
 | `/api/v1/auth/pending` | GET | List domains awaiting credentials |
 | `/api/v1/auth/credentials` | POST | Submit credentials for a pending domain |
-| `/api/v1/callback/scrape-complete` | POST | Internal callback used by browser-engine when scraping finishes |
+| `/api/v1/ingest/v1` | POST | Single versioned idempotent ingest of a scrape result (capture_id + attempt + fetched_at replay/ordering protection); backend is the sole ai-engine `/index` writer |
+| `/api/v1/callback/scrape-complete` | POST | Deprecated legacy callback shim over `/api/v1/ingest/v1` (attempt=0 receipt-time newest-wins); kept for rolling-deploy compatibility |
 | `/api/v1/platform/auth/signup` | POST | Create local platform account |
 | `/api/v1/platform/auth/login` | POST | Create platform session |
 | `/api/v1/platform/me` | GET | Current platform user profile |

@@ -14,6 +14,10 @@ providers:
 
   ollama:
     type: local
+    # Host-process default (host-ai mode, local dev outside Docker). Containers
+    # never read this value: LLMClient._base_url_for() and docker-compose.yml's
+    # OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434} passthrough override it to
+    # the Docker service name for every in-container ai-engine process.
     base_url: "http://localhost:11434"
     supports:
       llm: true

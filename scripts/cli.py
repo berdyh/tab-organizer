@@ -17,6 +17,20 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 DOCKER_COMPOSE_FILE = PROJECT_ROOT / "docker-compose.yml"
 HOST_AI_TOKEN_FILE = PROJECT_ROOT / "data" / "host-ai-token"
+SERVICE_TOKEN_FILE = PROJECT_ROOT / "data" / "service-tokens.json"
+# One independent bearer token per trust scope. They must never be equal: the
+# agent principal must not be able to open browser-engine's CDP/credential
+# control plane, and the callback principal must not be able to open the
+# ai-engine. `service-tokens.json` keeps them STABLE across restarts.
+SERVICE_TOKEN_ENVS = (
+    "AI_ENGINE_API_TOKEN",
+    "BACKEND_CALLBACK_TOKEN",
+    "BACKEND_AGENT_API_TOKEN",
+    "BROWSER_ENGINE_API_TOKEN",
+)
+# The single-token store this replaced. It seeds AI_ENGINE_API_TOKEN only, so
+# an existing install keeps its ai-engine token instead of rotating silently.
+LEGACY_TOKEN_SEED_ENV = "AI_ENGINE_API_TOKEN"
 DEFAULT_STACK_HEALTHCHECKS = (
     ("Backend Core", "http://localhost:8080/health"),
     ("AI Engine", "http://localhost:8090/health"),
@@ -79,22 +93,74 @@ def load_env_file() -> None:
         os.environ.setdefault(key.strip(), value)
 
 
-def ensure_host_ai_token() -> str:
-    """Return a local shared token for container-to-host AI Engine calls."""
-    token = os.getenv("AI_ENGINE_API_TOKEN", "").strip()
-    if token:
-        return token
+def _read_service_token_store() -> dict[str, str]:
+    """Return the persisted per-scope token map (empty when absent/corrupt)."""
+    if not SERVICE_TOKEN_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SERVICE_TOKEN_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(key): str(value).strip()
+        for key, value in data.items()
+        if isinstance(value, str) and value.strip()
+    }
 
-    if HOST_AI_TOKEN_FILE.exists():
-        token = HOST_AI_TOKEN_FILE.read_text().strip()
-        if token:
-            return token
 
-    HOST_AI_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    token = secrets.token_urlsafe(32)
-    HOST_AI_TOKEN_FILE.write_text(f"{token}\n")
-    HOST_AI_TOKEN_FILE.chmod(0o600)
+def _write_service_token_store(store: dict[str, str]) -> None:
+    """Persist the per-scope token map with owner-only permissions."""
+    SERVICE_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SERVICE_TOKEN_FILE.write_text(json.dumps(store, indent=2, sort_keys=True) + "\n")
+    SERVICE_TOKEN_FILE.chmod(0o600)
+
+
+def _legacy_single_token() -> str:
+    """Read the pre-split single-token file used to seed one scope."""
+    if not HOST_AI_TOKEN_FILE.exists():
+        return ""
+    try:
+        return HOST_AI_TOKEN_FILE.read_text().strip()
+    except OSError:
+        return ""
+
+
+def ensure_service_token(env_name: str) -> str:
+    """Return the stable local bearer token for one service trust scope.
+
+    Precedence: an explicit environment/.env value wins (never clobbered), then
+    the persisted `data/service-tokens.json` entry, then — for
+    `AI_ENGINE_API_TOKEN` only — the legacy single-token `data/host-ai-token`
+    file so existing installs do not rotate that token during the split. A new
+    independent `secrets.token_urlsafe(32)` value is minted otherwise. Every
+    scope gets its OWN value: sharing one token across scopes collapses the
+    agent, callback, ai-engine and browser-engine principals into one.
+    """
+    configured = os.getenv(env_name, "").strip()
+    if configured:
+        return configured
+
+    store = _read_service_token_store()
+    persisted = store.get(env_name, "").strip()
+    if persisted:
+        return persisted
+
+    token = ""
+    if env_name == LEGACY_TOKEN_SEED_ENV:
+        token = _legacy_single_token()
+    if not token:
+        token = secrets.token_urlsafe(32)
+
+    store[env_name] = token
+    _write_service_token_store(store)
     return token
+
+
+def ensure_host_ai_token() -> str:
+    """Return the AI Engine token for container-to-host AI Engine calls."""
+    return ensure_service_token("AI_ENGINE_API_TOKEN")
 
 
 def set_env_default_if_blank(env: dict[str, str], key: str, value: str) -> None:
@@ -104,12 +170,17 @@ def set_env_default_if_blank(env: dict[str, str], key: str, value: str) -> None:
 
 
 def service_env_with_tokens() -> dict[str, str]:
-    """Return compose env with shared service auth tokens populated."""
+    """Return compose env with one INDEPENDENT auth token per service scope.
+
+    These four values must stay pairwise distinct. A single shared value would
+    make the agent token also open browser-engine's scrape/CDP/credential
+    endpoints (they accept `BROWSER_ENGINE_API_TOKEN`), collapsing four trust
+    scopes into one. Blank/unset keys are filled; user-provided values in the
+    environment or `.env` are never overwritten.
+    """
     env = os.environ.copy()
-    token = ensure_host_ai_token()
-    set_env_default_if_blank(env, "AI_ENGINE_API_TOKEN", token)
-    set_env_default_if_blank(env, "BACKEND_CALLBACK_TOKEN", token)
-    set_env_default_if_blank(env, "BACKEND_AGENT_API_TOKEN", token)
+    for env_name in SERVICE_TOKEN_ENVS:
+        set_env_default_if_blank(env, env_name, ensure_service_token(env_name))
     return env
 
 
@@ -183,8 +254,10 @@ def cmd_host_ai(args):
     )
     env["AI_PROVIDER"] = provider
     env["EMBEDDING_PROVIDER"] = embedding_provider
-    env["AI_ENGINE_API_TOKEN"] = ensure_host_ai_token()
-    set_env_default_if_blank(env, "BACKEND_CALLBACK_TOKEN", env["AI_ENGINE_API_TOKEN"])
+    env["AI_ENGINE_API_TOKEN"] = ensure_service_token("AI_ENGINE_API_TOKEN")
+    set_env_default_if_blank(
+        env, "BACKEND_CALLBACK_TOKEN", ensure_service_token("BACKEND_CALLBACK_TOKEN")
+    )
     set_env_default_if_blank(
         env, "VECTOR_DB_PATH", str(PROJECT_ROOT / "data" / "lancedb-host")
     )
@@ -272,7 +345,7 @@ def run_backend_tab_tool(tool, *args, **kwargs) -> None:
     set_env_default_if_blank(
         os.environ,
         mcp_tabs.AGENT_TOKEN_ENV,
-        ensure_host_ai_token(),
+        ensure_service_token(mcp_tabs.AGENT_TOKEN_ENV),
     )
     try:
         print_backend_result(tool(*args, **kwargs))

@@ -175,6 +175,13 @@ class ScrapeResult:
     error: Optional[str] = None
     scraped_at: datetime = field(default_factory=datetime.utcnow)
     metadata: dict = field(default_factory=dict)
+    # True only when the result came from the credential-store path
+    # (_scrape_with_auth basic/cookie/form). Ambient auth (cookies already in a
+    # browser context, session reuse, auth-wall pages queued as auth_required) is
+    # invisible today, so auth_used=false there is a known under-report — see the
+    # scraper MODULE card. The unknown-auth-type fallback to plain httpx stays
+    # false. Propagates capture -> ledger -> /index metadata (decision 37 hook).
+    auth_used: bool = False
 
 
 class ContentExtractor:
@@ -477,6 +484,8 @@ class ScraperEngine:
                     headers={"User-Agent": self.USER_AGENT},
                 )
 
+                html = response.text
+
                 # Check for auth requirement
                 if self._auth_detector:
                     auth_result = self._auth_detector.detect_from_response(
@@ -484,6 +493,21 @@ class ScraperEngine:
                         dict(response.headers),
                         url,
                     )
+
+                    # A 401/403 can be a bot-challenge whose only tell is in the
+                    # body (Cloudflare "Just a moment...", PerimeterX captcha);
+                    # re-check with the full response so such pages are reported
+                    # blocked instead of entering the credential queue (WI0-B6).
+                    if auth_result.requires_auth and response.status_code in (
+                        401,
+                        403,
+                    ):
+                        auth_result = self._auth_detector.detect(
+                            url=url,
+                            status_code=response.status_code,
+                            headers=dict(response.headers),
+                            html=html,
+                        )
 
                     if auth_result.requires_auth:
                         if self._auth_queue:
@@ -498,10 +522,9 @@ class ScraperEngine:
                             url=url,
                             status="auth_required",
                             status_code=response.status_code,
+                            html=html,
                             metadata={"auth_type": auth_result.auth_type},
                         )
-
-                html = response.text
 
                 # Check HTML for auth indicators
                 if self._auth_detector:
@@ -689,6 +712,7 @@ class ScraperEngine:
                     html=html,
                     status_code=response.status_code,
                     metadata=metadata,
+                    auth_used=True,
                 )
 
         except Exception as e:
@@ -730,6 +754,7 @@ class ScraperEngine:
                     html=html,
                     status_code=response.status_code,
                     metadata=metadata,
+                    auth_used=True,
                 )
 
         except Exception as e:
@@ -788,6 +813,7 @@ class ScraperEngine:
                     content=content,
                     html=html,
                     metadata=metadata,
+                    auth_used=True,
                 )
 
             finally:

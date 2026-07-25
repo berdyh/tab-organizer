@@ -11,6 +11,9 @@ RUN uv pip install --system --no-cache-dir -r requirements.txt
 COPY services/backend-core/app/ ./app/
 COPY services/__init__.py ./services/__init__.py
 COPY services/url_safety.py ./services/url_safety.py
+COPY services/observability.py ./services/observability.py
+COPY services/cors.py ./services/cors.py
+COPY config/ ./config/
 
 EXPOSE 8080
 

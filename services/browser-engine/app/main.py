@@ -2,7 +2,10 @@
 
 import asyncio
 import hmac
+import logging
 import os
+import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
@@ -10,26 +13,66 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from config.config_loader import get_ai_config
+from services.cors import allowed_origins
+from services.observability import (
+    RequestIDMiddleware,
+    configure_logging,
+    get_request_id,
+    log_event,
+    request_id_headers,
+    reset_request_id,
+    set_request_id,
+)
 from services.url_safety import validate_scrape_url
 
 from .auth.detector import AuthDetector
-from .auth.queue import AuthQueue
+from .auth.queue import AuthQueue, CredentialStoreError
 from .scraper.engine import ScraperEngine
 from .tabs.cdp import DEFAULT_CDP_URL, CDPTabHarvester
+
+configure_logging("browser-engine")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Refuse to start on malformed shared AI config (finding 27).
+
+    Browser Engine does not read this config itself, but it ships the same
+    ai_models.yaml the AI Engine depends on; failing fast here surfaces a
+    broken provider catalog before any request is served, not on first use.
+    """
+    errors = get_ai_config().validate_config()
+    if errors:
+        log_event("config.invalid", level=logging.CRITICAL, errors=errors)
+        raise RuntimeError("AI model configuration is invalid: " + "; ".join(errors))
+    yield
+
 
 app = FastAPI(
     title="Tab Organizer - Browser Engine",
     description="Web scraping and authentication handling",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
+# CORS middleware. Scoped to the Web UI origin, credentials never allowed --
+# `allow_origins=["*"]` + `allow_credentials=True` made the scrape/auth control
+# plane reachable from any page the user had open. Web UI calls this service
+# server-side, so no browser-side caller is lost. See services/cors.py.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=allowed_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Starlette wraps middleware in reverse add order (last added = outermost), so
+# RequestIDMiddleware must be added last to wrap CORS -- otherwise a CORS
+# preflight (OPTIONS) short-circuits inside CORSMiddleware before ever
+# reaching this middleware and comes back with no X-Request-ID.
+app.add_middleware(RequestIDMiddleware, service="browser-engine")
 
 # Global instances
 auth_detector = AuthDetector()
@@ -52,6 +95,18 @@ scraper = _new_scraper_engine()
 # Scraping state
 scraping_tasks: dict[str, dict] = {}  # session_id → task info
 MAX_RECORDED_DOWNSTREAM_ERRORS = 20
+
+# Per-(session_id, url) attempt counter for the idempotent ingest endpoint.
+# In-process only: it resets to 1 across restarts/re-dispatch, which is why the
+# backend ordering rule keys on (fetched_at, attempt), not attempt alone.
+_ingest_attempts: dict[tuple[str, str], int] = {}
+
+
+def _next_ingest_attempt(session_id: str, url: str) -> int:
+    key = (session_id, url)
+    attempt = _ingest_attempts.get(key, 0) + 1
+    _ingest_attempts[key] = attempt
+    return attempt
 
 
 # Request models
@@ -84,12 +139,19 @@ class TabOpenRequest(BaseModel):
 
 
 def _browser_engine_token() -> str:
-    """Resolve the token required for Browser Engine control endpoints."""
-    return (
-        os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
-        or os.getenv("BACKEND_CALLBACK_TOKEN", "").strip()
-        or os.getenv("AI_ENGINE_API_TOKEN", "").strip()
-    )
+    """Resolve the token required for Browser Engine control endpoints.
+
+    Accepts `BROWSER_ENGINE_API_TOKEN` ONLY. The former cross-scope fallback
+    (`BACKEND_CALLBACK_TOKEN`, then `AI_ENGINE_API_TOKEN`) was removed: in the
+    stock deployment `scripts/cli.py` minted one value for every scope, so the
+    agent/callback principals were accepted here too and could reach scrape,
+    CDP tab control, and the credential/auth-queue endpoints. Accepting only
+    the browser scope keeps that blast radius inside one principal. When the
+    variable is unset, `_require_browser_engine_auth` fails CLOSED with 401 —
+    never open. This is the ACCEPT side only; outbound token selection in
+    `_service_token_headers` is unrelated and keeps its fallback.
+    """
+    return os.getenv("BROWSER_ENGINE_API_TOKEN", "").strip()
 
 
 def _require_browser_engine_auth(
@@ -148,12 +210,21 @@ async def start_scraping(
     # Track scraping task
     scraping_tasks[session_id] = _new_scrape_task_info(len(request.urls))
 
-    # Start background scraping
+    log_event(
+        "scrape.received",
+        session_id=session_id,
+        url_count=len(request.urls),
+        use_browser=request.use_browser,
+    )
+
+    # Start background scraping; carry the request id into the detached task so
+    # its callbacks and index calls stay correlated with this request.
     background_tasks.add_task(
         scrape_urls_background,
         session_id,
         request.urls,
         request.use_browser,
+        get_request_id(),
     )
 
     return {
@@ -185,15 +256,20 @@ def _record_downstream_error(
     message: str,
     url: Optional[str] = None,
 ) -> None:
-    """Record callback/index errors without aborting the scrape batch."""
+    """Record an ingest-callback failure without aborting the scrape batch.
+
+    Browser-engine no longer writes vectors: it POSTs each result to the
+    backend ingest endpoint and the backend is the single ai-engine /index
+    writer. Ingest is per capture, so a failed callback affects exactly one
+    document. AI-index failures now live in the backend ledger and surface via
+    the backend `/scrape/status` overlay, not here.
+    """
     task_info["downstream_error_count"] = task_info.get("downstream_error_count", 0) + 1
 
     if source == "backend_callback":
         task_info["backend_callback_failed"] = (
             task_info.get("backend_callback_failed", 0) + 1
         )
-    elif source == "ai_index":
-        task_info["ai_index_failed"] = task_info.get("ai_index_failed", 0) + 1
 
     errors = task_info.setdefault("downstream_errors", [])
     if len(errors) < MAX_RECORDED_DOWNSTREAM_ERRORS:
@@ -238,6 +314,19 @@ def _finalize_scrape_status(task_info: dict) -> None:
         task_info["status"] = "completed"
 
 
+def _result_domain(result) -> Optional[str]:
+    """Best-effort host for auth-queue log lines (never the full URL/query)."""
+    domain = result.metadata.get("domain") if result.metadata else None
+    if domain:
+        return domain
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(result.url).hostname
+    except Exception:
+        return None
+
+
 def _service_url(env_name: str, default: str) -> str:
     """Resolve service base URL and tolerate trailing slash env values."""
     return os.getenv(env_name, default).rstrip("/")
@@ -257,11 +346,13 @@ async def scrape_urls_background(
     session_id: str,
     urls: list[str],
     use_browser: bool,
+    request_id: Optional[str] = None,
 ):
     """Background task for scraping URLs."""
     backend_url = _service_url("BACKEND_URL", "http://backend-core:8080")
     scraping_tasks.setdefault(session_id, _new_scrape_task_info(len(urls)))
     batch_scraper = _new_scraper_engine()
+    request_token = set_request_id(request_id)
 
     async def on_result(result):
         """Callback for each scrape result."""
@@ -272,15 +363,27 @@ async def scrape_urls_background(
             task_info["success"] = task_info.get("success", 0) + 1
         elif result.status == "auth_required":
             task_info["auth_required"] = task_info.get("auth_required", 0) + 1
+            log_event(
+                "auth.queued",
+                session_id=session_id,
+                domain=_result_domain(result),
+                auth_type=result.metadata.get("auth_type"),
+            )
         else:
             task_info["failed"] = task_info.get("failed", 0) + 1
 
-        # Notify backend
+        # Deliver the result to the backend's single idempotent ingest endpoint.
+        # Backend owns persistence AND the sole /index forward to ai-engine, so
+        # browser-engine never writes vectors. A 200 "ignored" (duplicate/stale)
+        # is a successful delivery, not a failure — only transport/4xx/5xx errors
+        # count against backend_callback_failed.
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{backend_url}/api/v1/callback/scrape-complete",
+                    f"{backend_url}/api/v1/ingest/v1",
                     json={
+                        "capture_id": str(uuid.uuid4()),
+                        "attempt": _next_ingest_attempt(session_id, result.url),
                         "session_id": session_id,
                         "url": result.url,
                         "status": result.status,
@@ -290,23 +393,27 @@ async def scrape_urls_background(
                             "status_code": result.status_code,
                             **result.metadata,
                         },
+                        "auth_used": result.auth_used,
+                        "fetched_at": result.scraped_at.isoformat(),
                     },
-                    headers=_service_token_headers(
-                        "BACKEND_CALLBACK_TOKEN", "AI_ENGINE_API_TOKEN"
-                    ),
+                    headers={
+                        **_service_token_headers(
+                            "BACKEND_CALLBACK_TOKEN", "AI_ENGINE_API_TOKEN"
+                        ),
+                        **request_id_headers(),
+                    },
                     timeout=10.0,
                 )
                 if response.is_error:
                     raise RuntimeError(_http_response_error_message(response))
-                try:
-                    payload = response.json()
-                except ValueError:
-                    payload = {}
-                if payload.get("status") == "error":
-                    raise RuntimeError(
-                        payload.get("message") or "Backend callback returned error"
-                    )
         except Exception as e:
+            log_event(
+                "callback.failed",
+                level=logging.WARNING,
+                session_id=session_id,
+                scrape_status=result.status,
+                reason=str(e),
+            )
             _record_downstream_error(
                 task_info,
                 "backend_callback",
@@ -315,47 +422,12 @@ async def scrape_urls_background(
             )
 
     try:
-        results = await batch_scraper.scrape_batch(
+        await batch_scraper.scrape_batch(
             urls=urls,
             session_id=session_id,
             callback=on_result,
             use_browser=use_browser,
         )
-
-        # Index successful results in AI engine
-        ai_url = _service_url("AI_ENGINE_URL", "http://ai-engine:8090")
-        documents = [
-            {
-                "id": r.url,
-                "url": r.url,
-                "title": r.title or "",
-                "content": r.content or "",
-                "metadata": r.metadata,
-            }
-            for r in results
-            if r.status == "success" and r.content
-        ]
-
-        if documents:
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{ai_url}/index",
-                        json={
-                            "session_id": session_id,
-                            "documents": documents,
-                        },
-                        headers=_service_token_headers("AI_ENGINE_API_TOKEN"),
-                        timeout=120.0,
-                    )
-                    if response.is_error:
-                        raise RuntimeError(_http_response_error_message(response))
-            except Exception as e:
-                _record_downstream_error(
-                    scraping_tasks[session_id],
-                    "ai_index",
-                    str(e),
-                )
 
         _finalize_scrape_status(scraping_tasks[session_id])
 
@@ -364,6 +436,7 @@ async def scrape_urls_background(
         scraping_tasks[session_id]["error"] = str(e)
     finally:
         await batch_scraper.close()
+        reset_request_id(request_token)
 
 
 @app.post("/scrape/single")
@@ -493,10 +566,20 @@ async def submit_credentials(
     _auth=Depends(_require_browser_engine_auth),
 ):
     """Submit credentials for a domain."""
-    success = await auth_queue.provide_credentials(
-        domain=request.domain,
-        credentials=request.credentials,
-    )
+    try:
+        success = await auth_queue.provide_credentials(
+            domain=request.domain,
+            credentials=request.credentials,
+        )
+    except CredentialStoreError as error:
+        # Fail closed: never accept credentials we cannot encrypt securely.
+        log_event(
+            "auth.credentials_rejected",
+            level=logging.WARNING,
+            domain=request.domain,
+            reason="credential_store_unavailable",
+        )
+        raise HTTPException(status_code=503, detail=error.to_dict())
 
     if not success:
         raise HTTPException(
@@ -504,6 +587,8 @@ async def submit_credentials(
             detail=f"No pending auth request for domain: {request.domain}",
         )
 
+    # Log the queue transition only; never the submitted credential values.
+    log_event("auth.credentials_stored", domain=request.domain)
     return {"status": "credentials_stored", "domain": request.domain}
 
 

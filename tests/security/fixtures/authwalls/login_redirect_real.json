@@ -1,0 +1,10 @@
+{
+  "name": "login_redirect_real",
+  "kind": "real_auth",
+  "url": "https://app.example.com/dashboard",
+  "status_code": 302,
+  "headers": {
+    "location": "https://example.com/login?next=%2F"
+  },
+  "html": ""
+}

@@ -1,5 +1,7 @@
 # Tab Organizer
 
+> Current direction: [docs/ARCHITECTURE_PLAN.md](docs/ARCHITECTURE_PLAN.md) — the reviewed, single-source-of-truth migration plan.
+
 A **local-first web scraping and tab organization tool** that helps you analyze, cluster, and manage browser tabs using AI. The system scrapes tab URLs, generates embeddings, clusters related content, and provides chatbot-style discovery.
 
 ## Features
@@ -71,12 +73,12 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 
 2. **Configure AI provider** (edit `.env`):
    ```bash
-   # OpenRouter (docker-compose default — single key for many models)
+   # OpenRouter (docker-compose AND .env.example default — single key for many models)
    AI_PROVIDER=openrouter
    EMBEDDING_PROVIDER=openrouter
    OPENROUTER_API_KEY=<openrouter-api-key>
 
-   # Local-only via Ollama (.env.example default)
+   # Local-only via Ollama (opt-in; pull models first with `./scripts/cli.py init --models`)
    AI_PROVIDER=ollama
    EMBEDDING_PROVIDER=ollama
 
@@ -194,7 +196,7 @@ browser, never closes that browser/profile, and rejects non-local CDP endpoints.
 | `EMBEDDING_DIMENSIONS` | model default | model default | Embedding vector size (must match the embedding model) |
 | `AI_ENGINE_URL` | `http://ai-engine:8090` | — | URL backend/browser/web containers use for the AI Engine; set to `http://host.docker.internal:8090` for `--host-ai` |
 | `AI_ENGINE_API_TOKEN` | — | — | Bearer token for protected AI Engine endpoints; generated locally by `start` and `host-ai` |
-| `BROWSER_ENGINE_API_TOKEN` | — | — | Optional explicit bearer token for Browser Engine control/auth endpoints; falls back to callback/AI token locally |
+| `BROWSER_ENGINE_API_TOKEN` | — | — | Bearer token for Browser Engine control/auth endpoints; the ONLY token they accept (no cross-scope fallback); generated locally by `start` and `host-ai` |
 | `BACKEND_CALLBACK_TOKEN` | — | — | Bearer token for browser-engine scrape callbacks into Backend Core; generated locally by `start` and `host-ai` |
 | `BACKEND_AGENT_API_TOKEN` | — | — | Bearer token for local agent/CLI tab-management endpoints; generated locally by `start` |
 | `AI_ENGINE_ALLOW_UNAUTHENTICATED` | `false` | `false` | Development escape hatch for direct AI Engine calls without a token |
@@ -369,7 +371,8 @@ The tab-management endpoints require bearer auth with `BACKEND_AGENT_API_TOKEN`.
 ### Browser Engine (Port 8083)
 
 All Browser Engine endpoints below except `/health` require bearer auth using
-`BROWSER_ENGINE_API_TOKEN` or the local callback/AI token fallback. Scrape
+`BROWSER_ENGINE_API_TOKEN`; no other service token is accepted, and an unset
+value fails closed with 401 rather than opening the endpoints. Scrape
 targets are limited to public `http`/`https` URLs unless
 `SCRAPE_ALLOW_PRIVATE_NETWORKS=true` is explicitly set for local diagnostics.
 

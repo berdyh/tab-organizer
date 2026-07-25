@@ -5,9 +5,11 @@ import pytest
 from fastapi import HTTPException
 
 from services import url_safety
+from services.backend_core.app.api import routes
 from services.backend_core.app.api.routes import (
     ClusterRequest,
     ScrapeRequest,
+    SearchRequest,
     URLInput,
     _ai_engine_headers,
     _browser_engine_headers,
@@ -16,6 +18,7 @@ from services.backend_core.app.api.routes import (
     get_pending_auth,
     get_scrape_status,
     scrape_complete_callback,
+    search_tabs,
     session_manager,
     start_clustering,
     start_scraping,
@@ -31,11 +34,22 @@ def test_ai_engine_headers_use_configured_token(monkeypatch):
     assert _ai_engine_headers() == {"Authorization": "Bearer shared-token"}
 
 
-def test_browser_engine_headers_prefer_callback_token(monkeypatch):
+def test_browser_engine_headers_send_only_browser_scope(monkeypatch):
+    """Backend must send the browser scope, never a cross-scope fallback.
+
+    Replaces the old `prefer_callback_token` assertion: browser-engine no
+    longer ACCEPTS BACKEND_CALLBACK_TOKEN/AI_ENGINE_API_TOKEN, so sending them
+    could only produce a misleading 401. Sending no header when the browser
+    token is unset keeps the failure diagnosable.
+    """
     monkeypatch.setenv("AI_ENGINE_API_TOKEN", "ai-token")
     monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "callback-token")
+    monkeypatch.setenv("BROWSER_ENGINE_API_TOKEN", "browser-token")
 
-    assert _browser_engine_headers() == {"Authorization": "Bearer callback-token"}
+    assert _browser_engine_headers() == {"Authorization": "Bearer browser-token"}
+
+    monkeypatch.delenv("BROWSER_ENGINE_API_TOKEN")
+    assert _browser_engine_headers() == {}
 
 
 def test_backend_callback_auth_requires_shared_token(monkeypatch):
@@ -319,3 +333,130 @@ async def test_clustering_reports_ai_engine_http_errors(monkeypatch):
         assert "Clustering failed" in exc_info.value.detail
     finally:
         session_manager.delete_session(session.id)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_degrades_to_keyword_when_semantic_leg_fails(monkeypatch):
+    # WI0 B4: a dead semantic leg must not 500 the hybrid default. Keyword hits
+    # are returned with a `degraded` diagnostic instead.
+    async def failing_semantic(session_id, query, top_k):
+        response = httpx.Response(
+            500,
+            request=httpx.Request("POST", "http://ai-engine:8090/search"),
+            json={"detail": "OPENROUTER_API_KEY is not configured"},
+        )
+        response.raise_for_status()
+
+    monkeypatch.setattr(routes, "_semantic_search", failing_semantic)
+    monkeypatch.setattr(
+        routes.session_manager,
+        "search_indexed_tabs",
+        lambda session_id, query, limit: [
+            {
+                "url": "https://example.com/kw",
+                "title": "Keyword Hit",
+                "content": "widgets keyword content",
+                "score": 1.0,
+                "source": "keyword",
+            }
+        ],
+    )
+
+    result = await search_tabs(SearchRequest(query="widgets", mode="hybrid"))
+
+    assert result["mode"] == "hybrid"
+    assert result["count"] == 1
+    assert result["results"][0]["url"] == "https://example.com/kw"
+    assert result["degraded"].startswith("semantic_unavailable:")
+    assert "OPENROUTER_API_KEY is not configured" in result["degraded"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_only_search_raises_structured_error_when_leg_fails(monkeypatch):
+    # Semantic-only has nothing to fall back to: surface a {code, cause, fix}
+    # HTTP error instead of a bare 500.
+    async def failing_semantic(session_id, query, top_k):
+        response = httpx.Response(
+            502,
+            request=httpx.Request("POST", "http://ai-engine:8090/search"),
+            text="ai-engine down",
+        )
+        response.raise_for_status()
+
+    monkeypatch.setattr(routes, "_semantic_search", failing_semantic)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await search_tabs(SearchRequest(query="widgets", mode="semantic"))
+
+    assert exc_info.value.status_code == 502
+    detail = exc_info.value.detail
+    assert detail["code"] == "semantic_unavailable"
+    assert "502" in detail["cause"]
+    assert detail["fix"]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_omits_degraded_field_when_semantic_leg_succeeds(
+    monkeypatch,
+):
+    async def ok_semantic(session_id, query, top_k):
+        return [
+            {
+                "url": "https://example.com/sem",
+                "title": "Semantic Hit",
+                "content": "semantic content",
+                "score": 0.9,
+                "source": "semantic",
+            }
+        ]
+
+    monkeypatch.setattr(routes, "_semantic_search", ok_semantic)
+    monkeypatch.setattr(
+        routes.session_manager,
+        "search_indexed_tabs",
+        lambda session_id, query, limit: [],
+    )
+
+    result = await search_tabs(SearchRequest(query="widgets", mode="hybrid"))
+
+    assert "degraded" not in result
+    assert result["count"] == 1
+
+
+def _route_dependency_calls(route) -> set:
+    """Collect every dependency callable a FastAPI route resolves."""
+    calls = set()
+    stack = list(route.dependant.dependencies)
+    while stack:
+        dependency = stack.pop()
+        if dependency.call is not None:
+            calls.add(dependency.call)
+        stack.extend(dependency.dependencies)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/auth/pending"),
+        ("POST", "/auth/credentials"),
+    ],
+)
+def test_backend_auth_proxy_requires_agent_token(method, path):
+    """C3: the credential proxy must not be a confused deputy.
+
+    These handlers attach the privileged Browser Engine service token
+    server-side, so an unauthenticated caller could read the pending-auth
+    queue and plant credentials for any domain.
+    """
+    matches = [
+        route
+        for route in routes.router.routes
+        if getattr(route, "path", None) == path
+        and method in getattr(route, "methods", set())
+    ]
+    assert matches, f"{method} {path} not registered"
+    for route in matches:
+        assert routes._require_backend_agent_auth in _route_dependency_calls(
+            route
+        ), f"{method} {path} is missing the backend agent auth dependency"

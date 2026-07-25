@@ -18,6 +18,9 @@ RUN playwright install chromium --with-deps
 COPY services/browser-engine/app/ ./app/
 COPY services/__init__.py ./services/__init__.py
 COPY services/url_safety.py ./services/url_safety.py
+COPY services/observability.py ./services/observability.py
+COPY services/cors.py ./services/cors.py
+COPY config/ ./config/
 
 EXPOSE 8083
 

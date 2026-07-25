@@ -5,7 +5,7 @@ A [Streamlit](https://streamlit.io/) front end for Tab Organizer. It talks to
 (clustering, chat, search), and `browser-engine` (auth flow) over HTTP.
 
 > Parent docs live in the repo root. See [../../README.md](../../README.md) and
-> [../../docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) for the wider
+> [../../docs/ARCHITECTURE_PLAN.md](../../docs/ARCHITECTURE_PLAN.md) for the wider
 > context.
 > The local development boundary is captured in [MODULE.md](MODULE.md).
 

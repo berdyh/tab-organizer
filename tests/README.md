@@ -12,6 +12,7 @@ is mirrored by `.github/workflows/ci-cd.yml`.
 ```
 tests/
 ├── unit/           # Fast, isolated unit tests (pytest)
+├── security/       # Frozen black-box security-invariant suite (SECSUITE_VERSION)
 ├── integration/    # Tests against running services
 ├── e2e/            # End-to-end workflow tests (full docker stack)
 ├── load/           # Locust scenarios (no CLI wrapper yet)
@@ -39,6 +40,8 @@ make test-ai
 make test-browser
 make test-web
 make test-ops
+make test-security   # tests/security -- run as its own CI job (security-tests),
+                      # NOT part of tests/unit or test-unit's default command
 ```
 
 Or invoke `docker compose` directly when you need to iterate on a single
@@ -46,9 +49,9 @@ profile:
 
 ```bash
 docker compose --profile test-unit up --build --abort-on-container-exit test-unit
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-integration run --rm test-integration
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-e2e run --rm test-e2e
 ```
 

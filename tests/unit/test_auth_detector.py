@@ -173,7 +173,65 @@ class TestAuthDetector:
             headers={"www-authenticate": "Basic"},
             html=None,
         )
-        
+
         # 401 with Basic auth has confidence 1.0
         assert result.confidence == 1.0
         assert result.auth_type == "basic"
+
+    def test_cloudflare_challenge_is_not_auth_wall(self):
+        """A Cloudflare browser challenge (403) is blocked, not a credential wall."""
+        html = (
+            "<html><head><title>Just a moment...</title></head><body>"
+            "<p>Verifying you are human.</p></body></html>"
+        )
+        result = self.detector.detect(
+            url="https://www.npmjs.com/package/left-pad",
+            status_code=403,
+            headers={"server": "cloudflare", "cf-mitigated": "challenge"},
+            html=html,
+        )
+
+        assert result.requires_auth is False
+        assert result.blocked is True
+        assert result.auth_type == "bot_challenge"
+        assert result.block_reason == "cloudflare_challenge"
+
+    def test_perimeterx_challenge_is_not_auth_wall(self):
+        """A PerimeterX 'access denied' captcha wall is blocked, not auth."""
+        html = (
+            "<html><head><title>Access Denied</title></head><body>"
+            "<h1>Access to this page has been denied</h1>"
+            "<div id='px-captcha'></div></body></html>"
+        )
+        result = self.detector.detect(
+            url="https://shop.example.com/products",
+            status_code=403,
+            headers={},
+            html=html,
+        )
+
+        assert result.requires_auth is False
+        assert result.blocked is True
+        assert result.block_reason == "perimeterx_challenge"
+
+    def test_challenge_html_overrides_login_form(self):
+        """A challenge marker wins even when the body carries a <form>."""
+        html = (
+            "<html><body><p>Enable JavaScript and cookies to continue</p>"
+            "<form id='challenge-form'>"
+            "<input type='hidden' name='cf_ch_verify' value='x'></form>"
+            "</body></html>"
+        )
+        result = self.detector.detect_from_html(html, "https://example.com/x")
+        assert result.requires_auth is False
+        assert result.auth_type == "bot_challenge"
+
+    def test_plain_403_still_requires_auth(self):
+        """A bare 403 with no challenge markers is still treated as auth-gated."""
+        result = self.detector.detect_from_response(
+            status_code=403,
+            headers={},
+            url="https://example.com/private",
+        )
+        assert result.requires_auth is True
+        assert result.confidence == 0.7

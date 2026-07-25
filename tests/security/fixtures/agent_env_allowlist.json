@@ -1,0 +1,25 @@
+{
+  "_comment": "Frozen contract (SEC-25/SEC-42, tests/security/, SECSUITE frozen suite). This is the allowlist of environment variable NAMES that may ever reach a subprocess-spawned agent CLI (claude_code / codex_cli / codex_acp). Restricting this set is a deliberate security decision: agent CLIs are third-party subscription binaries running with the user's local auth, and the allowlist keeps app/cloud provider secrets (OPENROUTER_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, CREDENTIAL_ENCRYPTION_KEY, service bearer tokens, etc.) out of their process environment. SEC-25 asserts the OBSERVED subprocess env is a subset of this fixture (black-box, no Python import). SEC-42 pins AgentCLILLMProvider.ENV_ALLOWLIST (services/ai-engine/app/providers/agent_cli.py) to equal this fixture as a drift check. Changing this file is a security decision: it requires a docs/MODULE_INDEX.md ledger row and a SECSUITE_VERSION bump (see tests/security/README.md), and the corresponding edit to AgentCLILLMProvider.ENV_ALLOWLIST in the same change.",
+  "allowlist": [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "ACPX_HOME",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR"
+  ]
+}

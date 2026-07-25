@@ -5,7 +5,8 @@ services:
       dockerfile: services/backend-core/Dockerfile
     container_name: tab-organizer-backend
     ports:
-      - "8080:8080"
+      # Loopback-only: see CLAUDE.md "Published ports are loopback-only".
+      - "127.0.0.1:8080:8080"
     environment:
       - AI_ENGINE_URL=${AI_ENGINE_URL:-http://ai-engine:8090}
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
@@ -17,6 +18,7 @@ services:
       - BACKEND_PUBLIC_URL=${BACKEND_PUBLIC_URL:-http://localhost:8080}
       - PLATFORM_MAINTAINER_SIGNUP_CODE=${PLATFORM_MAINTAINER_SIGNUP_CODE:-}
       - SCRAPE_ALLOW_PRIVATE_NETWORKS=${SCRAPE_ALLOW_PRIVATE_NETWORKS:-false}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
     depends_on:
       - ai-engine
       - browser-engine
@@ -35,12 +37,13 @@ services:
       dockerfile: services/ai-engine/Dockerfile
     container_name: tab-organizer-ai
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     environment:
       - AI_PROVIDER=${AI_PROVIDER:-openrouter}
       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openrouter}
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
       - AI_ENGINE_ALLOW_UNAUTHENTICATED=${AI_ENGINE_ALLOW_UNAUTHENTICATED:-false}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
       - LLM_MODEL=${LLM_MODEL:-}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-}
       - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-}
@@ -86,7 +89,7 @@ services:
       dockerfile: services/browser-engine/Dockerfile
     container_name: tab-organizer-browser
     ports:
-      - "8083:8083"
+      - "127.0.0.1:8083:8083"
     environment:
       - BACKEND_URL=http://backend-core:8080
       - AI_ENGINE_URL=${AI_ENGINE_URL:-http://ai-engine:8090}
@@ -98,6 +101,7 @@ services:
       - RESPECT_ROBOTS=${RESPECT_ROBOTS:-true}
       - SCRAPE_ALLOW_PRIVATE_NETWORKS=${SCRAPE_ALLOW_PRIVATE_NETWORKS:-false}
       - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY:-}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
     networks:
       - tab-organizer-network
     extra_hosts:
@@ -111,12 +115,16 @@ services:
       dockerfile: Dockerfile
     container_name: tab-organizer-ui
     ports:
-      - "8089:8089"
+      - "127.0.0.1:8089:8089"
     environment:
       - BACKEND_URL=http://backend-core:8080
       - AI_ENGINE_URL=${AI_ENGINE_URL:-http://ai-engine:8090}
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
-      - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
+      # Streamlit runs server-side; this token never reaches a browser. Needed
+      # for the backend routes web-ui calls that now require the agent scope
+      # (/chat, /auth/pending, /auth/credentials). BROWSER_ENGINE_API_TOKEN was
+      # granted here but never read by any web-ui code -- removed.
+      - BACKEND_AGENT_API_TOKEN=${BACKEND_AGENT_API_TOKEN:-}
       - BROWSER_ENGINE_URL=http://browser-engine:8083
     depends_on:
       - backend-core
@@ -131,7 +139,7 @@ services:
     image: ollama/ollama:latest
     container_name: tab-organizer-ollama
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama-data:/root/.ollama
     networks:
@@ -155,6 +163,8 @@ services:
       - ./Makefile:/app/Makefile:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - ./.env.example:/app/.env.example:ro
+      - ./.gitleaks.toml:/app/.gitleaks.toml:ro
+      - ./pytest.ini:/app/pytest.ini:ro
       - ./test-results:/app/test-results
       - ./coverage:/app/coverage
     networks:

@@ -1,4 +1,4 @@
-.PHONY: help test test-unit test-integration test-e2e test-performance test-all clean coverage dev dev-up dev-down build deploy lint format security
+.PHONY: help test test-unit test-integration test-e2e test-performance test-all smoke-test test-security clean coverage dev dev-up dev-down build deploy lint format security
 
 # Default target
 .DEFAULT_GOAL := help
@@ -42,6 +42,10 @@ test-all: ## Run all tests (unit, integration, e2e)
 	@echo "$(BLUE)Running all tests...$(NC)"
 	@./scripts/cli.py test --type all
 
+smoke-test: ## Run tests marked @pytest.mark.smoke (quick validation subset)
+	@echo "$(BLUE)Running smoke tests...$(NC)"
+	@docker compose --profile test-unit run --rm test-unit pytest tests/ -m smoke -q
+
 test-service: ## Run tests for specific service (usage: make test-service SERVICE=backend-core)
 	@if [ -z "$(SERVICE)" ]; then \
 		echo "$(RED)Error: SERVICE not specified. Usage: make test-service SERVICE=backend-core$(NC)"; \
@@ -57,9 +61,11 @@ test-backend: ## Run focused Backend Core unit tests
 		tests/unit/test_backend_tab_workflows.py \
 		tests/unit/test_platform_backend.py \
 		tests/unit/test_backend_callback_persistence.py \
+		tests/unit/test_ingest_v1.py \
 		tests/unit/test_session_persistence.py \
 		tests/unit/test_scrape_callback.py \
-		tests/unit/test_url_store.py -q
+		tests/unit/test_url_store.py \
+		tests/unit/test_startup_config_validation.py -q
 
 test-ai: ## Run focused AI Engine unit tests
 	@echo "$(BLUE)Running AI Engine focused tests...$(NC)"
@@ -67,14 +73,16 @@ test-ai: ## Run focused AI Engine unit tests
 		tests/unit/test_ai_provider_switch.py \
 		tests/unit/test_subscription_cli_providers.py \
 		tests/unit/test_rag_lancedb_persistence.py \
-		tests/unit/test_clustering.py -q
+		tests/unit/test_clustering.py \
+		tests/unit/test_startup_config_validation.py -q
 
 test-browser: ## Run focused Browser Engine unit tests
 	@echo "$(BLUE)Running Browser Engine focused tests...$(NC)"
 	@docker compose --profile test-unit run --rm test-unit pytest \
 		tests/unit/test_browser_tab_harvester.py \
 		tests/unit/test_browser_engine_callbacks.py \
-		tests/unit/test_auth_detector.py -q
+		tests/unit/test_auth_detector.py \
+		tests/unit/test_startup_config_validation.py -q
 
 test-web: ## Run focused Web UI unit tests
 	@echo "$(BLUE)Running Web UI focused tests...$(NC)"
@@ -88,6 +96,11 @@ test-ops: ## Run focused CLI/config/runtime unit tests
 		tests/unit/test_cli_host_ai.py \
 		tests/unit/test_init_script.py \
 		tests/unit/test_runtime_auth_config.py -q
+
+test-security: ## Run the frozen security-invariant suite (tests/security)
+	@echo "$(BLUE)Running security-invariant suite...$(NC)"
+	@docker compose --profile test-unit run --rm test-unit \
+		pytest tests/security -m "security and not integration" -q
 
 test-watch: ## Run tests in watch mode for development
 	@echo "$(BLUE)Running tests in watch mode...$(NC)"

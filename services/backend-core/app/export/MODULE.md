@@ -8,5 +8,5 @@
 - special operating rules: avoid unsafe HTML output for user-provided content.
 - current stubs/placeholders: coverage is currently low compared with other backend submodules.
 - irrelevant or incomplete code to remove/rework: none known.
-- docs that must stay aligned: README export feature list and `docs/ARCHITECTURE.md`.
+- docs that must stay aligned: README export feature list and `docs/ARCHITECTURE_PLAN.md`.
 - local validation commands/checks: `make test-backend`; add focused export tests before behavior changes.

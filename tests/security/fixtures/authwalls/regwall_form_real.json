@@ -1,0 +1,11 @@
+{
+  "name": "regwall_form_real",
+  "kind": "real_auth",
+  "url": "https://news.example.com/article/12345",
+  "status_code": 200,
+  "headers": {
+    "content-type": "text/html; charset=UTF-8"
+  },
+  "html": "<!DOCTYPE html><html><head><title>Sign in to continue</title></head><body><form action=\"/signin\" method=\"post\"><input type=\"email\" name=\"email\" placeholder=\"Email\"><input type=\"password\" name=\"password\" placeholder=\"Password\"><button type=\"submit\">Sign in</button></form></body></html>",
+  "expect_auth_type": "form"
+}

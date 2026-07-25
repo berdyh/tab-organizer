@@ -99,7 +99,7 @@ except ModuleNotFoundError:
     _install_playwright_stub()
 
 from services.browser_engine.app import main as browser_main
-from services.browser_engine.app.scraper.engine import ScrapeResult, ScraperEngine
+from services.browser_engine.app.scraper.engine import ScraperEngine, ScrapeResult
 
 
 def test_service_token_headers_use_ai_engine_token(monkeypatch):
@@ -124,7 +124,14 @@ def test_service_token_headers_support_callback_token_fallback(monkeypatch):
     ) == {"Authorization": "Bearer ai-token"}
 
 
-def test_browser_engine_auth_requires_shared_token(monkeypatch):
+def test_browser_engine_auth_requires_browser_scope_token(monkeypatch):
+    """Only BROWSER_ENGINE_API_TOKEN opens the control plane; unset fails closed.
+
+    Tightened from the previous `requires_shared_token` version, which asserted
+    that AI_ENGINE_API_TOKEN alone was accepted. That cross-scope acceptance is
+    exactly the privilege collapse being removed (the stock CLI minted one
+    value for all scopes, so the agent principal reached CDP/credentials).
+    """
     monkeypatch.delenv("BROWSER_ENGINE_API_TOKEN", raising=False)
     monkeypatch.delenv("AI_ENGINE_API_TOKEN", raising=False)
     monkeypatch.delenv("BACKEND_CALLBACK_TOKEN", raising=False)
@@ -133,16 +140,22 @@ def test_browser_engine_auth_requires_shared_token(monkeypatch):
         browser_main._require_browser_engine_auth(None)
     assert unconfigured.value.status_code == 401
 
-    monkeypatch.setenv("AI_ENGINE_API_TOKEN", "shared-token")
-    with pytest.raises(browser_main.HTTPException) as missing:
-        browser_main._require_browser_engine_auth(None)
-    assert missing.value.status_code == 401
+    # Other scopes must NOT configure or open this door.
+    monkeypatch.setenv("AI_ENGINE_API_TOKEN", "ai-token")
+    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "callback-token")
+    assert browser_main._browser_engine_token() == ""
+    for header in (None, "Bearer ai-token", "Bearer callback-token"):
+        with pytest.raises(browser_main.HTTPException) as cross_scope:
+            browser_main._require_browser_engine_auth(header)
+        assert cross_scope.value.status_code == 401
 
-    with pytest.raises(browser_main.HTTPException) as wrong:
-        browser_main._require_browser_engine_auth("Bearer wrong")
-    assert wrong.value.status_code == 401
+    monkeypatch.setenv("BROWSER_ENGINE_API_TOKEN", "browser-token")
+    for header in (None, "Bearer wrong", "Bearer ai-token", "Bearer callback-token"):
+        with pytest.raises(browser_main.HTTPException) as rejected:
+            browser_main._require_browser_engine_auth(header)
+        assert rejected.value.status_code == 401
 
-    assert browser_main._require_browser_engine_auth("Bearer shared-token") is None
+    assert browser_main._require_browser_engine_auth("Bearer browser-token") is None
 
 
 @pytest.mark.parametrize(
@@ -254,7 +267,11 @@ async def test_safe_httpx_get_rejects_unsafe_redirect_target(monkeypatch):
         )
 
     assert calls == [
-        {"method": "GET", "url": "https://93.184.216.34/path", "follow_redirects": False}
+        {
+            "method": "GET",
+            "url": "https://93.184.216.34/path",
+            "follow_redirects": False,
+        }
     ]
 
 
@@ -425,9 +442,9 @@ async def test_backend_callback_http_failure_is_visible_without_stopping_batch(
 
     def handler(url, kwargs):
         calls.append((url, kwargs))
-        if url.endswith("/callback/scrape-complete"):
-            return _response(url, status_code=503, text="backend unavailable")
-        return _response(url, json={"status": "indexed"})
+        # Browser-engine now delivers to the single ingest endpoint and never
+        # calls /index itself (backend is the sole vector writer).
+        return _response(url, status_code=503, text="backend unavailable")
 
     _use_background_scraper(monkeypatch, fake_scraper)
     monkeypatch.setattr(
@@ -436,7 +453,6 @@ async def test_backend_callback_http_failure_is_visible_without_stopping_batch(
         lambda: FakeAsyncClient(handler),
     )
     monkeypatch.setenv("BACKEND_URL", "http://backend.test/")
-    monkeypatch.setenv("AI_ENGINE_URL", "http://ai.test/")
     monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "callback-token")
     browser_main.scraping_tasks[session_id] = browser_main._new_scrape_task_info(1)
 
@@ -448,13 +464,11 @@ async def test_backend_callback_http_failure_is_visible_without_stopping_batch(
         assert status["success"] == 1
         assert status["status"] == "completed_with_downstream_errors"
         assert status["backend_callback_failed"] == 1
-        assert status["ai_index_failed"] == 0
         assert status["downstream_errors"][0]["source"] == "backend_callback"
         assert status["downstream_errors"][0]["url"] == result.url
         assert "backend unavailable" in status["downstream_errors"][0]["message"]
         assert [url for url, _kwargs in calls] == [
-            "http://backend.test/api/v1/callback/scrape-complete",
-            "http://ai.test/index",
+            "http://backend.test/api/v1/ingest/v1",
         ]
         assert calls[0][1]["headers"] == {"Authorization": "Bearer callback-token"}
         assert fake_scraper.closed is True
@@ -475,13 +489,11 @@ async def test_backend_callback_http_detail_payload_is_visible(monkeypatch):
     fake_scraper = FakeScraper([result])
 
     def handler(url, kwargs):
-        if url.endswith("/callback/scrape-complete"):
-            return _response(
-                url,
-                status_code=401,
-                json={"detail": "Invalid backend callback token"},
-            )
-        return _response(url, json={"status": "indexed"})
+        return _response(
+            url,
+            status_code=401,
+            json={"detail": "Invalid backend callback token"},
+        )
 
     _use_background_scraper(monkeypatch, fake_scraper)
     monkeypatch.setattr(
@@ -515,7 +527,9 @@ async def test_backend_callback_error_payload_is_visible(monkeypatch):
     fake_scraper = FakeScraper([result])
 
     def handler(url, kwargs):
-        return _response(url, json={"status": "error", "message": "Session not found"})
+        # The ingest endpoint signals a misdirected write (unknown session) with
+        # a 404, not a 200 body; browser-engine counts it as a delivery failure.
+        return _response(url, status_code=404, json={"detail": "Session not found"})
 
     _use_background_scraper(monkeypatch, fake_scraper)
     monkeypatch.setattr(
@@ -538,66 +552,27 @@ async def test_backend_callback_error_payload_is_visible(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ai_index_failure_is_visible_after_successful_callbacks(monkeypatch):
-    session_id = "index-failure"
+async def test_ingest_delivery_carries_capture_identity_and_auth_flag(monkeypatch):
+    # Browser-engine posts each result to the versioned ingest endpoint with a
+    # unique capture_id, a per-(session,url) attempt, fetched_at, and the
+    # honest auth_used flag. It never calls /index (backend is the sole writer).
+    session_id = "ingest-delivery"
     result = ScrapeResult(
-        url="https://www.iana.org/domains/reserved",
+        url="https://intranet.example/report",
         status="success",
-        title="IANA-managed Reserved Domains",
-        content="Reserved domain content",
+        title="Quarterly Report",
+        content="authenticated content",
         status_code=200,
+        auth_used=True,
     )
+    result.scraped_at = __import__("datetime").datetime(2026, 7, 24, 12, 0, 0)
     fake_scraper = FakeScraper([result])
+    calls = []
 
     def handler(url, kwargs):
-        if url.endswith("/callback/scrape-complete"):
-            return _response(url, json={"status": "updated"})
-        return _response(url, status_code=500, text="index failed")
-
-    _use_background_scraper(monkeypatch, fake_scraper)
-    monkeypatch.setattr(
-        browser_main.httpx,
-        "AsyncClient",
-        lambda: FakeAsyncClient(handler),
-    )
-    monkeypatch.setenv("AI_ENGINE_URL", "http://ai.test")
-    browser_main.scraping_tasks[session_id] = browser_main._new_scrape_task_info(1)
-
-    try:
-        await browser_main.scrape_urls_background(session_id, [result.url], False)
-
-        status = browser_main.scraping_tasks[session_id]
-        assert status["completed"] == 1
-        assert status["success"] == 1
-        assert status["status"] == "completed_with_downstream_errors"
-        assert status["backend_callback_failed"] == 0
-        assert status["ai_index_failed"] == 1
-        assert status["downstream_errors"][0]["source"] == "ai_index"
-        assert "index failed" in status["downstream_errors"][0]["message"]
-        assert fake_scraper.closed is True
-    finally:
-        browser_main.scraping_tasks.pop(session_id, None)
-
-
-@pytest.mark.asyncio
-async def test_ai_index_http_detail_payload_is_visible(monkeypatch):
-    session_id = "index-detail-failure"
-    result = ScrapeResult(
-        url="https://www.iana.org/domains/reserved",
-        status="success",
-        title="IANA-managed Reserved Domains",
-        content="Reserved domain content",
-        status_code=200,
-    )
-    fake_scraper = FakeScraper([result])
-
-    def handler(url, kwargs):
-        if url.endswith("/callback/scrape-complete"):
-            return _response(url, json={"status": "updated"})
+        calls.append((url, kwargs))
         return _response(
-            url,
-            status_code=500,
-            json={"detail": "OPENROUTER_API_KEY is not configured"},
+            url, json={"status": "applied", "capture_id": "x", "index": "pending"}
         )
 
     _use_background_scraper(monkeypatch, fake_scraper)
@@ -606,20 +581,30 @@ async def test_ai_index_http_detail_payload_is_visible(monkeypatch):
         "AsyncClient",
         lambda: FakeAsyncClient(handler),
     )
-    monkeypatch.setenv("AI_ENGINE_URL", "http://ai.test")
+    monkeypatch.setenv("BACKEND_URL", "http://backend.test")
+    browser_main._ingest_attempts.clear()
     browser_main.scraping_tasks[session_id] = browser_main._new_scrape_task_info(1)
 
     try:
         await browser_main.scrape_urls_background(session_id, [result.url], False)
 
         status = browser_main.scraping_tasks[session_id]
-        assert status["status"] == "completed_with_downstream_errors"
-        assert status["ai_index_failed"] == 1
-        assert "OPENROUTER_API_KEY is not configured" in (
-            status["downstream_errors"][0]["message"]
-        )
+        assert status["status"] == "completed"
+        assert status["backend_callback_failed"] == 0
+        assert [url for url, _ in calls] == ["http://backend.test/api/v1/ingest/v1"]
+        body = calls[0][1]["json"]
+        assert body["attempt"] == 1
+        assert body["session_id"] == session_id
+        assert body["url"] == result.url
+        assert body["status"] == "success"
+        assert body["content"] == "authenticated content"
+        assert body["auth_used"] is True
+        assert body["fetched_at"] == "2026-07-24T12:00:00"
+        assert body["capture_id"]
+        assert body["metadata"]["title"] == "Quarterly Report"
     finally:
         browser_main.scraping_tasks.pop(session_id, None)
+        browser_main._ingest_attempts.clear()
 
 
 @pytest.mark.asyncio

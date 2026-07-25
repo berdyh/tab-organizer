@@ -1,7 +1,9 @@
 """Attach-mode Chromium DevTools Protocol tab import."""
 
 import asyncio
+import ipaddress
 import re
+import socket
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
@@ -10,6 +12,23 @@ from services.url_safety import validate_scrape_url
 
 LOCAL_CDP_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 DEFAULT_CDP_URL = "http://host.docker.internal:9222"
+
+# Chrome's remote-debugging HTTP server rejects any Host header that is not an
+# IP address or the literal "localhost" ("Host header is specified and is not
+# an IP address or localhost"). These forms are accepted as-is; every other
+# allowed input host (notably `host.docker.internal`) must be resolved to its
+# IP before the URL is handed to Playwright. See WI0 B2.
+CHROME_HOST_HEADER_SAFE = {"localhost", "127.0.0.1", "::1"}
+
+
+class CDPConnectionError(RuntimeError):
+    """A CDP attach failure carrying an actionable {code, cause, fix} message."""
+
+    def __init__(self, code: str, cause: str, fix: str):
+        self.code = code
+        self.cause = cause
+        self.fix = fix
+        super().__init__(f"{code}: {cause} | fix: {fix}")
 
 
 def validate_cdp_url(url: str) -> str:
@@ -37,6 +56,91 @@ def validate_cdp_url(url: str) -> str:
         netloc = f"{netloc}:{parsed.port}"
 
     return urlunparse((parsed.scheme, netloc, "", "", "", ""))
+
+
+def resolve_cdp_connect_url(validated_url: str) -> str:
+    """Return the URL to actually connect to, with the host resolved to an IP.
+
+    `validate_cdp_url` keeps an allowlist for *input* (it accepts the friendly
+    `host.docker.internal` name a user configures), but Chrome's debug port
+    rejects that name in the Host header. Resolve any non-IP, non-localhost
+    host to its IP before connecting; leave localhost/IP forms untouched (WI0
+    B2). The resolved IP is then checked against `ipaddress` private/loopback
+    ranges -- CDP attach is a local-only security invariant, so a poisoned or
+    misconfigured resolver must not be able to point Playwright's connection
+    at a non-local address.
+    """
+    parsed = urlparse(validated_url)
+    hostname = (parsed.hostname or "").lower()
+    if hostname in CHROME_HOST_HEADER_SAFE:
+        return validated_url
+
+    try:
+        ip = socket.gethostbyname(hostname)
+    except OSError as error:
+        raise CDPConnectionError(
+            code="cdp_host_unresolvable",
+            cause=f"could not resolve Chrome debug host {hostname!r}: {error}",
+            fix=(
+                "Ensure the container can resolve the debug host (Docker's "
+                "host-gateway maps host.docker.internal); on Linux add "
+                "'--add-host=host.docker.internal:host-gateway'."
+            ),
+        ) from error
+
+    try:
+        resolved_addr = ipaddress.ip_address(ip)
+    except ValueError as error:
+        raise CDPConnectionError(
+            code="cdp_resolved_address_invalid",
+            cause=(
+                f"resolver returned a non-IP value {ip!r} for Chrome debug "
+                f"host {hostname!r}: {error}"
+            ),
+            fix="Check the container's resolver/hosts entry for the debug host.",
+        ) from error
+
+    if not (resolved_addr.is_private or resolved_addr.is_loopback):
+        raise CDPConnectionError(
+            code="cdp_resolved_address_not_local",
+            cause=(
+                f"Chrome debug host {hostname!r} resolved to {ip}, which is "
+                "not a private/loopback address; refusing to attach a "
+                "local-only CDP client to a non-local target"
+            ),
+            fix=(
+                "CDP attach is local-only by design. Confirm the container's "
+                "resolver/hosts file maps this debug host to the Docker "
+                "bridge gateway or loopback (e.g. 'docker network inspect "
+                "bridge'), not to a public or otherwise remote address."
+            ),
+        )
+
+    netloc = f"{ip}:{parsed.port}" if parsed.port else ip
+    return urlunparse((parsed.scheme, netloc, "", "", "", ""))
+
+
+def _cdp_connect_failure(cdp_url: str, error: Exception) -> CDPConnectionError:
+    """Wrap a raw connect failure in an actionable {code, cause, fix} error."""
+    return CDPConnectionError(
+        code="cdp_connect_failed",
+        cause=f"could not attach to Chrome debug endpoint {cdp_url}: {error}",
+        fix=(
+            "Chrome's debug port defaults to 127.0.0.1, which is unreachable "
+            "from the container. Bridge it to the Docker bridge interface only "
+            "(never the whole LAN): run a host-side "
+            "'socat TCP-LISTEN:9222,fork,bind=172.17.0.1 TCP:127.0.0.1:9222' "
+            "(172.17.0.1 is the default docker0 bridge IP; confirm yours with "
+            "'docker network inspect bridge'). Headed Chrome ignores "
+            "--remote-debugging-address and stays on loopback, so the socat "
+            "bridge is the reliable path for a headed browser. Only as a last "
+            "resort bind the port to all interfaces "
+            "('--remote-debugging-address=0.0.0.0' or socat 'bind=0.0.0.0') -- "
+            "that exposes the UNAUTHENTICATED debug port to the LAN and must be "
+            "firewalled. Host-side tab capture is the durable fix "
+            "(plan decision 24)."
+        ),
+    )
 
 
 def _is_importable_page(url: str) -> bool:
@@ -159,11 +263,16 @@ class CDPTabHarvester:
     async def _connect(self):
         playwright = await self._start_playwright()
         try:
-            browser = await playwright.chromium.connect_over_cdp(self.cdp_url)
-            return playwright, browser
-        except Exception:
+            connect_url = resolve_cdp_connect_url(self.cdp_url)
+        except CDPConnectionError:
             await playwright.stop()
             raise
+        try:
+            browser = await playwright.chromium.connect_over_cdp(connect_url)
+            return playwright, browser
+        except Exception as error:
+            await playwright.stop()
+            raise _cdp_connect_failure(connect_url, error) from error
 
     async def harvest(self, max_tabs: Optional[int] = None) -> TabHarvestResult:
         """Import visible HTTP(S) pages from the attached browser."""

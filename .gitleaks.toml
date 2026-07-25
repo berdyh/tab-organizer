@@ -1,0 +1,24 @@
+# gitleaks configuration for tab-organizer (SEC-37, plan finding 35).
+# Extends the upstream default ruleset; the allowlist below covers the frozen
+# security suite's intentional fake tokens and fixtures so scans stay clean
+# (SEC-38) without weakening detection for real code.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Security-suite fixtures and documented fake tokens"
+paths = [
+  '''tests/security/fixtures/.*''',
+  '''\.env\.example''',
+]
+regexes = [
+  # Deterministic fake bearer tokens the harness generates/documents.
+  '''sec-(ai|callback|agent|browser)-[0-9a-f]+''',
+  '''sec-wrong-[0-9a-f]+''',
+  '''local-test-token''',
+  '''local-maintainer''',
+  # Recognisable sentinel values planted by the credential-isolation probes.
+  '''sentinel-[a-z]+-[a-z]+''',
+  '''sk-ant-sentinel[a-z]+''',
+]

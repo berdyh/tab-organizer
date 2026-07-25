@@ -1,3 +1,5 @@
+> PARTIALLY SUPERSEDED by docs/ARCHITECTURE_PLAN.md (2026-07-24); rewrite scheduled.
+
 # Testing Documentation
 
 This file is the single source-of-truth for running and debugging the project's containerized tests.
@@ -30,6 +32,7 @@ make test-ai
 make test-browser
 make test-web
 make test-ops
+make test-security  # frozen tests/security suite (SECSUITE_VERSION); own CI job
 make coverage
 ```
 
@@ -64,11 +67,11 @@ docker compose --profile test-unit up --build --abort-on-container-exit test-uni
 Start infrastructure and services (LanceDB is embedded inside `ai-engine`):
 
 ```bash
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-integration up -d ollama
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-integration up -d --build backend-core ai-engine browser-engine
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-integration run --rm test-integration
 ```
 
@@ -77,11 +80,11 @@ AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BAC
 Start full stack:
 
 ```bash
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-e2e up -d ollama
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-e2e up -d --build backend-core ai-engine browser-engine web-ui
-AI_ENGINE_API_TOKEN=local-test-token BACKEND_CALLBACK_TOKEN=local-test-token BACKEND_AGENT_API_TOKEN=local-test-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
+AI_ENGINE_API_TOKEN=local-test-ai-token BACKEND_CALLBACK_TOKEN=local-test-callback-token BACKEND_AGENT_API_TOKEN=local-test-agent-token BROWSER_ENGINE_API_TOKEN=local-test-browser-token PLATFORM_MAINTAINER_SIGNUP_CODE=local-maintainer \
   docker compose --profile default --profile test-e2e run --rm test-e2e
 ```
 
@@ -97,11 +100,14 @@ docker compose --profile test-unit --profile test-integration --profile test-e2e
 
 Pipeline stages (GitHub Actions):
 1. Unit tests + coverage
-2. Code quality (lint, format, type, security)
-3. Integration tests
-4. End-to-end tests
-5. Build & push images (main/develop)
-6. Deploy (staging=develop, prod=main)
+2. Security-invariant suite (`security-tests` job, `tests/security`) -- runs
+   independently of unit tests (it is not part of `tests/unit` or test-unit's
+   default command) and gates image builds
+3. Code quality (lint, format, type, security)
+4. Integration tests
+5. End-to-end tests
+6. Build & push images (main/develop)
+7. Deploy (staging=develop, prod=main)
 
 CI produces JUnit XML and coverage artifacts per run.
 

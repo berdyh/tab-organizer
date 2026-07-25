@@ -10,6 +10,27 @@ from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
 
+# OS keyring coordinates for the durable credential-store key.
+_KEYRING_SERVICE = "tab-organizer-credential-store"
+_KEYRING_USERNAME = "fernet-key"
+
+
+class CredentialStoreError(RuntimeError):
+    """Raised when credential storage cannot be secured (fail-closed).
+
+    Carries a structured {code, cause, fix} so callers can surface an
+    actionable error instead of silently encrypting with a throwaway key.
+    """
+
+    def __init__(self, code: str, cause: str, fix: str):
+        self.code = code
+        self.cause = cause
+        self.fix = fix
+        super().__init__(f"{code}: {cause} Fix: {fix}")
+
+    def to_dict(self) -> dict:
+        return {"code": self.code, "cause": self.cause, "fix": self.fix}
+
 
 @dataclass
 class AuthRequest:
@@ -42,15 +63,79 @@ class CredentialStore:
     """Secure credential storage with encryption."""
 
     def __init__(self, encryption_key: Optional[str] = None):
-        key = encryption_key or os.getenv("CREDENTIAL_ENCRYPTION_KEY")
-        if key:
-            # Ensure key is valid Fernet key (32 url-safe base64-encoded bytes)
-            self._fernet = Fernet(key.encode() if isinstance(key, str) else key)
-        else:
-            # Generate a session-scoped key
-            self._fernet = Fernet(Fernet.generate_key())
-
         self._credentials: dict[str, StoredCredentials] = {}
+        # Fail closed: never invent a throwaway key. Resolution is deferred to
+        # a stored error so the service still starts; store() is what refuses.
+        self._fernet: Optional[Fernet] = None
+        self._init_error: Optional[CredentialStoreError] = None
+        try:
+            self._fernet = self._resolve_fernet(encryption_key)
+        except CredentialStoreError as error:
+            self._init_error = error
+
+    def _load_key_from_keyring(self) -> Optional[str]:
+        """Return a durable Fernet key from the OS keyring, if reachable.
+
+        Returns None when no keyring backend is available in-process, so the
+        caller falls through to CREDENTIAL_ENCRYPTION_KEY / fail-closed.
+        """
+        try:
+            import keyring
+        except ImportError:
+            return None
+        try:
+            existing = keyring.get_password(_KEYRING_SERVICE, _KEYRING_USERNAME)
+        except Exception:
+            return None
+        if existing:
+            return existing
+        # No key yet — mint a durable one and persist it to the keyring. This is
+        # not "inventing a key": it survives restarts and lives in secure OS
+        # storage, unlike a per-process throwaway.
+        new_key = Fernet.generate_key().decode()
+        try:
+            keyring.set_password(_KEYRING_SERVICE, _KEYRING_USERNAME, new_key)
+        except Exception:
+            return None
+        return new_key
+
+    def _resolve_fernet(self, encryption_key: Optional[str]) -> Fernet:
+        """Resolve the encryption key: explicit arg, OS keyring, then env var.
+
+        Raises CredentialStoreError (fail-closed) when none is available.
+        """
+        key = encryption_key or self._load_key_from_keyring()
+        if not key:
+            key = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
+        if not key:
+            raise CredentialStoreError(
+                code="credential_store_unconfigured",
+                cause=(
+                    "No OS keyring backend is available in-process and "
+                    "CREDENTIAL_ENCRYPTION_KEY is not set."
+                ),
+                fix=(
+                    "Set CREDENTIAL_ENCRYPTION_KEY to a Fernet.generate_key() "
+                    "value, or run where an OS keyring (Secret Service) is "
+                    "reachable. The store refuses credentials until then."
+                ),
+            )
+        try:
+            return Fernet(key.encode() if isinstance(key, str) else key)
+        except Exception as exc:
+            raise CredentialStoreError(
+                code="credential_key_invalid",
+                cause=f"The configured credential key is not a valid Fernet key: {exc}.",
+                fix=(
+                    "CREDENTIAL_ENCRYPTION_KEY must be a url-safe base64-encoded "
+                    "32-byte key produced by Fernet.generate_key()."
+                ),
+            )
+
+    @property
+    def is_ready(self) -> bool:
+        """Whether the store can encrypt (a key was resolved)."""
+        return self._fernet is not None
 
     def store(
         self,
@@ -59,8 +144,16 @@ class CredentialStore:
         credentials: dict,
         expires_at: Optional[datetime] = None,
     ) -> None:
-        """Store encrypted credentials for a domain."""
+        """Store encrypted credentials for a domain.
+
+        Raises CredentialStoreError (fail-closed) if no encryption key could be
+        resolved; callers must surface this rather than accept credentials.
+        """
         import json
+
+        if self._fernet is None:
+            assert self._init_error is not None
+            raise self._init_error
 
         data = json.dumps(credentials).encode()
         encrypted = self._fernet.encrypt(data)

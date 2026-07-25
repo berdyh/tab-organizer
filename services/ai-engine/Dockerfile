@@ -13,6 +13,9 @@ COPY services/ai-engine/requirements.txt .
 RUN uv pip install --system --no-cache-dir -r requirements.txt
 
 COPY services/ai-engine/app/ ./app/
+COPY services/__init__.py ./services/__init__.py
+COPY services/observability.py ./services/observability.py
+COPY services/cors.py ./services/cors.py
 COPY config/ ./config/
 
 EXPOSE 8090

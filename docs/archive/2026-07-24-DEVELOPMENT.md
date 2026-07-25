@@ -1,3 +1,5 @@
+> ARCHIVED 2026-07-24 — superseded by the reviewed architecture plan (see docs/ARCHITECTURE_PLAN.md). Retained for reference.
+
 # Development Guide
 
 ## Table of Contents
@@ -23,7 +25,7 @@
 For day-to-day status (open work, recent changes, what's shipped) read
 `git log` and the PR queue rather than a doc — those are the authoritative
 sources. The current open improvement list lives in
-[`REPO_IMPROVEMENTS_REVIEW.md`](REPO_IMPROVEMENTS_REVIEW.md).
+[`REPO_IMPROVEMENTS_REVIEW.md`](2026-07-24-REPO_IMPROVEMENTS_REVIEW.md) (archived alongside this doc).
 
 ## Development Setup
 

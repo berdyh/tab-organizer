@@ -5,7 +5,13 @@ import types
 
 import pytest
 
-from services.browser_engine.app.tabs.cdp import CDPTabHarvester, validate_cdp_url
+from services.browser_engine.app.tabs import cdp as cdp_module
+from services.browser_engine.app.tabs.cdp import (
+    CDPConnectionError,
+    CDPTabHarvester,
+    resolve_cdp_connect_url,
+    validate_cdp_url,
+)
 
 
 def _install_playwright_stub() -> None:
@@ -112,6 +118,107 @@ def test_validate_cdp_url_allows_only_local_control_plane():
 
     with pytest.raises(ValueError, match="http"):
         validate_cdp_url("file:///tmp/socket")
+
+
+def test_resolve_cdp_connect_url_rewrites_host_docker_internal_to_ip(monkeypatch):
+    # WI0 B2: the validator accepts host.docker.internal as input, but Chrome's
+    # debug port rejects that Host header. Connect via the resolved IP instead.
+    monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "172.17.0.1")
+    assert (
+        resolve_cdp_connect_url("http://host.docker.internal:9222")
+        == "http://172.17.0.1:9222"
+    )
+
+
+def test_resolve_cdp_connect_url_leaves_localhost_untouched(monkeypatch):
+    # localhost/IP forms are valid Chrome Host headers and must not be resolved.
+    def _fail(host):
+        raise AssertionError("localhost must not be DNS-resolved")
+
+    monkeypatch.setattr(cdp_module.socket, "gethostbyname", _fail)
+    assert resolve_cdp_connect_url("http://localhost:9222") == "http://localhost:9222"
+    assert resolve_cdp_connect_url("http://127.0.0.1:9222") == "http://127.0.0.1:9222"
+
+
+def test_resolve_cdp_connect_url_reports_unresolvable_host(monkeypatch):
+    def _raise(host):
+        raise OSError("Name or service not known")
+
+    monkeypatch.setattr(cdp_module.socket, "gethostbyname", _raise)
+    with pytest.raises(CDPConnectionError) as excinfo:
+        resolve_cdp_connect_url("http://host.docker.internal:9222")
+    error = excinfo.value
+    assert error.code == "cdp_host_unresolvable"
+    assert "host.docker.internal" in error.cause
+    assert error.fix
+
+
+def test_resolve_cdp_connect_url_rejects_non_local_resolved_address(monkeypatch):
+    # A poisoned/misconfigured resolver must not be able to point the
+    # local-only CDP client at a public/remote address.
+    monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "8.8.8.8")
+    with pytest.raises(CDPConnectionError) as excinfo:
+        resolve_cdp_connect_url("http://host.docker.internal:9222")
+    error = excinfo.value
+    assert error.code == "cdp_resolved_address_not_local"
+    assert "8.8.8.8" in error.cause
+    assert error.fix
+
+
+@pytest.mark.asyncio
+async def test_harvester_connects_via_resolved_ip(monkeypatch):
+    monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "172.17.0.1")
+    browser = FakeBrowser([FakePage("https://example.com/a", "A", "content a")])
+    playwright = FakePlaywright(browser)
+
+    harvester = CDPTabHarvester(
+        cdp_url="http://host.docker.internal:9222",
+        playwright_factory=FakePlaywrightFactory(playwright),
+        max_concurrent=1,
+    )
+
+    await harvester.harvest()
+
+    # Validator keeps the friendly form; the wire connection uses the IP.
+    assert harvester.cdp_url == "http://host.docker.internal:9222"
+    assert playwright.chromium.connected_urls == ["http://172.17.0.1:9222"]
+
+
+@pytest.mark.asyncio
+async def test_harvester_connect_failure_raises_actionable_error(monkeypatch):
+    monkeypatch.setattr(cdp_module.socket, "gethostbyname", lambda host: "172.17.0.1")
+
+    class FailingChromium:
+        def __init__(self):
+            self.connected_urls: list[str] = []
+
+        async def connect_over_cdp(self, url):
+            self.connected_urls.append(url)
+            raise ConnectionRefusedError("connection refused")
+
+    class FailingPlaywright:
+        def __init__(self):
+            self.chromium = FailingChromium()
+            self.stopped = False
+
+        async def stop(self):
+            self.stopped = True
+
+    playwright = FailingPlaywright()
+    harvester = CDPTabHarvester(
+        cdp_url="http://host.docker.internal:9222",
+        playwright_factory=FakePlaywrightFactory(playwright),
+        max_concurrent=1,
+    )
+
+    with pytest.raises(CDPConnectionError) as excinfo:
+        await harvester.harvest()
+
+    error = excinfo.value
+    assert error.code == "cdp_connect_failed"
+    assert "172.17.0.1:9222" in error.cause
+    assert "socat" in error.fix
+    assert playwright.stopped is True
 
 
 @pytest.mark.asyncio
