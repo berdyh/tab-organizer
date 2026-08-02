@@ -151,11 +151,17 @@ class SyncAPIClient:
         )
 
     def search(self, query: str, session_id: Optional[str] = None) -> dict:
+        # Routed through Backend Core (not ai_url), mirroring chat() (WI0 B7):
+        # POST /api/v1/search merges SQLite FTS keyword hits with ai-engine
+        # semantic hits, so calling ai_url directly silently dropped the
+        # keyword leg and made UI results diverge from the documented API.
+        # Response shape ({"results": [...], "count", "mode"}) is unchanged,
+        # so callers (chatbot.py) need no adaptation.
         return self._request(
             "POST",
-            f"{self.ai_url}/search",
+            f"{self.backend_url}/search",
             json={"query": query, "session_id": session_id},
-            headers=self._ai_headers(),
+            headers=self._backend_agent_headers(),
         )
 
     def summarize_session(self, session_id: str) -> dict:

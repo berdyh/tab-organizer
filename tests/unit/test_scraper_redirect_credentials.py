@@ -461,10 +461,12 @@ async def test_stored_and_ambient_cookies_emit_one_valid_cookie_header(
 # --- A drop must never be silent (R2) -------------------------------------
 #
 # `https://example.com/report -> https://www.example.com/report` is an ordinary
-# canonical redirect. The strict host comparison is kept on purpose — the
-# credential store holds a bare `{name: value}` dict with no domain metadata,
-# so nothing in it says the cookie was meant for `www` — but the consequence is
-# that the scrape returns the logged-OUT page. Reporting that as
+# canonical redirect. These calls pass NO `CredentialScope`, which is the
+# documented behavior for a credential stored without one: the rule falls back
+# to strict exact host and the hop drops. A credential submitted through the
+# store now carries a scope covering the apex/`www` pair and survives the same
+# redirect — see `tests/unit/test_credential_domain_scope.py`. When a drop does
+# happen the scrape returns the logged-OUT page, and reporting that as
 # `status='success', auth_used=True` files public content as an authenticated
 # capture and feeds a false positive to the "authenticated capture => local
 # embeddings" gate.

@@ -2,12 +2,15 @@
 
 import asyncio
 import ipaddress
+import json
 import logging
 import re
 import socket
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
+from typing import Any, NoReturn, Optional, Union
 from urllib.parse import urlparse, urlunparse
+
+import httpx
 
 from services.observability import log_event
 from services.url_safety import validate_scrape_url
@@ -56,6 +59,13 @@ LOCAL_CDP_NETWORKS: tuple[Union[ipaddress.IPv4Network, ipaddress.IPv6Network], .
 # allowed input host (notably `host.docker.internal`) must be resolved to its
 # IP before the URL is handed to Playwright. See WI0 B2.
 CHROME_HOST_HEADER_SAFE = {"localhost", "127.0.0.1", "::1"}
+
+# The websocket endpoint the debug server advertises is attacker-reachable data
+# (see `resolve_cdp_ws_endpoint`), so reading it is bounded like any untrusted
+# response: one short timeout, no redirects, no proxy env, and a body cap.
+CDP_WS_SCHEMES = {"ws", "wss"}
+CDP_VERSION_TIMEOUT_SECONDS = 10.0
+CDP_VERSION_MAX_BYTES = 64 * 1024
 
 
 class CDPConnectionError(RuntimeError):
@@ -266,6 +276,189 @@ def _cdp_connect_failure(cdp_url: str, error: Exception) -> CDPConnectionError:
     )
 
 
+def _ws_endpoint_refused(connect_url: str, advertised: Any, reason: str) -> NoReturn:
+    """Log and raise for a debug endpoint that advertised an unusable socket."""
+    log_event(
+        "cdp.ws_endpoint_rejected",
+        level=logging.WARNING,
+        connect_url=connect_url,
+        advertised=str(advertised)[:200],
+        reason=reason,
+    )
+    raise CDPConnectionError(
+        code="cdp_ws_endpoint_not_local",
+        cause=(
+            f"Chrome debug endpoint {connect_url} advertised websocket endpoint "
+            f"{str(advertised)[:200]!r}, which {reason}; refusing to attach a "
+            "local-only CDP client to an endpoint it did not validate"
+        ),
+        fix=(
+            "The websocket endpoint a debug server advertises must be the same "
+            "host and port that was attached to. Confirm CDP_URL points at your "
+            "own Chrome debug port and that nothing (a proxy, a redirect, or "
+            "another process bound to that address) is answering for it."
+        ),
+    )
+
+
+def _same_cdp_host(advertised_host: str, pinned_host: str) -> bool:
+    """Return whether an advertised host is the exact host that was pinned.
+
+    Compared as addresses when both parse as one, so alternate spellings of the
+    same IP (`::1` vs `0:0:0:0:0:0:0:1`) match, and as exact lowercased strings
+    otherwise. Deliberately strict: `127.0.0.1` does not match `localhost`,
+    because name-to-address equivalence is exactly the resolver-controlled step
+    the pinning exists to remove.
+    """
+    advertised = advertised_host.lower()
+    pinned = pinned_host.lower()
+    if advertised == pinned:
+        return True
+    try:
+        return ipaddress.ip_address(advertised) == ipaddress.ip_address(pinned)
+    except ValueError:
+        return False
+
+
+def validate_ws_debugger_url(advertised: Any, connect_url: str) -> str:
+    """Return the advertised websocket endpoint or raise `CDPConnectionError`.
+
+    Applies the same local-only rules the connect URL passed: ws/wss scheme, no
+    credentials, the exact pinned host, the exact pinned port, and -- checked
+    independently of the host comparison so a hole in one is not a hole in both
+    -- an address inside `LOCAL_CDP_NETWORKS` (or one of the literal local host
+    forms Chrome's Host-header check permits).
+    """
+    if not isinstance(advertised, str) or not advertised.strip():
+        _ws_endpoint_refused(
+            connect_url, advertised, "is missing or is not a websocket URL string"
+        )
+
+    candidate = advertised.strip()
+    # Refused before parsing: a control character or space can mean one thing to
+    # `urlparse` here and another to the WHATWG parser and websocket client on
+    # the Node side, and CRLF in a path is request-smuggling material.
+    if any(ord(char) < 0x21 or ord(char) == 0x7F for char in candidate):
+        _ws_endpoint_refused(
+            connect_url, advertised, "contains control characters or whitespace"
+        )
+
+    parsed = urlparse(candidate)
+    if parsed.scheme not in CDP_WS_SCHEMES:
+        _ws_endpoint_refused(connect_url, advertised, "does not use the ws/wss scheme")
+    if parsed.username or parsed.password:
+        _ws_endpoint_refused(connect_url, advertised, "carries embedded credentials")
+    if not parsed.hostname:
+        _ws_endpoint_refused(connect_url, advertised, "has no host")
+
+    pinned = urlparse(connect_url)
+    hostname = (parsed.hostname or "").lower()
+    if not _same_cdp_host(hostname, (pinned.hostname or "").lower()):
+        _ws_endpoint_refused(
+            connect_url,
+            advertised,
+            f"points at host {hostname!r} rather than the attached endpoint",
+        )
+    if parsed.port != pinned.port:
+        _ws_endpoint_refused(
+            connect_url,
+            advertised,
+            f"points at port {parsed.port!r} rather than the attached port",
+        )
+
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is None:
+        if hostname not in CHROME_HOST_HEADER_SAFE:
+            _ws_endpoint_refused(
+                connect_url, advertised, "is not in the local-attach allowlist"
+            )
+    elif not _is_local_cdp_address(address):
+        _ws_endpoint_refused(
+            connect_url, advertised, "is not in the local-attach allowlist"
+        )
+
+    # Emitted in canonical form so the string Playwright parses cannot spell the
+    # validated host any other way.
+    emit_host = str(address) if address is not None else hostname
+    return urlunparse(
+        (
+            parsed.scheme,
+            _format_netloc(emit_host, parsed.port),
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            "",
+        )
+    )
+
+
+async def _fetch_cdp_version(connect_url: str) -> dict[str, Any]:
+    """Read `/json/version` from the pinned endpoint as untrusted data."""
+    url = f"{connect_url.rstrip('/')}/json/version"
+    try:
+        async with httpx.AsyncClient(
+            timeout=CDP_VERSION_TIMEOUT_SECONDS,
+            # A 3xx must not move this request off the pinned address, and
+            # proxy env vars must not reroute a local-only call.
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            async with client.stream("GET", url) as response:
+                if response.status_code != 200:
+                    _ws_endpoint_refused(
+                        connect_url,
+                        f"HTTP {response.status_code}",
+                        "did not answer /json/version with 200",
+                    )
+                body = b""
+                async for chunk in response.aiter_bytes():
+                    body += chunk
+                    if len(body) > CDP_VERSION_MAX_BYTES:
+                        _ws_endpoint_refused(
+                            connect_url,
+                            f"{len(body)} bytes",
+                            "returned an oversized /json/version body",
+                        )
+    except httpx.HTTPError as error:
+        raise _cdp_connect_failure(connect_url, error) from error
+
+    try:
+        payload = json.loads(body)
+    except ValueError as error:
+        _ws_endpoint_refused(connect_url, body[:200], f"is not JSON: {error}")
+    if not isinstance(payload, dict):
+        _ws_endpoint_refused(connect_url, payload, "is not a /json/version object")
+    return payload
+
+
+async def resolve_cdp_ws_endpoint(connect_url: str) -> str:
+    """Return the validated websocket endpoint to hand Playwright.
+
+    `connect_over_cdp` given an http(s) URL fetches `/json/version` from it and
+    then dials whatever `webSocketDebuggerUrl` the response body contains --
+    following cross-host redirects and honouring proxy env vars on the way
+    (playwright-core `server/chromium/chromium.js:urlToWSEndpoint` +
+    `utils/network.js:httpRequest`, unchanged from 1.41 through 1.57). Pinning
+    the connect address therefore pins only the *first* hop: anything that can
+    answer on that address chooses the socket Playwright ends up on.
+
+    So the fetch happens here instead, under this module's rules, and Playwright
+    is handed a ws:// URL -- which `urlToWSEndpoint` returns untouched, skipping
+    its fetch, its redirect chain and its proxy lookup entirely.
+
+    `webSocketDebuggerUrl` is the only field of that response consumed by
+    anything: Playwright ignores the rest (`Browser`, `Protocol-Version`,
+    `User-Agent`, `V8-Version`, `WebKit-Version`), and neither this module nor
+    Playwright's attach path reads `/json/list` -- target URLs arrive over the
+    validated CDP socket and still pass `_is_importable_page`.
+    """
+    payload = await _fetch_cdp_version(connect_url)
+    return validate_ws_debugger_url(payload.get("webSocketDebuggerUrl"), connect_url)
+
+
 def _is_importable_page(url: str) -> bool:
     """Return whether a browser target should be imported as a content tab."""
     if not url:
@@ -387,15 +580,16 @@ class CDPTabHarvester:
         playwright = await self._start_playwright()
         try:
             connect_url = resolve_cdp_connect_url(self.cdp_url)
+            ws_endpoint = await resolve_cdp_ws_endpoint(connect_url)
         except CDPConnectionError:
             await playwright.stop()
             raise
         try:
-            browser = await playwright.chromium.connect_over_cdp(connect_url)
+            browser = await playwright.chromium.connect_over_cdp(ws_endpoint)
             return playwright, browser
         except Exception as error:
             await playwright.stop()
-            raise _cdp_connect_failure(connect_url, error) from error
+            raise _cdp_connect_failure(ws_endpoint, error) from error
 
     async def harvest(self, max_tabs: Optional[int] = None) -> TabHarvestResult:
         """Import visible HTTP(S) pages from the attached browser."""

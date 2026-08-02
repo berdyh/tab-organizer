@@ -2,9 +2,14 @@
 
 import argparse
 import json
+import re
+import subprocess
+from pathlib import Path
 
 from scripts import cli
 from scripts.mcp import tabs as mcp_tabs
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _host_ai_args(**overrides):
@@ -128,6 +133,164 @@ def test_host_ai_rewrites_docker_ollama_host_and_sets_token(monkeypatch):
     assert env["AI_ENGINE_API_TOKEN"] == "token-AI_ENGINE_API_TOKEN"
     assert env["BACKEND_CALLBACK_TOKEN"] == "token-BACKEND_CALLBACK_TOKEN"
     assert env["AI_ENGINE_API_TOKEN"] != env["BACKEND_CALLBACK_TOKEN"]
+
+
+def test_host_ai_parser_default_host_is_not_bound_to_all_interfaces():
+    """Source-level guard in the spirit of
+    test_runtime_auth_config.py::test_published_ports_are_bound_to_loopback:
+    that test only covers docker-compose.yml's published ports, so this is
+    the host-ai equivalent for the one bind that runs on the operator's own
+    machine, outside Docker."""
+    source = (ROOT / "scripts" / "cli.py").read_text()
+    match = re.search(
+        r'host_ai_parser\.add_argument\(\s*"--host",\s*default=([^,\n]+),',
+        source,
+    )
+    assert match, "could not find host-ai's --host argument definition"
+    assert match.group(1).strip() != '"0.0.0.0"', (
+        "host-ai's --host default binds every interface, exposing the "
+        "host-run AI Engine to the whole LAN"
+    )
+
+
+def test_host_ai_cli_parses_host_default_as_none():
+    parser = cli.build_parser()
+    args = parser.parse_args(["host-ai"])
+    assert args.host is None
+
+
+def test_resolve_host_ai_bind_host_returns_explicit_value_verbatim():
+    assert cli.resolve_host_ai_bind_host("127.0.0.1") == "127.0.0.1"
+    assert cli.resolve_host_ai_bind_host("203.0.113.5") == "203.0.113.5"
+
+
+def test_resolve_host_ai_bind_host_honors_explicit_wide_open_opt_in(capsys):
+    # 0.0.0.0 is still allowed when the operator asks for it explicitly --
+    # this is an opt-in widening, not the default -- but it must warn loudly.
+    assert cli.resolve_host_ai_bind_host("0.0.0.0") == "0.0.0.0"
+    assert "0.0.0.0" in capsys.readouterr().err
+
+
+def test_resolve_host_ai_bind_host_discovers_bridge_gateway_when_unset(monkeypatch):
+    monkeypatch.setattr(cli, "discover_docker_bridge_gateway", lambda: "172.21.0.1")
+    assert cli.resolve_host_ai_bind_host(None) == "172.21.0.1"
+
+
+def test_resolve_host_ai_bind_host_fails_loudly_when_bridge_undiscoverable(
+    monkeypatch,
+):
+    monkeypatch.setattr(cli, "discover_docker_bridge_gateway", lambda: None)
+    try:
+        cli.resolve_host_ai_bind_host(None)
+    except SystemExit as error:
+        assert "bridge gateway" in str(error)
+        assert "0.0.0.0" not in str(error) or "--host" in str(error)
+    else:
+        raise AssertionError(
+            "expected resolve_host_ai_bind_host to fail closed, not guess"
+        )
+
+
+def test_discover_docker_bridge_gateway_parses_matching_network(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "network", "ls"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="bridge\nresiduals_tab-organizer-network\nhost\n",
+                stderr="",
+            )
+        if cmd[:3] == ["docker", "network", "inspect"]:
+            assert cmd[3] == "residuals_tab-organizer-network"
+            return subprocess.CompletedProcess(cmd, 0, stdout="172.21.0.1\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.discover_docker_bridge_gateway() == "172.21.0.1"
+    assert len(calls) == 2
+
+
+def test_discover_docker_bridge_gateway_returns_none_when_docker_unavailable(
+    monkeypatch,
+):
+    def raise_missing(cmd, **kwargs):
+        raise FileNotFoundError("docker not found")
+
+    monkeypatch.setattr(cli.subprocess, "run", raise_missing)
+
+    assert cli.discover_docker_bridge_gateway() is None
+
+
+def test_discover_docker_bridge_gateway_returns_none_on_ambiguous_match(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="foo_tab-organizer-network\nbar_tab-organizer-network\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.discover_docker_bridge_gateway() is None
+
+
+def test_discover_docker_bridge_gateway_returns_none_on_garbage_gateway(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["docker", "network", "ls"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="tab-organizer-network\n", stderr=""
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="not-an-ip\n", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.discover_docker_bridge_gateway() is None
+
+
+def test_cmd_host_ai_binds_discovered_gateway_not_wide_open(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(cli, "discover_docker_bridge_gateway", lambda: "172.22.0.1")
+    monkeypatch.setattr(
+        cli,
+        "run_command",
+        lambda cmd, env=None, **kwargs: calls.append({"cmd": cmd, "env": env}),
+    )
+
+    cli.cmd_host_ai(_host_ai_args(host=None))
+
+    assert calls
+    cmd = calls[0]["cmd"]
+    host_index = cmd.index("--host")
+    assert cmd[host_index + 1] == "172.22.0.1"
+    assert "0.0.0.0" not in cmd
+
+
+def test_cmd_host_ai_fails_closed_when_bridge_undiscoverable(monkeypatch):
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(cli, "discover_docker_bridge_gateway", lambda: None)
+    monkeypatch.setattr(
+        cli,
+        "run_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("run_command must not be reached")
+        ),
+    )
+
+    try:
+        cli.cmd_host_ai(_host_ai_args(host=None))
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("expected cmd_host_ai to fail closed, not bind 0.0.0.0")
 
 
 def test_start_host_ai_sets_container_url_token_and_disables_ai_container(monkeypatch):
