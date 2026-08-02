@@ -70,3 +70,4 @@ tmp/
 temp/
 *.tmp
 .gstack/
+.claude/work-log/
