@@ -168,29 +168,57 @@ models:
     description: "Anthropic balanced model"
     context_length: 200000
 
+  haiku:
+    provider: claude_code
+    type: llm
+    description: "Claude Code Haiku alias — cheapest tier, for bulk mechanical
+      generation (cluster labels, facets, per-page summaries) where volume is
+      high and nobody is waiting on the answer"
+    context_length: 200000
+    tier: low
+    recommended: true
+
   sonnet:
     provider: claude_code
     type: llm
-    description: "Claude Code Sonnet alias via local subscription"
+    description: "Claude Code Sonnet alias via local subscription — the
+      interactive default: chat, reasoning, coding, anything a human waits on"
     context_length: 200000
+    tier: mid
+    recommended: true
 
   opus:
     provider: claude_code
     type: llm
-    description: "Claude Code Opus alias via local subscription"
+    description: "Claude Code Opus alias via local subscription — top tier,
+      opt-in only. Never wire this to a default or a bulk path"
     context_length: 200000
+    tier: high
 
   codex-default:
     provider: codex_cli
     type: llm
     description: "Codex CLI default model via local ChatGPT/Codex auth"
     context_length: 128000
+    tier: mid
+    recommended: true
 
   gpt-5:
     provider: codex_cli
     type: llm
     description: "Codex CLI GPT-5 model via local ChatGPT/Codex auth"
     context_length: 400000
+    tier: high
+
+  gpt-5.6-sol:
+    provider: codex_cli
+    type: llm
+    description: "Codex CLI reasoning model. Verified working on ChatGPT-account
+      auth 2026-07-24; plain `gpt-5.6` 400s on that auth. Pair with
+      -c model_reasoning_effort=\"xhigh\" for review work. Slow and expensive —
+      adversarial review, not bulk"
+    context_length: 400000
+    tier: high
 
   codex-acp-default:
     provider: codex_acp
@@ -218,23 +246,82 @@ models:
     max_tokens: 2048
 
 defaults:
-  provider: "openrouter"
+  # READ AT services/ai-engine/app/core/llm_client.py:151 — this is the
+  # EMBEDDING FALLBACK, not the LLM default. The LLM provider comes from
+  # AI_PROVIDER (hardcoded fallback "openrouter" at llm_client.py:115).
+  #
+  # It must name an embedding-capable provider, because every subscription CLI
+  # provider (claude_code, codex_cli, codex_acp) declares `embeddings: false`.
+  # Choosing one of those for the LLM forces this fallback. Pointing it at
+  # ollama is what lets a local subscription-routed setup work with NO API key
+  # at all: the subscription answers LLM calls you already pay for, and
+  # embeddings run locally for free. Pointing it at a cloud provider silently
+  # reintroduces a paid dependency on the "free" local path.
+  provider: "ollama"
+
+  # ADVISORY ONLY. Surfaced through LLMClient.get_use_case_recommendation()
+  # (llm_client.py:650); nothing routes on it yet. It records the intended
+  # cost policy so the router, when built, has a spec instead of a guess.
+  #
+  # Policy: cheapest tier that can do the job. Bulk mechanical generation runs
+  # on a low tier or locally; the interactive tier is reserved for work a human
+  # is waiting on. See ARCHITECTURE_PLAN premise 2 for why bulk and interactive
+  # are separated.
   use_cases:
-    reasoning:
-      provider: "openrouter"
-      model: "openai/gpt-4o-mini"
+    # Bulk mechanical generation: cluster labels, facet extraction, per-page
+    # summaries. High volume, low stakes, nobody waiting. Cheapest tier.
+    bulk_labeling:
+      provider: "claude_code"
+      model: "haiku"
+    bulk_labeling_offline:
+      provider: "ollama"
+      model: "llama3.2:3b"
+
+    # Interactive: a human is waiting on this. Mid tier.
     chat:
-      provider: "openrouter"
-      model: "openai/gpt-4o-mini"
+      provider: "claude_code"
+      model: "sonnet"
+    reasoning:
+      provider: "claude_code"
+      model: "sonnet"
     coding:
       provider: "claude_code"
       model: "sonnet"
+
+    # Top tier is opt-in only — never a default. Reach for it deliberately.
+    deep_analysis:
+      provider: "claude_code"
+      model: "opus"
+
+    # API-key fallbacks for when no subscription CLI is available (the stock
+    # Docker image ships none of those binaries — see the note below).
+    chat_api:
+      provider: "openrouter"
+      model: "openai/gpt-4o-mini"
+
+    # Embeddings are never a subscription CLI — those cannot embed at all.
+    # Local first: free, no key, and required anyway by the plan's hard gate
+    # that authenticated captures must not be embedded by a cloud provider.
     embeddings:
+      provider: "ollama"
+      model: "nomic-embed-text"
+    embeddings_cloud:
       provider: "openrouter"
       model: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
     embeddings_quality:
       provider: "openrouter"
       model: "qwen/qwen3-embedding-4b:free"
+
+# Subscription CLI routing (claude_code / codex_cli / codex_acp) is the
+# preferred LOCAL mode: it spends a subscription you already have instead of
+# metered API credit. It cannot be the in-container default — the stock image
+# ships none of those binaries — so reach it with:
+#
+#   ./scripts/cli.py host-ai --provider claude_code   # runs AI Engine on the host
+#   ./scripts/cli.py start -d --host-ai               # points containers at it
+#
+# That path already defaults EMBEDDING_PROVIDER to ollama (scripts/cli.py:363),
+# which agrees with defaults.provider above.
 
 ui_options:
   group_by_provider: true
