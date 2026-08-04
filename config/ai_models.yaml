@@ -1,16 +1,58 @@
 # AI Models Configuration
+#
+# ROUTING POLICY (see `routing:` at the bottom — this is the contract):
+#   1. Local subscription CLIs (claude_code, codex_cli) are PREFERRED. They
+#      spend a subscription you already have instead of metered credit.
+#   2. Nothing falls back silently. Ever. If the preferred provider is
+#      unavailable, the service fails closed with an actionable error and the
+#      CLI asks you to choose. A provider is never selected on your behalf.
+#   3. The active provider is always announced — at startup, in /health, and
+#      in the UI. You should never have to guess who answered a request.
+#
+# Model IDs and prices below were verified against
+# https://openrouter.ai/api/v1/models and registry.ollama.ai on 2026-08-04.
+# Prices are USD per million tokens, prompt -> completion.
 
 providers:
-  openrouter:
-    type: cloud
-    base_url: "https://openrouter.ai/api/v1"
-    api_key_env: "OPENROUTER_API_KEY"
+  claude_code:
+    type: local_cli
+    command_env: "CLAUDE_CODE_COMMAND"
+    # PREFERRED. Uses the user's Claude subscription via the local CLI.
+    # Not present in the stock Docker image -- reachable only through
+    # `./scripts/cli.py host-ai --provider claude_code`.
+    preference: 1
+    cost_model: subscription
     supports:
       llm: true
-      embeddings: true
+      embeddings: false   # cannot embed -- see the embeddings note in routing
     default_models:
-      llm: "openai/gpt-4o-mini"
-      embedding: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+      llm: "sonnet"
+      embedding: null
+
+  codex_cli:
+    type: local_cli
+    command_env: "CODEX_CLI_COMMAND"
+    # PREFERRED. Uses the user's ChatGPT/Codex subscription via the local CLI.
+    preference: 1
+    cost_model: subscription
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "gpt-5.6-luna"
+      embedding: null
+
+  codex_acp:
+    type: local_acp
+    command_env: "CODEX_ACP_COMMAND"
+    preference: 2
+    cost_model: subscription
+    supports:
+      llm: true
+      embeddings: false
+    default_models:
+      llm: "codex-acp-default"
+      embedding: null
 
   ollama:
     type: local
@@ -19,28 +61,78 @@ providers:
     # OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434} passthrough override it to
     # the Docker service name for every in-container ai-engine process.
     base_url: "http://localhost:11434"
+    # OPT-IN ONLY. Free and private, but it is never selected automatically --
+    # it needs models pulled first, and silently routing to a local model
+    # changes answer quality without the user knowing. Choose it deliberately.
+    preference: 3
+    requires_explicit_opt_in: true
+    cost_model: free_local
     supports:
       llm: true
       embeddings: true
     default_models:
-      llm: "llama3.2:3b"
+      llm: "qwen3"
       embedding: "nomic-embed-text"
+
+  openrouter:
+    type: cloud
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    # ALWAYS AVAILABLE, NEVER AUTOMATIC. This is the paid metered path. It is
+    # offered only after the subscription CLIs are found unavailable, requires
+    # an explicit choice, and every response routed here is labelled as such.
+    preference: 4
+    requires_explicit_opt_in: true
+    cost_model: metered
+    supports:
+      llm: true
+      # VERIFIED FALSE 2026-08-04: OpenRouter serves NO embedding models. All
+      # 338 catalog entries were scanned; none has an embedding modality. The
+      # three embedding IDs previously listed here
+      # (nvidia/llama-nemotron-embed-vl-1b-v2:free, qwen/qwen3-embedding-4b:free,
+      # qwen/qwen3-embedding-0.6b:free) do not exist -- indexing failed even
+      # with a valid API key. Do not re-add embeddings here without checking
+      # the live API first.
+      embeddings: false
+    default_models:
+      llm: "openai/gpt-5.6-luna"
+      embedding: null
 
   openai:
     type: cloud
     base_url: "https://api.openai.com/v1"
     api_key_env: "OPENAI_API_KEY"
+    preference: 5
+    requires_explicit_opt_in: true
+    cost_model: metered
+    supports:
+      llm: true
+      embeddings: true    # a real cloud embedding option, unlike openrouter
+    default_models:
+      llm: "gpt-4o-mini"
+      embedding: "text-embedding-3-small"
+
+  gemini:
+    type: cloud
+    base_url: "https://generativelanguage.googleapis.com"
+    api_key_env: "GOOGLE_API_KEY"
+    preference: 5
+    requires_explicit_opt_in: true
+    cost_model: metered
     supports:
       llm: true
       embeddings: true
     default_models:
-      llm: "gpt-4o-mini"
-      embedding: "text-embedding-3-small"
+      llm: "gemini-2.5-flash-lite"
+      embedding: "text-embedding-004"
 
   anthropic:
     type: cloud
     base_url: "https://api.anthropic.com"
     api_key_env: "ANTHROPIC_API_KEY"
+    preference: 5
+    requires_explicit_opt_in: true
+    cost_model: metered
     supports:
       llm: true
       embeddings: false
@@ -48,40 +140,13 @@ providers:
       llm: "claude-3-5-sonnet-latest"
       embedding: null
 
-  claude_code:
-    type: local_cli
-    command_env: "CLAUDE_CODE_COMMAND"
-    supports:
-      llm: true
-      embeddings: false
-    default_models:
-      llm: "sonnet"
-      embedding: null
-
-  codex_cli:
-    type: local_cli
-    command_env: "CODEX_CLI_COMMAND"
-    supports:
-      llm: true
-      embeddings: false
-    default_models:
-      llm: "codex-default"
-      embedding: null
-
-  codex_acp:
-    type: local_acp
-    command_env: "CODEX_ACP_COMMAND"
-    supports:
-      llm: true
-      embeddings: false
-    default_models:
-      llm: "codex-acp-default"
-      embedding: null
-
   deepseek:
     type: cloud
     base_url: "https://api.deepseek.com"
     api_key_env: "DEEPSEEK_API_KEY"
+    preference: 5
+    requires_explicit_opt_in: true
+    cost_model: metered
     supports:
       llm: true
       embeddings: false
@@ -89,90 +154,13 @@ providers:
       llm: "deepseek-chat"
       embedding: null
 
-  gemini:
-    type: cloud
-    base_url: "https://generativelanguage.googleapis.com"
-    api_key_env: "GOOGLE_API_KEY"
-    supports:
-      llm: true
-      embeddings: true
-    default_models:
-      llm: "gemini-1.5-flash"
-      embedding: "text-embedding-004"
-
 models:
-  nvidia/llama-nemotron-embed-vl-1b-v2:free:
-    provider: openrouter
-    type: embedding
-    description: "Default OpenRouter embedding model"
-    dimensions: 1024
-    max_tokens: 8192
-    recommended: true
-
-  qwen/qwen3-embedding-4b:free:
-    provider: openrouter
-    type: embedding
-    description: "Higher-quality multilingual embedding alternative"
-    dimensions: 2560
-    max_tokens: 32768
-    recommended: true
-
-  qwen/qwen3-embedding-0.6b:free:
-    provider: openrouter
-    type: embedding
-    description: "Lower-latency Qwen embedding option"
-    dimensions: 1024
-    max_tokens: 32768
-
-  openai/gpt-4o-mini:
-    provider: openrouter
-    type: llm
-    description: "Balanced default LLM via OpenRouter"
-    context_length: 128000
-
-  openrouter/auto:
-    provider: openrouter
-    type: llm
-    description: "OpenRouter automatic model routing"
-    context_length: 128000
-
-  llama3.2:3b:
-    provider: ollama
-    type: llm
-    description: "Local default LLM"
-    context_length: 131072
-
-  nomic-embed-text:
-    provider: ollama
-    type: embedding
-    description: "Local embedding model"
-    dimensions: 768
-    max_tokens: 8192
-
-  gpt-4o-mini:
-    provider: openai
-    type: llm
-    description: "OpenAI fast model"
-    context_length: 128000
-
-  text-embedding-3-small:
-    provider: openai
-    type: embedding
-    description: "OpenAI embedding model"
-    dimensions: 1536
-    max_tokens: 8191
-
-  claude-3-5-sonnet-latest:
-    provider: anthropic
-    type: llm
-    description: "Anthropic balanced model"
-    context_length: 200000
-
+  # ---------------------------------------------------------------- claude_code
   haiku:
     provider: claude_code
     type: llm
-    description: "Claude Code Haiku alias — cheapest tier, for bulk mechanical
-      generation (cluster labels, facets, per-page summaries) where volume is
+    description: "Cheapest subscription tier. Bulk mechanical generation --
+      cluster labels, facet extraction, per-page summaries -- where volume is
       high and nobody is waiting on the answer"
     context_length: 200000
     tier: low
@@ -181,8 +169,8 @@ models:
   sonnet:
     provider: claude_code
     type: llm
-    description: "Claude Code Sonnet alias via local subscription — the
-      interactive default: chat, reasoning, coding, anything a human waits on"
+    description: "Interactive default: chat, reasoning, coding -- anything a
+      human is waiting on"
     context_length: 200000
     tier: mid
     recommended: true
@@ -190,53 +178,194 @@ models:
   opus:
     provider: claude_code
     type: llm
-    description: "Claude Code Opus alias via local subscription — top tier,
-      opt-in only. Never wire this to a default or a bulk path"
+    description: "Top tier, opt-in only. Never wire to a default or bulk path"
     context_length: 200000
     tier: high
 
-  codex-default:
+  # ------------------------------------------------------------------ codex_cli
+  # gpt-5 is deliberately ABSENT. gpt-5.6 supersedes it in three tiers, and the
+  # two below sol are affordable enough that gpt-5 has no remaining use case.
+  gpt-5.6-luna:
     provider: codex_cli
     type: llm
-    description: "Codex CLI default model via local ChatGPT/Codex auth"
-    context_length: 128000
-    tier: mid
+    description: "Cheapest gpt-5.6 tier ($0.10 -> $0.60 /Mtok on metered
+      pricing). The codex bulk and default tier"
+    context_length: 1050000
+    tier: low
     recommended: true
 
-  gpt-5:
+  gpt-5.6-terra:
     provider: codex_cli
     type: llm
-    description: "Codex CLI GPT-5 model via local ChatGPT/Codex auth"
-    context_length: 400000
-    tier: high
+    description: "Mid gpt-5.6 tier ($1.00 -> $6.00 /Mtok). Interactive work
+      that needs more than luna"
+    context_length: 1050000
+    tier: mid
+    recommended: true
 
   gpt-5.6-sol:
     provider: codex_cli
     type: llm
-    description: "Codex CLI reasoning model. Verified working on ChatGPT-account
-      auth 2026-07-24; plain `gpt-5.6` 400s on that auth. Pair with
-      -c model_reasoning_effort=\"xhigh\" for review work. Slow and expensive —
-      adversarial review, not bulk"
-    context_length: 400000
+    description: "Top gpt-5.6 tier ($5.00 -> $30.00 /Mtok -- 50x luna). Reserve
+      for adversarial review. Pair with -c model_reasoning_effort=\"xhigh\".
+      Verified on ChatGPT-account auth 2026-07-24; plain `gpt-5.6` 400s there"
+    context_length: 1050000
     tier: high
 
   codex-acp-default:
     provider: codex_acp
     type: llm
-    description: "Codex ACP harness via acpx; model is controlled by acpx/Codex config"
+    description: "Codex ACP harness via acpx; model controlled by acpx config"
     context_length: 128000
+    tier: mid
 
-  deepseek-chat:
-    provider: deepseek
+  # --------------------------------------------------------------------- ollama
+  qwen3:
+    provider: ollama
     type: llm
-    description: "DeepSeek chat model"
-    context_length: 128000
+    description: "Local default. Strong instruction following and multilingual
+      coverage at small size; better labeler than llama3.2:3b"
+    context_length: 32768
+    tier: low
+    recommended: true
 
-  gemini-1.5-flash:
+  gemma3:
+    provider: ollama
+    type: llm
+    description: "Local alternative, broad language coverage and vision input"
+    context_length: 128000
+    tier: low
+
+  llama3.2:3b:
+    provider: ollama
+    type: llm
+    description: "Smallest local option. Fits tight VRAM; weaker at structured
+      labeling than qwen3"
+    context_length: 131072
+    tier: low
+
+  nomic-embed-text:
+    provider: ollama
+    type: embedding
+    description: "Safe local embedding default. English-focused; near-zero on
+      cross-lingual tasks -- use bge-m3 or qwen3-embedding for multilingual"
+    dimensions: 768
+    max_tokens: 8192
+    recommended: true
+
+  embeddinggemma:
+    provider: ollama
+    type: embedding
+    description: "Google EmbeddingGemma (308M), newer on-device option"
+    dimensions: 768
+    max_tokens: 2048
+
+  bge-m3:
+    provider: ollama
+    type: embedding
+    description: "Multilingual and long-context local embedding"
+    dimensions: 1024
+    max_tokens: 8192
+    recommended: true
+
+  qwen3-embedding:
+    provider: ollama
+    type: embedding
+    description: "Highest local retrieval quality; competes with commercial
+      embedding APIs. Reach for it when retrieval accuracy is the bottleneck"
+    dimensions: 1024
+    max_tokens: 32768
+
+  # ----------------------------------------------------------------- openrouter
+  # Verified against the live API 2026-08-04. LLM only -- see the provider note.
+  openai/gpt-5.6-luna:
+    provider: openrouter
+    type: llm
+    description: "$0.10 -> $0.60 /Mtok, 1M context. Best cost/quality on the
+      metered path; the openrouter default"
+    context_length: 1050000
+    tier: low
+    recommended: true
+
+  openai/gpt-5.6-terra:
+    provider: openrouter
+    type: llm
+    description: "$1.00 -> $6.00 /Mtok, 1M context. Metered mid tier"
+    context_length: 1050000
+    tier: mid
+
+  openai/gpt-5.6-sol:
+    provider: openrouter
+    type: llm
+    description: "$5.00 -> $30.00 /Mtok. Metered top tier -- 50x luna. Review
+      work only, never bulk"
+    context_length: 1050000
+    tier: high
+
+  google/gemini-2.5-flash-lite:
+    provider: openrouter
+    type: llm
+    description: "$0.10 -> $0.40 /Mtok, 1M context. Cheapest completion pricing
+      among the quality tier"
+    context_length: 1048576
+    tier: low
+    recommended: true
+
+  qwen/qwen3.7-flash:
+    provider: openrouter
+    type: llm
+    description: "$0.03 -> $0.13 /Mtok, 1M context. Cheapest usable option for
+      high-volume mechanical labeling"
+    context_length: 1000000
+    tier: low
+    recommended: true
+
+  deepseek/deepseek-v4-flash-0731:
+    provider: openrouter
+    type: llm
+    description: "$0.09 -> $0.18 /Mtok, 1M context. Flat cheap completion"
+    context_length: 1048576
+    tier: low
+
+  openai/gpt-oss-20b:free:
+    provider: openrouter
+    type: llm
+    description: "Free tier. Rate-limited -- fine for a smoke test, will
+      throttle on a real corpus. Never a default"
+    context_length: 131072
+    tier: free
+
+  openrouter/auto:
+    provider: openrouter
+    type: llm
+    description: "OpenRouter automatic model routing -- it picks the model per
+      request, so cost and quality are not pinned. Useful as an escape hatch,
+      unsuitable where reproducibility matters"
+    context_length: 128000
+    tier: mid
+
+  # ---------------------------------------------------- direct cloud (API keys)
+  gpt-4o-mini:
+    provider: openai
+    type: llm
+    description: "OpenAI fast model"
+    context_length: 128000
+    tier: low
+
+  text-embedding-3-small:
+    provider: openai
+    type: embedding
+    description: "Cloud embedding option. NOTE: the plan's hard gate forbids
+      routing authenticated captures to a cloud embedder"
+    dimensions: 1536
+    max_tokens: 8191
+
+  gemini-2.5-flash-lite:
     provider: gemini
     type: llm
-    description: "Gemini speed model"
-    context_length: 1000000
+    description: "Gemini speed tier"
+    context_length: 1048576
+    tier: low
 
   text-embedding-004:
     provider: gemini
@@ -245,39 +374,70 @@ models:
     dimensions: 768
     max_tokens: 2048
 
+  claude-3-5-sonnet-latest:
+    provider: anthropic
+    type: llm
+    description: "Anthropic balanced model (direct API, metered)"
+    context_length: 200000
+    tier: mid
+
+  deepseek-chat:
+    provider: deepseek
+    type: llm
+    description: "DeepSeek chat model"
+    context_length: 128000
+    tier: low
+
+# ---------------------------------------------------------------------- routing
+# The contract the ai-engine and CLI implement. Read by config_loader; see
+# ARCHITECTURE_PLAN premise 2 for why bulk and interactive are separated.
+routing:
+  # Ordered preference for LLM work. The CLI probes these in order and asks the
+  # user to choose among what it finds. The SERVICE never picks for you.
+  llm_preference_order: ["claude_code", "codex_cli", "codex_acp"]
+
+  # Providers that must never be selected without an explicit user decision,
+  # even when they are the only thing that would work.
+  explicit_opt_in_required: ["ollama", "openrouter", "openai", "gemini", "anthropic", "deepseek"]
+
+  # Hard rule. There is no automatic fallback of any kind. When the selected
+  # provider cannot serve, the service raises a structured
+  # {code, cause, fix} error naming the provider and what to do about it.
+  # Silent substitution is what let a broken embedding path look healthy for
+  # months -- see WI0-B1 in ARCHITECTURE_PLAN.
+  silent_fallback: false
+
+  # Every response records which provider and model produced it, and the active
+  # pair is announced at startup, in GET /health, and in the UI.
+  announce_active_provider: true
+
 defaults:
-  # READ AT services/ai-engine/app/core/llm_client.py:151 — this is the
-  # EMBEDDING FALLBACK, not the LLM default. The LLM provider comes from
-  # AI_PROVIDER (hardcoded fallback "openrouter" at llm_client.py:115).
+  # NOT the LLM default -- AI_PROVIDER is. This is the embedding provider used
+  # when one is explicitly chosen and no model override is given.
   #
-  # It must name an embedding-capable provider, because every subscription CLI
-  # provider (claude_code, codex_cli, codex_acp) declares `embeddings: false`.
-  # Choosing one of those for the LLM forces this fallback. Pointing it at
-  # ollama is what lets a local subscription-routed setup work with NO API key
-  # at all: the subscription answers LLM calls you already pay for, and
-  # embeddings run locally for free. Pointing it at a cloud provider silently
-  # reintroduces a paid dependency on the "free" local path.
+  # It must name an embedding-capable provider. Every subscription CLI declares
+  # embeddings: false, and so does openrouter (it serves none). So the real
+  # choice is ollama (free, local, private) or an OpenAI/Gemini API key. Local
+  # is first because the plan's hard gate requires authenticated captures to be
+  # embedded locally regardless.
   provider: "ollama"
 
-  # ADVISORY ONLY. Surfaced through LLMClient.get_use_case_recommendation()
-  # (llm_client.py:650); nothing routes on it yet. It records the intended
-  # cost policy so the router, when built, has a spec instead of a guess.
-  #
-  # Policy: cheapest tier that can do the job. Bulk mechanical generation runs
-  # on a low tier or locally; the interactive tier is reserved for work a human
-  # is waiting on. See ARCHITECTURE_PLAN premise 2 for why bulk and interactive
-  # are separated.
   use_cases:
-    # Bulk mechanical generation: cluster labels, facet extraction, per-page
-    # summaries. High volume, low stakes, nobody waiting. Cheapest tier.
+    # Bulk mechanical generation: high volume, low stakes, nobody waiting.
     bulk_labeling:
       provider: "claude_code"
       model: "haiku"
+    bulk_labeling_codex:
+      provider: "codex_cli"
+      model: "gpt-5.6-luna"
     bulk_labeling_offline:
       provider: "ollama"
-      model: "llama3.2:3b"
+      model: "qwen3"
+    bulk_labeling_metered:
+      provider: "openrouter"
+      model: "qwen/qwen3.7-flash"
 
-    # Interactive: a human is waiting on this. Mid tier.
+    # Interactive: a human is waiting.
     chat:
       provider: "claude_code"
       model: "sonnet"
@@ -287,44 +447,35 @@ defaults:
     coding:
       provider: "claude_code"
       model: "sonnet"
+    chat_codex:
+      provider: "codex_cli"
+      model: "gpt-5.6-terra"
+    chat_metered:
+      provider: "openrouter"
+      model: "openai/gpt-5.6-luna"
 
-    # Top tier is opt-in only — never a default. Reach for it deliberately.
+    # Top tier is opt-in only -- never a default.
     deep_analysis:
       provider: "claude_code"
       model: "opus"
+    adversarial_review:
+      provider: "codex_cli"
+      model: "gpt-5.6-sol"
 
-    # API-key fallbacks for when no subscription CLI is available (the stock
-    # Docker image ships none of those binaries — see the note below).
-    chat_api:
-      provider: "openrouter"
-      model: "openai/gpt-4o-mini"
-
-    # Embeddings are never a subscription CLI — those cannot embed at all.
-    # Local first: free, no key, and required anyway by the plan's hard gate
-    # that authenticated captures must not be embedded by a cloud provider.
+    # Embeddings are never a subscription CLI and never openrouter.
     embeddings:
       provider: "ollama"
       model: "nomic-embed-text"
-    embeddings_cloud:
-      provider: "openrouter"
-      model: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+    embeddings_multilingual:
+      provider: "ollama"
+      model: "bge-m3"
     embeddings_quality:
-      provider: "openrouter"
-      model: "qwen/qwen3-embedding-4b:free"
-
-# Subscription CLI routing (claude_code / codex_cli / codex_acp) is the
-# preferred LOCAL mode: it spends a subscription you already have instead of
-# metered API credit. It cannot be the in-container default — the stock image
-# ships none of those binaries — so reach it with:
-#
-#   ./scripts/cli.py host-ai --provider claude_code   # runs AI Engine on the host
-#   ./scripts/cli.py start -d --host-ai               # points containers at it
-#
-# That path already defaults EMBEDDING_PROVIDER to ollama (scripts/cli.py:363),
-# which agrees with defaults.provider above.
+      provider: "ollama"
+      model: "qwen3-embedding"
 
 ui_options:
   group_by_provider: true
   show_metadata: true
-  filters: ["type", "provider", "recommended"]
-  sort_options: ["name", "recommended"]
+  show_active_provider_badge: true
+  filters: ["type", "provider", "recommended", "tier", "cost_model"]
+  sort_options: ["name", "recommended", "tier"]
