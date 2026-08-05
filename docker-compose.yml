@@ -190,6 +190,9 @@ services:
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
       - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
       - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
+      # The ingest suite proves the four scopes stay isolated, which means
+      # holding the other principals' tokens to watch them get rejected.
+      - BACKEND_AGENT_API_TOKEN=${BACKEND_AGENT_API_TOKEN:-}
     volumes:
       - ./tests:/app/tests
       - ./services:/app/services
@@ -218,6 +221,10 @@ services:
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
       - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
       - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
+      # Needed by the capture-ingest workflow: backend `/api/v1/search` is an
+      # agent-scoped route, and keyword search is how the E2E proves the FTS
+      # row landed in the same transaction as the ingest ledger row.
+      - BACKEND_AGENT_API_TOKEN=${BACKEND_AGENT_API_TOKEN:-}
     volumes:
       - ./tests:/app/tests
       - ./test-results:/app/test-results
