@@ -17,6 +17,12 @@ def browser_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def ai_headers() -> dict[str, str]:
+    """Every AI Engine endpoint except /health requires AI_ENGINE_API_TOKEN."""
+    token = os.getenv("AI_ENGINE_API_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 @pytest.fixture
 def client():
     """Create HTTP client."""
@@ -171,7 +177,7 @@ class TestAIEngineAPI:
     
     def test_get_providers(self, client):
         """Test getting provider info."""
-        response = client.get(f"{AI_URL}/providers")
+        response = client.get(f"{AI_URL}/providers", headers=ai_headers())
         assert response.status_code == 200
         data = response.json()
         assert "llm" in data

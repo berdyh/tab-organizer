@@ -17,7 +17,7 @@ from services.observability import RequestIDMiddleware, configure_logging, log_e
 
 from .chatbot.rag import Document, RAGChatbot
 from .clustering.pipeline import Tab, TabClusterer
-from .core.llm_client import LLMClient
+from .core.llm_client import LLMClient, ProviderSelectionError
 
 configure_logging("ai-engine")
 
@@ -182,6 +182,24 @@ ALLOWED_RUNTIME_API_KEYS = {
 }
 
 
+def _provider_error(exc: ProviderSelectionError, **context) -> HTTPException:
+    """Turn a selection/availability failure into a 503 that keeps its shape.
+
+    503, not 500: nothing is wrong with the request, the service simply has no
+    provider it is allowed to answer with. The `{code, cause, fix}` survives
+    into the body instead of being flattened to a string, so the caller (and
+    the UI) can act on it rather than parse prose.
+    """
+    log_event(
+        "provider.request_refused",
+        level=logging.ERROR,
+        code=exc.code,
+        reason=exc.cause,
+        **context,
+    )
+    return HTTPException(status_code=503, detail=exc.to_dict())
+
+
 def _require_ai_engine_auth(authorization: Optional[str] = Header(default=None)):
     """Protect generation and provider mutation endpoints with a shared token."""
     expected = os.getenv("AI_ENGINE_API_TOKEN", "").strip()
@@ -253,9 +271,15 @@ async def health():
     }
 
 
-# Provider info
+# Provider info. Authenticated like every other endpoint except /health: the
+# payload discloses which API keys are configured (`api_key_configured` per
+# provider) plus the whole model catalog and the structured selection errors.
+# CLAUDE.md already stated "ai-engine endpoints (except /health) require
+# AI_ENGINE_API_TOKEN"; this endpoint was the one that did not. Its only
+# non-test caller, `services/web-ui/src/api/client.py:get_providers()`, already
+# sends the bearer token.
 @app.get("/providers")
-async def get_providers():
+async def get_providers(_auth=Depends(_require_ai_engine_auth)):
     async with provider_state_lock:
         return llm_client.get_provider_info()
 
@@ -377,6 +401,8 @@ async def embed_texts(request: EmbedRequest, _auth=Depends(_require_ai_engine_au
             "count": len(embeddings),
             "dimensions": len(embeddings[0]) if embeddings else 0,
         }
+    except ProviderSelectionError as e:
+        raise _provider_error(e, endpoint="/embed")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -391,6 +417,8 @@ async def generate_text(
         async with provider_state_lock:
             result = await llm_client.generate(request.prompt, request.system)
         return {"text": result}
+    except ProviderSelectionError as e:
+        raise _provider_error(e, endpoint="/generate")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -413,12 +441,29 @@ async def cluster_urls(request: ClusterRequest, _auth=Depends(_require_ai_engine
         # Cluster
         async with provider_state_lock:
             clusters = await clusterer.cluster(tabs)
+            payload = clusterer.to_dict(clusters)
+            label_failures = clusterer.count_label_failures(clusters)
+
+        if label_failures:
+            log_event(
+                "cluster.labels_incomplete",
+                level=logging.WARNING,
+                session_id=request.session_id,
+                cluster_count=len(clusters),
+                label_failures=label_failures,
+            )
 
         return {
             "session_id": request.session_id,
-            "clusters": clusterer.to_dict(clusters),
+            "clusters": payload,
             "cluster_count": len(clusters),
+            # Best-effort label generation is counted and surfaced, per the
+            # repo's batch convention. A caller must be able to tell a run
+            # where every name is a placeholder from a successful one.
+            "label_failures": label_failures,
         }
+    except ProviderSelectionError as e:
+        raise _provider_error(e, endpoint="/cluster", session_id=request.session_id)
     except Exception as e:
         log_event(
             "cluster.failed",
@@ -456,6 +501,8 @@ async def index_documents(
             indexed=count,
         )
         return {"indexed": count}
+    except ProviderSelectionError as e:
+        raise _provider_error(e, endpoint="/index", session_id=request.session_id)
     except Exception as e:
         log_event(
             "index.failed",
@@ -477,6 +524,8 @@ async def chat(request: ChatRequest, _auth=Depends(_require_ai_engine_auth)):
                 top_k=request.top_k,
             )
         return result
+    except ProviderSelectionError as e:
+        raise _provider_error(e, endpoint="/chat", session_id=request.session_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -491,6 +540,8 @@ async def search(request: ChatRequest, _auth=Depends(_require_ai_engine_auth)):
                 top_k=request.top_k,
             )
         return {"results": results}
+    except ProviderSelectionError as e:
+        raise _provider_error(e, endpoint="/search", session_id=request.session_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -501,6 +552,8 @@ async def summarize_session(session_id: str, _auth=Depends(_require_ai_engine_au
         async with provider_state_lock:
             summary = await chatbot.summarize_session(session_id)
         return {"summary": summary}
+    except ProviderSelectionError as e:
+        raise _provider_error(e, endpoint="/summarize", session_id=session_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

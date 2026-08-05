@@ -106,14 +106,28 @@ def test_token_scope_matrix(request, door, principal):
         )
 
 
-AI_PROTECTED = ["/embed", "/index", "/search", "/chat", "/cluster", "/providers/switch"]
+# (method, path). GET /providers was added after a review found it answering
+# 200 with no token while every sibling 401'd: it discloses `api_key_configured`
+# per provider, the whole model catalog, and the structured selection errors.
+# CLAUDE.md already claimed "ai-engine endpoints (except /health) require
+# AI_ENGINE_API_TOKEN", so this probe freezes an invariant the docs asserted and
+# the code did not honour, rather than adding a new one.
+AI_PROTECTED = [
+    ("POST", "/embed"),
+    ("POST", "/index"),
+    ("POST", "/search"),
+    ("POST", "/chat"),
+    ("POST", "/cluster"),
+    ("POST", "/providers/switch"),
+    ("GET", "/providers"),
+]
 
 
-@pytest.mark.parametrize("path", AI_PROTECTED)
+@pytest.mark.parametrize("method, path", AI_PROTECTED)
 @pytest.mark.parametrize("token", [None, WRONG_TOKEN])
-def test_sec16_ai_endpoints_require_token(ai, path, token):
+def test_sec16_ai_endpoints_require_token(ai, method, path, token):
     body = {"texts": ["x"]} if path == "/embed" else {"session_id": "s", "query": "q"}
-    response = ai.post(path, token=token, json=body)
+    response = ai.request(method, path, token=token, json=body if method != "GET" else None)
     assert response.status_code == 401
 
 

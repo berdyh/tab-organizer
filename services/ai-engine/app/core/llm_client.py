@@ -1,6 +1,7 @@
 """Multi-provider LLM client with unified interface."""
 
 import os
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
@@ -9,6 +10,27 @@ import httpx
 
 # Import configuration loader
 from config.config_loader import get_ai_config
+
+# `scheme://user:pass@host` anywhere inside a string. Matched on the whole
+# message rather than on the URL alone because the credential can also arrive
+# second-hand: httpx puts the request URL into its own exception text, so
+# f"...: {exc}" re-imports the userinfo the caller just stripped.
+_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)[^/\s@]+@")
+
+
+def redact_url_userinfo(text: Optional[str]) -> Optional[str]:
+    """Strip `user:pass@` from every URL in ``text``.
+
+    `GET /health` is unauthenticated and every `reason` string on it is built
+    from a base URL. `OLLAMA_HOST=http://admin:s3cret@host:11434` is a
+    perfectly ordinary way to reach a proxied Ollama, and it turned the
+    unauthenticated health endpoint into a credential disclosure. The invariant
+    in `MODULE.md` is that *nothing* in the announce or runtime surface carries
+    a key or a token -- URL userinfo is a credential like any other.
+    """
+    if not text:
+        return text
+    return _URL_USERINFO_RE.sub(r"\g<scheme>***@", text)
 
 
 class ProviderSelectionError(RuntimeError):
@@ -30,6 +52,27 @@ class ProviderSelectionError(RuntimeError):
 
     def to_dict(self) -> dict:
         return {"code": self.code, "cause": self.cause, "fix": self.fix}
+
+
+class ProviderUnavailableError(ProviderSelectionError):
+    """The provider *was* chosen, but it cannot serve right now.
+
+    A subclass rather than a sibling on purpose: "nobody chose a provider" and
+    "the provider you chose has no `claude` binary / no API key / no pulled
+    model" are the same thing to every caller that must not paper over it. Any
+    best-effort ``except Exception`` that would swallow one must swallow
+    neither, so they share a base and a single ``except ProviderSelectionError:
+    raise`` guard covers both.
+
+    This is the condition `MODULE.md` used to carry as a stub -- "unavailable
+    local subscription CLI providers should report unhealthy rather than
+    silently falling back". The plain ``ValueError`` it used to raise was
+    indistinguishable from a transient provider error and got absorbed by
+    exactly such a handler in the clustering pipeline.
+    """
+
+    def __init__(self, code: str = "provider_unavailable", *, cause: str, fix: str):
+        super().__init__(code=code, cause=cause, fix=fix)
 
 
 @dataclass
@@ -147,6 +190,15 @@ class LLMClient:
         the process at import (`app/main.py` builds this client at module
         scope) and the service would go dark; the contract is that it starts,
         reports `degraded`, names the fix, and refuses to answer requests.
+
+        That contract is about the *class* of misconfiguration, not about the
+        two fields someone remembered. Any exception raised while resolving a
+        role -- a typo'd model name, a non-numeric `EMBEDDING_DIMENSIONS`, a
+        catalog entry missing a field -- is caught here and converted into a
+        structured `{code, cause, fix}`. A bare `except ProviderSelectionError`
+        would only cover the paths already taught to raise one, and the next
+        env var nobody thought about would blackhole the service at import
+        again.
         """
         self._ai_config = get_ai_config()
         self.llm_config: Optional[LLMConfig] = llm_config
@@ -155,18 +207,40 @@ class LLMClient:
         self.embedding_config_error: Optional[ProviderSelectionError] = None
 
         if self.llm_config is None:
-            try:
-                self.llm_config = self._default_llm_config()
-            except ProviderSelectionError as exc:
-                self.llm_config_error = exc
+            self.llm_config, self.llm_config_error = self._resolve_role(
+                self._default_llm_config, "llm"
+            )
         if self.embedding_config is None:
-            try:
-                self.embedding_config = self._default_embedding_config()
-            except ProviderSelectionError as exc:
-                self.embedding_config_error = exc
+            self.embedding_config, self.embedding_config_error = self._resolve_role(
+                self._default_embedding_config, "embeddings"
+            )
 
         self._llm_provider: Optional[BaseLLMProvider] = None
         self._embedding_provider: Optional[BaseEmbeddingProvider] = None
+
+    def _resolve_role(self, resolve, capability: str):
+        """Run a role resolver, degrading on *any* failure instead of dying."""
+        try:
+            return resolve(), None
+        except ProviderSelectionError as exc:
+            return None, exc
+        except Exception as exc:  # noqa: BLE001 -- deliberate: see __init__
+            env_vars = (
+                "AI_PROVIDER / LLM_MODEL"
+                if capability == "llm"
+                else "EMBEDDING_PROVIDER / EMBEDDING_MODEL / EMBEDDING_DIMENSIONS"
+            )
+            return None, ProviderSelectionError(
+                code="provider_config_invalid",
+                cause=(
+                    f"The {capability} configuration could not be resolved: "
+                    f"{type(exc).__name__}: {redact_url_userinfo(str(exc))}"
+                ),
+                fix=(
+                    f"Check {env_vars} against config/ai_models.yaml, or run "
+                    "./scripts/cli.py configure-provider to rewrite them."
+                ),
+            )
 
     def _routing_config(self) -> dict:
         return self._ai_config.config.get("routing") or {}
@@ -251,6 +325,95 @@ class LLMClient:
                 fix=f"Set {env_var} to one of: {known}.",
             ) from None
 
+    def _known_model_config(self, model: Optional[str], env_var: str) -> dict:
+        """Look the model up, turning a typo into a structured failure.
+
+        Same reasoning as `_known_provider_config`, applied to the field the
+        provider fix missed: `get_model_config()` raises a bare `ValueError`,
+        and this is reached from `__init__`.
+        """
+        if not model:
+            raise ProviderSelectionError(
+                code="model_not_selected",
+                cause=(
+                    "No model is selected and the provider declares no default "
+                    "for this role."
+                ),
+                fix=f"Set {env_var} to a model listed in config/ai_models.yaml.",
+            )
+        try:
+            return self._ai_config.get_model_config(model)
+        except ValueError:
+            raise ProviderSelectionError(
+                code="model_unknown",
+                cause=f"{env_var}={model!r} is not a model in the catalog.",
+                fix=(
+                    f"Set {env_var} to a model listed in config/ai_models.yaml, "
+                    "or leave it blank to use the provider's default."
+                ),
+            ) from None
+
+    def _resolve_embedding_dimensions(self, model: str, model_config: dict) -> int:
+        """Resolve the vector width from the catalog, never by inference.
+
+        The catalog is the only source of truth for dimensions (`R1`/`R2`: no
+        silent substitution). Two ways this used to drift, both silent:
+
+        * a catalog entry with no `dimensions` key fell back to a hardcoded
+          1536, so an embedding model of any width announced 1536 and the
+          LanceDB table was created at a width nothing would ever produce;
+        * `EMBEDDING_DIMENSIONS` overrode the catalog with no comparison, so
+          `/health` and the `provider.active` line announced a number that
+          contradicted the model actually being called.
+
+        Both now fail closed: the role degrades and `/health` names the fix.
+        """
+        catalog_dimensions = model_config.get("dimensions")
+        if catalog_dimensions is None:
+            raise ProviderSelectionError(
+                code="embedding_dimensions_unknown",
+                cause=(
+                    f"The catalog entry for embedding model {model!r} declares no "
+                    "'dimensions', and this service does not guess a vector width."
+                ),
+                fix=(
+                    f"Add 'dimensions' to the {model!r} entry in "
+                    "config/ai_models.yaml (it must match what the model emits)."
+                ),
+            )
+
+        override = (os.getenv("EMBEDDING_DIMENSIONS") or "").strip()
+        if not override:
+            return int(catalog_dimensions)
+
+        try:
+            requested = int(override)
+        except ValueError:
+            raise ProviderSelectionError(
+                code="embedding_dimensions_invalid",
+                cause=f"EMBEDDING_DIMENSIONS={override!r} is not an integer.",
+                fix=(
+                    "Leave EMBEDDING_DIMENSIONS blank so it resolves from the "
+                    f"catalog ({model} is {catalog_dimensions}), or set it to that "
+                    "number."
+                ),
+            ) from None
+
+        if requested != int(catalog_dimensions):
+            raise ProviderSelectionError(
+                code="embedding_dimensions_mismatch",
+                cause=(
+                    f"EMBEDDING_DIMENSIONS={requested} contradicts the catalog: "
+                    f"{model} emits {catalog_dimensions}-dimensional vectors."
+                ),
+                fix=(
+                    "Leave EMBEDDING_DIMENSIONS blank so it resolves from the "
+                    f"catalog, or set it to {catalog_dimensions}. A mismatch makes "
+                    "ai-engine refuse every write to the LanceDB table."
+                ),
+            )
+        return requested
+
     def _default_llm_config(self) -> LLMConfig:
         """Resolve the LLM config from the environment, or fail closed.
 
@@ -265,9 +428,12 @@ class LLMClient:
 
         provider_config = self._known_provider_config(provider, "AI_PROVIDER", "llm")
 
-        # Get default model for provider
+        # Get default model for provider. A typo here used to survive selection
+        # and only surface as a runtime-health `reason`; it is a misconfigured
+        # field like any other, so it degrades with a structured code.
         default_model = ai_config.get_default_model(provider, "llm")
         model = os.getenv("LLM_MODEL") or default_model
+        self._known_model_config(model, "LLM_MODEL")
 
         # Get API key from environment if cloud provider
         api_key = None
@@ -316,10 +482,10 @@ class LLMClient:
         # Get default model for provider
         default_model = ai_config.get_default_model(provider, "embedding")
         model = os.getenv("EMBEDDING_MODEL") or default_model
+        model_config = self._known_model_config(model, "EMBEDDING_MODEL")
 
-        # Get model dimensions from config
-        model_config = ai_config.get_model_config(model)
-        dimensions = model_config.get("dimensions", 1536)
+        # Vector width comes from the catalog and must agree with any override.
+        dimensions = self._resolve_embedding_dimensions(model, model_config)
 
         # Get API key from environment if cloud provider
         api_key = None
@@ -328,14 +494,12 @@ class LLMClient:
             if api_key_env:
                 api_key = os.getenv(api_key_env)
 
-        dimensions_override = os.getenv("EMBEDDING_DIMENSIONS")
-
         return EmbeddingConfig(
             provider=provider,
             model=model,
             api_key=api_key,
             base_url=self._base_url_for(provider, "EMBEDDING_BASE_URL"),
-            dimensions=int(dimensions_override or dimensions),
+            dimensions=dimensions,
         )
 
     @property
@@ -538,7 +702,22 @@ class LLMClient:
             if target_model:
                 self._validate_model(target_provider, target_model, "embedding")
                 model_config = self._ai_config.get_model_config(target_model)
-                dimensions = int(model_config.get("dimensions", current_dimensions))
+                # Same rule as `_resolve_embedding_dimensions`: no inference.
+                # Carrying the *previous* model's width forward would index the
+                # new model's vectors under the old model's dimension.
+                if model_config.get("dimensions") is None:
+                    raise ProviderSelectionError(
+                        code="embedding_dimensions_unknown",
+                        cause=(
+                            f"The catalog entry for embedding model "
+                            f"{target_model!r} declares no 'dimensions'."
+                        ),
+                        fix=(
+                            f"Add 'dimensions' to the {target_model!r} entry in "
+                            "config/ai_models.yaml before switching to it."
+                        ),
+                    )
+                dimensions = int(model_config["dimensions"])
             elif current is not None:
                 target_model = current.model
                 dimensions = current_dimensions
@@ -587,7 +766,28 @@ class LLMClient:
         """Check runtime availability in addition to static config support."""
         return self.get_provider_runtime_state(provider, capability)["available"]
 
+    @staticmethod
+    def _redacted_state(state: dict) -> dict:
+        """Last line of defence before a runtime state reaches a body or a log.
+
+        Applied to the whole dict rather than at each construction site so a
+        newly added `reason` string cannot reintroduce the leak by being
+        written somewhere this file does not yet think about.
+        """
+        for key in ("reason", "server_url", "command"):
+            if isinstance(state.get(key), str):
+                state[key] = redact_url_userinfo(state[key])
+        return state
+
     def get_provider_runtime_state(
+        self, provider: str, capability: str = "llm"
+    ) -> dict:
+        """Return runtime availability details, safe to serve and to log."""
+        return self._redacted_state(
+            self._raw_provider_runtime_state(provider, capability)
+        )
+
+    def _raw_provider_runtime_state(
         self, provider: str, capability: str = "llm"
     ) -> dict:
         """Return runtime availability details for a configured provider."""
@@ -732,15 +932,37 @@ class LLMClient:
                         model,
                     )
                     state.update(ollama_state)
-        return state
+        return self._redacted_state(state)
 
     def _ensure_current_provider_ready(self, capability: str) -> None:
+        """Gate every request path on a chosen *and* usable provider.
+
+        The unavailable case raises `ProviderUnavailableError` rather than a
+        bare `ValueError` so callers cannot confuse "the provider you chose is
+        not there" with a transient provider-side error and fall back to a
+        best-effort placeholder. `switch_provider` keeps raising `ValueError`
+        for the same condition: that is a caller error on a mutation request,
+        not the service answering with nothing.
+        """
         error = self._selection_error(capability)
         if error is not None:
             raise error
         state = self._current_runtime_state(capability)
         if not state["available"]:
-            raise ValueError(state.get("reason") or "AI provider is not configured")
+            config = self.llm_config if capability == "llm" else self.embedding_config
+            provider = getattr(config, "provider", None)
+            raise ProviderUnavailableError(
+                cause=(
+                    f"The selected {capability} provider {provider!r} is not usable: "
+                    f"{redact_url_userinfo(state.get('reason')) or 'unknown reason'}"
+                ),
+                fix=(
+                    "Make that provider usable (install/authenticate its CLI, set "
+                    "its API key, or pull the model), or choose another one with "
+                    "./scripts/cli.py configure-provider. This service does not "
+                    "substitute a provider for you."
+                ),
+            )
 
     def _api_key_for(self, provider: str) -> Optional[str]:
         """Resolve an API key for cloud providers; local providers return None."""
@@ -772,6 +994,10 @@ class LLMClient:
                 "ollama", "EMBEDDING_BASE_URL"
             )
         base_url = base_url.rstrip("/")
+        # Everything below this line is destined for `GET /health` (which is
+        # unauthenticated) and for log lines, so it carries the redacted form.
+        # `base_url` itself stays intact for the request.
+        safe_url = redact_url_userinfo(base_url)
 
         try:
             response = httpx.get(
@@ -783,22 +1009,26 @@ class LLMClient:
         except Exception as exc:
             return {
                 "available": False,
-                "server_url": base_url,
-                "reason": f"Ollama is not reachable at {base_url}: {exc}",
+                "server_url": safe_url,
+                # httpx embeds the request URL in several of its exception
+                # messages, so redact the composed string, not just the prefix.
+                "reason": redact_url_userinfo(
+                    f"Ollama is not reachable at {base_url}: {exc}"
+                ),
             }
 
         installed_models = self._ollama_installed_models(payload)
         if model not in installed_models:
             return {
                 "available": False,
-                "server_url": base_url,
+                "server_url": safe_url,
                 "installed_models": sorted(installed_models),
-                "reason": f"Ollama model {model} is not installed at {base_url}",
+                "reason": f"Ollama model {model} is not installed at {safe_url}",
             }
 
         return {
             "available": True,
-            "server_url": base_url,
+            "server_url": safe_url,
             "installed_models": sorted(installed_models),
             "reason": None,
         }
