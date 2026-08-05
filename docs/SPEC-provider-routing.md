@@ -1,7 +1,20 @@
 # SPEC — Provider routing: no silent selection, always announce
 
-Status: **SPECIFIED, NOT IMPLEMENTED**. Written 2026-08-05.
-Config side landed in `6493974`; the code side described here has not been built.
+Status: **PARTIALLY IMPLEMENTED**. Written 2026-08-05.
+Config side landed in `6493974`. Service side (ai-engine):
+
+| | State |
+|---|---|
+| R1 no implicit provider | **Implemented.** `AI_PROVIDER` / `EMBEDDING_PROVIDER` have no defaults, in `llm_client.py`, `docker-compose.yml`, and `.env.example`. |
+| R2 no silent embedding fallback | **Implemented.** Deleted; raises `embedding_provider_cannot_embed` with a catalog-derived list. |
+| R3 honour `requires_explicit_opt_in` | **Invariant only, as specified.** Stated in `LLMClient.__init__`'s docstring and frozen by a test; the general mechanism stays TS. |
+| R4 startup log + `/health` | **Implemented.** `provider.active` per role; `providers` block on `/health`. |
+| R4 UI badge | **Deferred to TS** (plan decision 16). |
+| R5 per-response attribution | **Deferred to the wk10 cutover.** No columns added to the Python store. |
+| R6 `cli.py configure-provider` | See `scripts/MODULE.md`. |
+
+Gates: `tests/unit/test_provider_routing.py`. Every one of them was confirmed
+to fail against the reintroduced old behaviour before being kept.
 
 The contract already exists as data in `config/ai_models.yaml` under `routing:`.
 This document says what the code must do to honour it. Read
@@ -28,7 +41,7 @@ just get quietly worse, or quietly cost money.
 
 ---
 
-## Current behaviour (what to change)
+## Behaviour before this change (kept for the record; R1/R2/R4 are now fixed)
 
 | Location | Today | Problem |
 |---|---|---|

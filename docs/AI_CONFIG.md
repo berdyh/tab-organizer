@@ -219,8 +219,8 @@ models:
 
 The system uses these environment variables:
 
-- `AI_PROVIDER`: Default AI provider (openrouter, ollama, openai, anthropic, claude_code, codex_cli, codex_acp, deepseek, gemini)
-- `EMBEDDING_PROVIDER`: Default embedding provider
+- `AI_PROVIDER`: The LLM provider (openrouter, ollama, openai, anthropic, claude_code, codex_cli, codex_acp, deepseek, gemini). **No default** — nothing is selected on your behalf. Unset, the AI Engine starts, reports `degraded` on `/health` with a `{code, cause, fix}`, and fails every generate call closed. Run `./scripts/cli.py configure-provider` or set it explicitly.
+- `EMBEDDING_PROVIDER`: The embedding provider (`ollama`, `openai`, `gemini`). **No default**, and no fallback: setting it to a provider that cannot embed is an error naming the ones that can, not a silent swap. The subscription CLIs serve no embedding models, and neither does OpenRouter (verified 2026-08-04).
 - `LLM_MODEL`: Override default LLM model
 - `EMBEDDING_MODEL`: Override default embedding model
 - `EMBEDDING_DIMENSIONS`: Override embedding dimensions (must match the model)
@@ -251,7 +251,7 @@ The system uses these environment variables:
 
 `codex_cli` is not ACP mode: it is a one-shot `codex exec --ephemeral --json -` provider. For ACP semantics use `codex_acp`, which invokes `acpx` and drives the Codex harness with the ACP session lifecycle (`sessions ensure`, `prompt --file -`, and session cleanup). This is still a repo-local LLM provider, not an OpenClaw `sessions_spawn(runtime: "acp")` orchestrator.
 
-The local CLI/ACP providers are LLM-only. Keep `EMBEDDING_PROVIDER` on `ollama`, `openrouter`, `openai`, or `gemini`.
+The local CLI/ACP providers are LLM-only. Keep `EMBEDDING_PROVIDER` on `ollama`, `openai`, or `gemini` — **not** `openrouter`, which serves no embedding models. Pointing it at any LLM-only provider fails closed with a `embedding_provider_cannot_embed` error listing what can embed; it is not silently rewritten.
 
 For a host-run local subscription mode:
 
@@ -261,6 +261,13 @@ For a host-run local subscription mode:
 ./scripts/cli.py start -d --host-ai
 ./scripts/cli.py check-provider --provider codex_acp --generate
 ```
+
+To pick a provider interactively instead of hand-editing `.env`, run
+`./scripts/cli.py configure-provider`. It probes real availability (is the
+CLI binary on PATH and authenticated, is Ollama reachable and which models
+are actually pulled, which API keys are set) and only offers -- and only
+ever writes -- a provider its own probe verified. It never selects one for
+you and never falls back silently (SPEC-provider-routing.md R6).
 
 Use `--provider codex_cli` for one-shot Codex CLI or `--provider claude_code` for Claude Code print mode. `--host-ai` sets the Docker services to call `http://host.docker.internal:8090`, while the AI Engine process itself runs on the host and can access your authenticated CLI state. The CLI creates a local `data/service-tokens.json` and passes its `AI_ENGINE_API_TOKEN` entry so containers can call the host AI Engine without exposing unauthenticated generation and provider-switching endpoints.
 
@@ -363,6 +370,7 @@ reload_config()
 - Ensure key has required permissions
 
 ### Embedding provider mismatch
-- Some providers (like Anthropic) don't support embeddings
-- System will automatically fallback to default provider
-- Configure `EMBEDDING_PROVIDER` explicitly if needed
+- Some providers (Anthropic, the subscription CLIs, and OpenRouter) serve no embedding models
+- The system does **not** fall back to a working one. It raises `embedding_provider_cannot_embed`, naming the providers that can embed (derived from the catalog), and `/health` reports `degraded`
+- Set `EMBEDDING_PROVIDER` to one of those, or run `./scripts/cli.py configure-provider`
+- The old silent fallback was removed deliberately: it substituted a provider nobody chose and reported nothing. See `docs/SPEC-provider-routing.md`
