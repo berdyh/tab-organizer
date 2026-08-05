@@ -73,6 +73,7 @@ test-ai: ## Run focused AI Engine unit tests
 		tests/unit/test_ai_provider_switch.py \
 		tests/unit/test_subscription_cli_providers.py \
 		tests/unit/test_rag_lancedb_persistence.py \
+		tests/unit/test_dependency_pins.py \
 		tests/unit/test_clustering.py \
 		tests/unit/test_provider_routing.py \
 		tests/unit/test_startup_config_validation.py -q
