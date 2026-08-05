@@ -1,5 +1,7 @@
 """Settings page for Streamlit UI."""
 
+from typing import Optional
+
 import streamlit as st
 
 from ..api.client import SyncAPIClient
@@ -41,10 +43,22 @@ def _provider_options(
     return options or ([current_provider] if current_provider else fallback)
 
 
-def _provider_index(options: list[str], current_provider: str) -> int:
-    if current_provider in options:
+def _provider_index(options: list[str], current_provider: str) -> Optional[int]:
+    """Index of the active provider in `options`, or None if none is active.
+
+    Returning None keeps the selectbox rendered with no default selection
+    (Streamlit's `index=None`). A user must never be able to mistake
+    "nothing chosen" for "this one is chosen" -- that guarantee is the whole
+    point of docs/SPEC-provider-routing.md R1/R4, and it fails silently if
+    this falls back to `0` for an unselected provider.
+    """
+    if (
+        current_provider
+        and current_provider != "unknown"
+        and current_provider in options
+    ):
         return options.index(current_provider)
-    return 0
+    return None
 
 
 def _provider_label(available: dict, capability: str, provider: str) -> str:
@@ -78,7 +92,12 @@ def _model_options(
     return options or ([current_model] if current_model else [])
 
 
-def _model_index(options: list[str], current_model: str) -> int:
+def _model_index(options: list[str], current_model: str) -> Optional[int]:
+    # No models to offer (e.g. no provider is active yet, so there is
+    # nothing to look up): index=0 on an empty options list is invalid for
+    # st.selectbox, so this must fall back to None, not 0.
+    if not options:
+        return None
     if current_model in options:
         return options.index(current_model)
     return 0
@@ -109,21 +128,51 @@ def render_settings_page():
 
     try:
         providers = api.get_providers()
+        # ai-engine's own /health carries the `providers` block (R4
+        # attribution: active provider + cost_model per role). /providers
+        # itself doesn't carry cost_model, and this call degrades to a
+        # status string rather than raising, so a slow/unreachable ai-engine
+        # here must not stop the rest of the page from rendering.
+        ai_health = api.get_ai_engine_health()
 
         current_llm = providers.get("llm", {})
-        current_llm_provider = current_llm.get("provider", "unknown")
-        current_llm_model = current_llm.get("model", "")
+        # `.get(key, default)` only supplies the default when the key is
+        # absent. Since ec4cc0a, GET /providers always includes "provider"
+        # and "model", set to None when nothing is selected -- so this must
+        # be `or`, not a dict-get default, or a present-but-None value slips
+        # through as None instead of "unknown"/"".
+        current_llm_provider = current_llm.get("provider") or "unknown"
+        current_llm_model = current_llm.get("model") or ""
+        current_llm_error = current_llm.get("error")
+
         current_emb = providers.get("embeddings", {})
-        current_emb_provider = current_emb.get("provider", "unknown")
-        current_emb_model = current_emb.get("model", "")
+        current_emb_provider = current_emb.get("provider") or "unknown"
+        current_emb_model = current_emb.get("model") or ""
+        current_emb_error = current_emb.get("error")
+
         available = providers.get("available", {})
         models = providers.get("models", {})
+
+        health_providers = (
+            ai_health.get("providers", {}) if isinstance(ai_health, dict) else {}
+        )
+        llm_cost_model = (health_providers.get("llm") or {}).get("cost_model")
+        emb_cost_model = (health_providers.get("embedding") or {}).get("cost_model")
 
         col1, col2 = st.columns(2)
 
         with col1:
             st.write("**LLM Provider**")
-            st.info(f"Current: {current_llm_provider} / {current_llm_model}")
+            if current_llm_error:
+                st.warning("No LLM provider selected.")
+                llm_fix = current_llm_error.get("fix")
+                if llm_fix:
+                    st.caption(llm_fix)
+            else:
+                detail = f"Current: {current_llm_provider} / {current_llm_model}"
+                if llm_cost_model:
+                    detail += f" ({llm_cost_model})"
+                st.info(detail)
 
             llm_fallback = [
                 "openrouter",
@@ -147,6 +196,7 @@ def render_settings_page():
                 format_func=lambda provider: _provider_label(
                     available, "llm", provider
                 ),
+                placeholder="No provider selected",
             )
             llm_reason = _availability_reason(available, "llm", new_llm)
             if llm_reason:
@@ -167,7 +217,16 @@ def render_settings_page():
 
         with col2:
             st.write("**Embedding Provider**")
-            st.info(f"Current: {current_emb_provider} / {current_emb_model}")
+            if current_emb_error:
+                st.warning("No embedding provider selected.")
+                emb_fix = current_emb_error.get("fix")
+                if emb_fix:
+                    st.caption(emb_fix)
+            else:
+                detail = f"Current: {current_emb_provider} / {current_emb_model}"
+                if emb_cost_model:
+                    detail += f" ({emb_cost_model})"
+                st.info(detail)
 
             emb_options = ["openrouter", "ollama", "openai", "gemini"]
             emb_options = _provider_options(
@@ -181,6 +240,7 @@ def render_settings_page():
                 format_func=lambda provider: _provider_label(
                     available, "embeddings", provider
                 ),
+                placeholder="No provider selected",
             )
             emb_reason = _availability_reason(available, "embeddings", new_emb)
             if emb_reason:
@@ -224,14 +284,16 @@ def render_settings_page():
         if submitted:
             try:
                 api.update_ai_config(
-                    llm_provider=(new_llm if new_llm != current_llm_provider else None),
+                    llm_provider=(
+                        new_llm if new_llm and new_llm != current_llm_provider else None
+                    ),
                     llm_model=(
                         new_llm_model
                         if new_llm_model and new_llm_model != current_llm_model
                         else None
                     ),
                     embedding_provider=(
-                        new_emb if new_emb != current_emb_provider else None
+                        new_emb if new_emb and new_emb != current_emb_provider else None
                     ),
                     embedding_model=(
                         new_emb_model
