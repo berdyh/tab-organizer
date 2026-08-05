@@ -15,9 +15,17 @@
 - special operating rules:
   - Black-box only; five flagged `sec_seam` exceptions touch importable code
     (SEC-26, SEC-39, SEC-40, SEC-41, SEC-42).
-  - Managed mode boots services in-process via ASGI with a controlled env; the
-    TS port substitutes `SEC_BOOT_*_CMD` real servers with the same env
-    contract.
+  - Managed mode boots services in-process via ASGI with a controlled env. It
+    imports the Python module to do that, so it works only against this stack.
+    `SEC_BOOT_*_CMD` (harness-launched servers, any language) is **PLANNED, NOT
+    IMPLEMENTED** — the name appears in prose only. Until it exists a TS port
+    runs 173/192 probes in attached mode and auto-skips the 19 `sec_managed`
+    ones, which are exactly the process-boundary guarantees (agent subprocess
+    hardening, credential isolation, prompt envelope, URL safety under
+    controlled config). Trigger revised 2026-08-05: land it before the first TS
+    commit touching credentials, tokens, or agent subprocesses (~wk8), not
+    before facade work. CORS and token scopes apply from wk1 but need no boot
+    mode — they run in attached mode. See `README.md` for the fixture hedge.
   - Distinct per-scope tokens are mandatory in managed mode so cross-acceptance
     is observable. As of SECSUITE 1.3.0 this also mirrors deployment:
     browser-engine's cross-scope ACCEPT fallback was removed (it accepts only

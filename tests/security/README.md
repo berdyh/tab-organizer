@@ -67,13 +67,45 @@ pytest tests/security -q
 ## Modes and markers
 
 - **Managed mode** (default): the harness runs each FastAPI app in-process via
-  an ASGI transport with a fully controlled, per-run environment. This is the
-  Python harness's boot adapter; the TS port substitutes real servers via the
-  `SEC_BOOT_BACKEND_CMD` / `SEC_BOOT_AI_CMD` / `SEC_BOOT_BROWSER_CMD` command
-  templates and the same token env contract.
+  an ASGI transport with a fully controlled, per-run environment. It gets that
+  control by importing the Python module directly (`conftest.py::_load_app`),
+  so managed mode works **only** against this Python stack.
 - **Attached mode**: set any `SEC_*_URL`; the harness issues real HTTP to the
   running services and `sec_managed` probes auto-skip (their env can't be
-  controlled remotely).
+  controlled remotely). Attached mode is language-agnostic — it is how the
+  TypeScript port runs this suite today, and 173 of 192 probes work there.
+
+### `SEC_BOOT_*_CMD` — PLANNED, NOT IMPLEMENTED
+
+A third mode in which the harness *launches* each service from a command it
+controls (`SEC_BOOT_BACKEND_CMD="node dist/server.js --port {port}"`), so it
+regains per-test env control against any language. **It does not exist.** The
+name appears only in prose here, in `MODULE.md`, and in `conftest.py`'s
+docstring; there is no implementation behind it.
+
+What that costs today: the 19 `sec_managed` probes auto-skip in attached mode,
+so a TypeScript port can go green having never exercised agent subprocess
+hardening (SEC-28..33), credential isolation, prompt-envelope containment, or
+URL-safety refusals under controlled config. Those are premise 4 in executable
+form.
+
+**When it must land** (revised 2026-08-05, supersedes "before TS facade work
+begins"): before the first TypeScript commit that touches credentials, tokens,
+or agent subprocesses — in practice around the wk8 rehearsal, not wk1. The
+components those 19 probes validate (browser-engine capture, ai-engine
+providers) port at or after the wk10 cutover, so building boot mode earlier
+would mean validating a TS implementation that does not exist yet.
+
+The two invariants that DO apply from the first facade commit — CORS policy and
+token scopes — need no boot mode. They are plain HTTP assertions: point
+`SEC_BACKEND_URL` at the TS facade and they run in attached mode.
+
+**Hedge against deferring** (do this while the Python behaviour is verified and
+nobody is under cutover pressure): extract each `sec_managed` probe's inputs and
+expected refusals into language-neutral JSON fixtures, the pattern SEC-25/42
+already use for the agent env allowlist. Boot mode then becomes a runner over
+data, and the contract cannot be quietly softened to fit whatever got built —
+changing it means editing a fixture in a reviewable diff.
 - `@pytest.mark.security` — all tests. `integration` — needs internet/live LLM
   (module-gated on `SEC_ALLOW_NETWORK=1`). `sec_managed` — needs
   harness-controlled env. `sec_seam` — Python-seam exception with a TS-porting

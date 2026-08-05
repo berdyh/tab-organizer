@@ -635,3 +635,50 @@ Also confirmed: scraping itself is healthy (46/50 real-world success); the full 
 correctly — the deployment *default*, not the product, has never been a working
 configuration. See "Reordering consequence for wk0 tasks" in the WI0 notes for how these
 folded into the phase-1 task list.
+
+### Addendum 2026-08-05 — T6 retriggered; migration status after wk0
+
+| # | Decision | Class |
+|---|---|---|
+| 42 | `SEC_BOOT_*_CMD` (T6) lands before the first TS commit touching credentials, tokens, or agent subprocesses — NOT before facade work begins | Revises the wk0 triage's date-box |
+| 43 | wk1 runs the frozen suite against the TS facade in **attached mode**; no new harness needed | Mechanical |
+| 44 | `sec_managed` probe inputs and expected refusals get extracted to language-neutral JSON fixtures while Python behaviour is verified | Mechanical (hedge) |
+
+**Why 42 revises the earlier date-box.** The wk0 triage set T6 "before TS facade
+work begins" without checking what the 19 `sec_managed` probes actually cover.
+They break down as: agent subprocess hardening (SEC-28..33, whole file) →
+ai-engine providers; credential isolation and URL-safety-under-config →
+browser-engine; prompt envelope → ai-engine RAG/clustering; plus token scopes
+and CORS. The first four groups validate components that port at the **wk10
+cutover or later** (capture ports last, decision 24). Building boot mode at wk1
+would mean validating a TypeScript implementation that does not exist yet, using
+a Python stack scheduled for deletion as the proving ground.
+
+**Why 43 covers the wk1 gap.** Only CORS and token scopes bite from the first
+facade commit, and neither needs harness-controlled env — they are plain HTTP
+assertions. Attached mode already runs 173 of 192 probes against any
+implementation. Point `SEC_BACKEND_URL` at the TS facade and they run.
+
+**Why 44 exists.** The argument for deferring T6 is sound; the risk in deferring
+is not forgetting but arriving at wk8 under cutover pressure, where the cheapest
+path is weakening a probe to pass against what was built — which inverts the
+purpose of freezing them. Extracting the contracts to fixtures now makes that
+softening a visible diff instead of a quiet edit. It is the pattern SEC-25/42
+already use for the agent env allowlist, and it worked.
+
+**Standing counter-argument, recorded so it is not relitigated from scratch.**
+"We are rewriting in TypeScript, so a documented invariant will be implemented
+correctly" has a measured track record in this repo, and it is 0 for 3: CLAUDE.md
+documented the token fallback as intended while the setup script made it a
+permanent scope collapse; MODULE_INDEX documented the credential store as
+"keyring or env key" while keyring was in no requirements file; premise 4
+documented an API-layer backstop that did not exist. All three were written by
+people who believed them, and all three were caught only by execution. The wk0
+security rounds add six more instances: every first-attempt fix was refuted,
+three by executed exploits, each having implemented the *example* in the finding
+rather than its *class*. Documentation states the class; only a probe tests it.
+
+**Migration status at this addendum:** wk0 complete and merged. No TypeScript
+exists — no `package.json`, no `tsconfig.json`, no `.ts` file. wk1-6 (facade,
+UI, agent layer) not started. The wk16 reverse kill-switch clock started when
+wk0 landed.
