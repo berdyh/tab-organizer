@@ -445,6 +445,398 @@ def cmd_check_provider(args):
         print(result)
 
 
+def _probe_client(ai_config):
+    """Build a throwaway LLMClient purely to reach its shared runtime probes.
+
+    The provider/model passed here are never used to talk to a provider --
+    configure-provider only calls get_provider_runtime_state(). Both llm_config
+    and embedding_config are passed explicitly (rather than left to default)
+    so this does not depend on LLMClient's env-derived defaults, which are the
+    exact lines SPEC-provider-routing.md R1/R2 are changing concurrently in
+    services/ai-engine/app/core/llm_client.py.
+    """
+    from services.ai_engine.app.core.llm_client import (
+        EmbeddingConfig,
+        LLMClient,
+        LLMConfig,
+    )
+
+    return LLMClient(
+        LLMConfig(
+            provider="ollama", model=ai_config.get_default_model("ollama", "llm") or ""
+        ),
+        EmbeddingConfig(
+            provider="ollama",
+            model=ai_config.get_default_model("ollama", "embedding") or "",
+        ),
+    )
+
+
+def probe_llm_provider(provider: str) -> dict:
+    """Probe real LLM availability for a provider.
+
+    Isolated as its own module-level function so tests can monkeypatch this
+    probe boundary instead of depending on what CLIs/keys happen to be
+    installed/set on the machine running the test.
+    """
+    from config.config_loader import get_ai_config
+
+    ai_config = get_ai_config()
+    return _probe_client(ai_config).get_provider_runtime_state(provider, "llm")
+
+
+def probe_embedding_provider(provider: str) -> dict:
+    """Probe real embedding availability for a provider. See probe_llm_provider."""
+    from config.config_loader import get_ai_config
+
+    ai_config = get_ai_config()
+    return _probe_client(ai_config).get_provider_runtime_state(provider, "embeddings")
+
+
+def probe_ollama_installed_models(base_url: str, timeout: float = 2.0) -> set[str] | None:
+    """Return the set of pulled Ollama model names, or None if unreachable.
+
+    Implemented independently of services/ai-engine's LLMClient (rather than
+    reaching into its private _ollama_installed_models helper) so
+    configure-provider keeps working no matter how the concurrent R1/R2/R4
+    refactor of that module lands.
+    """
+    try:
+        with urllib.request.urlopen(
+            f"{base_url.rstrip('/')}/api/tags", timeout=timeout
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    installed: set[str] = set()
+    for item in payload.get("models", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("name", "model"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                name = value.strip()
+                installed.add(name)
+                if name.endswith(":latest"):
+                    installed.add(name[: -len(":latest")])
+    return installed
+
+
+def pull_ollama_model(base_url: str, model: str, timeout: float = 1800.0) -> None:
+    """Pull an Ollama model via its HTTP API, printing streamed status lines."""
+    request_obj = urllib.request.Request(
+        f"{base_url.rstrip('/')}/api/pull",
+        data=json.dumps({"model": model}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request_obj, timeout=timeout) as response:
+        for raw_line in response:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            status = event.get("status")
+            if status:
+                print(f"  ollama pull {model}: {status}")
+
+
+def _ollama_base_url() -> str:
+    """Resolve the Ollama endpoint the same way init.py/host-ai do: env override first."""
+    return os.getenv("OLLAMA_HOST") or "http://localhost:11434"
+
+
+def _provider_cost_model(ai_config, provider: str) -> str:
+    return ai_config.get_provider_config(provider).get("cost_model", "unknown")
+
+
+def _ordered_llm_candidates(ai_config) -> list[str]:
+    """LLM providers worth probing, in catalog preference order.
+
+    `routing.llm_preference_order` covers the preferred subscription CLIs;
+    `routing.explicit_opt_in_required` covers every other provider a user can
+    still deliberately choose (ollama, openrouter, openai, gemini, anthropic,
+    deepseek). Concatenating them (deduped, first occurrence wins) reproduces
+    the catalog's ascending `preference` numbers without hardcoding a second
+    copy of that order here.
+    """
+    routing = ai_config.config.get("routing", {})
+    ordered: list[str] = []
+    for provider in list(routing.get("llm_preference_order", [])) + list(
+        routing.get("explicit_opt_in_required", [])
+    ):
+        if provider not in ordered:
+            ordered.append(provider)
+    return ordered
+
+
+def _probe_available_llm_providers(ai_config) -> list[tuple[str, dict]]:
+    """Return (provider, probe_state) pairs for LLM providers verified usable.
+
+    A provider whose binary/key/server probe fails is never returned here, so
+    it can never reach the prompt_choice() menu or be written to .env.
+    """
+    available: list[tuple[str, dict]] = []
+    for provider in _ordered_llm_candidates(ai_config):
+        if not ai_config.is_provider_supported(provider, "llm"):
+            continue
+        state = probe_llm_provider(provider)
+        if state.get("available"):
+            print(f"  {provider}: available ({_provider_cost_model(ai_config, provider)})")
+            available.append((provider, state))
+        else:
+            print(f"  {provider}: not available -- {state.get('reason') or 'unknown reason'}")
+    return available
+
+
+def _probe_available_embedding_providers(ai_config) -> list[tuple[str, dict]]:
+    """Return (provider, probe_state) pairs for embedding providers verified usable.
+
+    Filtered strictly by the catalog's `supports.embeddings` first -- a
+    provider that cannot embed (openrouter serves none, verified 2026-08-04)
+    is never even probed, let alone offered, regardless of what a probe
+    mock might return.
+    """
+    available: list[tuple[str, dict]] = []
+    for provider in ai_config.get_all_providers():
+        if not ai_config.is_provider_supported(provider, "embeddings"):
+            continue
+        if not ai_config.get_provider_models(provider, "embedding"):
+            continue
+        state = probe_embedding_provider(provider)
+        if state.get("available"):
+            print(f"  {provider}: available ({_provider_cost_model(ai_config, provider)})")
+            available.append((provider, state))
+        else:
+            print(f"  {provider}: not available -- {state.get('reason') or 'unknown reason'}")
+    return available
+
+
+def _choose_provider_interactively(
+    prompt_choice_fn,
+    prompt_message: str,
+    options: list[tuple[str, str]],
+    default_index: int,
+    available_names: list[str],
+    flag_name: str,
+) -> str:
+    """Prompt for a provider choice; refuse to guess when non-interactive.
+
+    AI_PROVIDER/EMBEDDING_PROVIDER in .env is read elsewhere as proof a human
+    deliberately chose it (SPEC-provider-routing.md R3: "the env var is the
+    record of consent"). `scripts/init.py`'s prompt_choice() silently returns
+    its first option when stdin is not a tty -- correct there, since init.py's
+    defaults were always allowed under the old contract. It is wrong here: a
+    piped/CI/non-interactive configure-provider run with no explicit flag
+    would then write a provider nobody chose, and the resulting .env line
+    would be indistinguishable from a real decision to every later reader,
+    including the fail-closed checks (R1/R3) that trust it. So -- unlike
+    model selection below, a within-provider detail -- provider selection
+    fails closed instead of auto-picking.
+    """
+    if sys.stdin.isatty():
+        return prompt_choice_fn(prompt_message, options, default_index=default_index)
+    raise SystemExit(
+        f"configure-provider will not choose a provider on your behalf: this "
+        f"session is not interactive and {flag_name} was not given. Pass "
+        f"{flag_name} explicitly -- that flag IS the deliberate choice "
+        f"(SPEC-provider-routing.md R3) -- or run configure-provider attached "
+        f"to a terminal. Verified available: {', '.join(available_names)}. "
+        f"Nothing was written to .env."
+    )
+
+
+def _ensure_ollama_model_pulled(model: str, args: argparse.Namespace) -> str:
+    """Verify an Ollama model is actually pulled, offering to pull it if not.
+
+    WI0-B1 found the Ollama container running with zero models pulled, which
+    is indistinguishable from working until the first request fails. Refuses
+    to hand back a model that is not verifiably present.
+    """
+    base_url = _ollama_base_url()
+    installed = probe_ollama_installed_models(base_url)
+    if installed is None:
+        raise SystemExit(
+            f"Ollama is not reachable at {base_url}. Start it "
+            f"(`docker compose up -d ollama`, or run Ollama locally) and retry "
+            f"configure-provider."
+        )
+    if model in installed:
+        return model
+
+    print(f"Ollama model '{model}' is not pulled at {base_url}.")
+    should_pull = bool(getattr(args, "yes", False))
+    if not should_pull and sys.stdin.isatty():
+        response = input(f"Pull '{model}' now? [y/N] ").strip().lower()
+        should_pull = response in {"y", "yes"}
+
+    if not should_pull:
+        raise SystemExit(
+            f"Refusing to write an unpulled Ollama model ('{model}'). Pull it first: "
+            f"`docker exec tab-organizer-ollama ollama pull {model}` (or "
+            f"`ollama pull {model}` if running Ollama on the host), then retry. "
+            f"Or rerun with --yes to pull automatically."
+        )
+
+    print(f"Pulling {model} ...")
+    pull_ollama_model(base_url, model)
+    installed = probe_ollama_installed_models(base_url)
+    if not installed or model not in installed:
+        raise SystemExit(
+            f"Pull did not leave '{model}' visible at {base_url}; refusing to write it."
+        )
+    return model
+
+
+def cmd_configure_provider(args):
+    """Probe real provider availability and write a verified selection to .env.
+
+    This is the asking the service itself cannot do
+    (docs/SPEC-provider-routing.md R6): probe which subscription CLIs are on
+    PATH and authenticated, which API keys are present, and which Ollama
+    models are actually pulled -- then present only what is genuinely usable,
+    ordered by the catalog's routing preference, annotated with cost_model.
+    Never writes AI_PROVIDER/EMBEDDING_PROVIDER to a value its own probe could
+    not verify, and always leaves EMBEDDING_DIMENSIONS blank so it resolves
+    from the catalog and cannot drift from EMBEDDING_MODEL.
+    """
+    from config.config_loader import get_ai_config
+    from scripts.init import (
+        ensure_env_file,
+        prompt_choice,
+        update_embedding_model_env,
+        update_env_var,
+    )
+
+    ensure_env_file()
+    load_env_file()
+
+    ai_config = get_ai_config()
+
+    print("Probing LLM providers (subscription CLIs first, then opt-in providers)...")
+    llm_available = _probe_available_llm_providers(ai_config)
+    if not llm_available:
+        raise SystemExit(
+            "No LLM provider is verified available. Install/authenticate one of:\n"
+            "  claude_code -- `claude` on PATH, logged in (subscription)\n"
+            "  codex_cli   -- `codex` on PATH, logged in (subscription)\n"
+            "  codex_acp   -- `acpx` on PATH (subscription)\n"
+            "  ollama      -- reachable local server with a model pulled (free, local)\n"
+            "  openrouter / openai / gemini / anthropic / deepseek -- matching API key "
+            "set in .env (metered)\n"
+            "Nothing was written to .env."
+        )
+
+    llm_provider_names = [name for name, _ in llm_available]
+    if args.provider:
+        if args.provider not in llm_provider_names:
+            raise SystemExit(
+                f"--provider {args.provider} failed its availability probe (or is "
+                f"unknown); refusing to write an unverified provider. Verified "
+                f"available: {', '.join(llm_provider_names)}"
+            )
+        llm_provider = args.provider
+    else:
+        llm_options = [
+            (name, _provider_cost_model(ai_config, name)) for name in llm_provider_names
+        ]
+        llm_provider = _choose_provider_interactively(
+            prompt_choice,
+            "Choose an LLM provider (only verified-available options shown):",
+            llm_options,
+            0,
+            llm_provider_names,
+            "--provider",
+        )
+
+    llm_models = ai_config.get_provider_models(llm_provider, "llm")
+    default_llm_model = ai_config.get_default_model(llm_provider, "llm")
+    default_index = llm_models.index(default_llm_model) if default_llm_model in llm_models else 0
+    llm_model_options = [
+        (m, ai_config.get_model_config(m).get("description", "")) for m in llm_models
+    ]
+    llm_model = args.llm_model or prompt_choice(
+        f"Choose a {llm_provider} LLM model:", llm_model_options, default_index=default_index
+    )
+
+    if llm_provider == "ollama":
+        llm_model = _ensure_ollama_model_pulled(llm_model, args)
+
+    print("Probing embedding providers (catalog supports.embeddings only)...")
+    embed_available = _probe_available_embedding_providers(ai_config)
+    if not embed_available:
+        raise SystemExit(
+            "No embedding provider is verified available. AI_PROVIDER was not written: "
+            "an unset/unverified EMBEDDING_PROVIDER is exactly the silent-default bug "
+            "R1/R2 forbid. Pull an Ollama embedding model (e.g. nomic-embed-text) or set "
+            "OPENAI_API_KEY / GOOGLE_API_KEY, then retry. Note: openrouter serves NO "
+            "embedding models.\n"
+            "Nothing was written to .env."
+        )
+
+    embed_provider_names = [name for name, _ in embed_available]
+    if args.embedding_provider:
+        if args.embedding_provider not in embed_provider_names:
+            raise SystemExit(
+                f"--embedding-provider {args.embedding_provider} cannot embed, or failed "
+                f"its availability probe; refusing to write an unverified provider. "
+                f"Verified available: {', '.join(embed_provider_names)}"
+            )
+        embedding_provider = args.embedding_provider
+    else:
+        default_index = (
+            embed_provider_names.index("ollama") if "ollama" in embed_provider_names else 0
+        )
+        embed_options = [
+            (name, _provider_cost_model(ai_config, name)) for name in embed_provider_names
+        ]
+        embedding_provider = _choose_provider_interactively(
+            prompt_choice,
+            "Choose an embedding provider (only verified-available options shown):",
+            embed_options,
+            default_index,
+            embed_provider_names,
+            "--embedding-provider",
+        )
+
+    embed_models = ai_config.get_provider_models(embedding_provider, "embedding")
+    default_embed_model = ai_config.get_default_model(embedding_provider, "embedding")
+    default_index = (
+        embed_models.index(default_embed_model) if default_embed_model in embed_models else 0
+    )
+    embed_model_options = [
+        (m, ai_config.get_model_config(m).get("description", "")) for m in embed_models
+    ]
+    embedding_model = args.embedding_model or prompt_choice(
+        f"Choose a {embedding_provider} embedding model:",
+        embed_model_options,
+        default_index=default_index,
+    )
+
+    if embedding_provider == "ollama":
+        embedding_model = _ensure_ollama_model_pulled(embedding_model, args)
+
+    update_env_var("AI_PROVIDER", llm_provider)
+    update_env_var("LLM_MODEL", llm_model)
+    update_env_var("EMBEDDING_PROVIDER", embedding_provider)
+    update_embedding_model_env(embedding_model)
+
+    print(
+        f"Wrote AI_PROVIDER={llm_provider}, LLM_MODEL={llm_model}, "
+        f"EMBEDDING_PROVIDER={embedding_provider}, EMBEDDING_MODEL={embedding_model} to .env."
+    )
+    print(
+        "EMBEDDING_DIMENSIONS left blank -- it resolves from the model catalog at "
+        "runtime so it cannot drift from EMBEDDING_MODEL."
+    )
+
+
 def print_backend_result(result: dict) -> None:
     """Print Backend Core JSON without exposing configured tokens."""
     text = json.dumps(result, sort_keys=True)
@@ -785,6 +1177,33 @@ Examples:
         help="Prompt used by --generate",
     )
     check_parser.set_defaults(func=cmd_check_provider)
+
+    # configure-provider
+    configure_provider_parser = subparsers.add_parser(
+        "configure-provider",
+        help="Probe real LLM/embedding provider availability and write a verified choice to .env",
+    )
+    configure_provider_parser.add_argument(
+        "--provider",
+        help="Preselect an LLM provider; refused if its availability probe fails.",
+    )
+    configure_provider_parser.add_argument(
+        "--llm-model", help="Preselect the LLM model for --provider."
+    )
+    configure_provider_parser.add_argument(
+        "--embedding-provider",
+        help="Preselect the embedding provider; refused if it cannot embed or its probe fails.",
+    )
+    configure_provider_parser.add_argument(
+        "--embedding-model", help="Preselect the embedding model for --embedding-provider."
+    )
+    configure_provider_parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Auto-confirm pulling a missing Ollama model instead of prompting.",
+    )
+    configure_provider_parser.set_defaults(func=cmd_configure_provider)
 
     # tabs
     tabs_parser = subparsers.add_parser(
