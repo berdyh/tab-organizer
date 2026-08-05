@@ -449,6 +449,40 @@ def test_service_env_replaces_blank_env_tokens_from_dotenv(monkeypatch):
     assert len({env[name] for name in cli.SERVICE_TOKEN_ENVS}) == 4
 
 
+def test_cmd_test_loads_env_file_like_other_stack_commands(monkeypatch):
+    """`test` must load .env like `start`/`host-ai`/`check-provider` do.
+
+    cmd_test recreates the stack (docker compose up, for integration/e2e)
+    through service_env_with_tokens(), which resolves each token from
+    os.environ first and only falls back to the persisted
+    data/service-tokens.json store when nothing is configured there.
+    Skipping load_env_file() meant an explicit .env token/config override
+    was invisible to `test`, so `test --type integration` could recreate the
+    stack on different values than `start -d` used for the exact same .env
+    -- the two commands would then hold the running stack open on divergent
+    tokens. Every other command that calls service_env_with_tokens() calls
+    load_env_file() first; `test` was the one place that didn't.
+    """
+    loaded = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: loaded.append(True))
+    monkeypatch.setattr(cli, "service_env_with_tokens", lambda: {})
+    monkeypatch.setattr(
+        cli,
+        "docker_compose",
+        lambda *args, profiles=None, env=None: None,
+    )
+    monkeypatch.setattr(
+        cli, "wait_for_default_stack", lambda include_web_ui=False: None
+    )
+
+    cli.cmd_test(argparse.Namespace(type="unit"))
+    assert loaded == [True], "cmd_test(unit) must call load_env_file()"
+
+    loaded.clear()
+    cli.cmd_test(argparse.Namespace(type="integration"))
+    assert loaded == [True], "cmd_test(integration) must call load_env_file()"
+
+
 def test_integration_test_waits_for_default_stack(monkeypatch):
     calls = []
     waits = []

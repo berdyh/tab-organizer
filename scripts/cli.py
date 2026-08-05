@@ -983,6 +983,8 @@ def cmd_logs(args):
 
 def cmd_test(args):
     """Run tests."""
+    load_env_file()
+
     test_type = args.type or "unit"
     test_env = service_env_with_tokens()
     test_profiles = [f"test-{test_type}"]
