@@ -60,7 +60,9 @@ async def test_search_route_honors_requested_top_k(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ai_health_reports_degraded_when_runtime_config_is_unavailable(monkeypatch):
+async def test_ai_health_reports_degraded_when_runtime_config_is_unavailable(
+    monkeypatch,
+):
     class FakeChatbot:
         db_uri = "/tmp/lancedb"
         TABLE_NAME = "tab_organizer_docs"
@@ -81,6 +83,22 @@ async def test_ai_health_reports_degraded_when_runtime_config_is_unavailable(mon
                     "model": "embed",
                     "available": False,
                     "reason": "OPENROUTER_API_KEY is not configured",
+                },
+            }
+
+        def get_active_providers(self):
+            # `/health` announces the active provider per role (R4) alongside
+            # the runtime diagnostics; an unusable provider is still named.
+            return {
+                "llm": {
+                    "provider": "openrouter",
+                    "model": "openai/gpt-4o-mini",
+                    "cost_model": "metered",
+                },
+                "embedding": {
+                    "provider": "openrouter",
+                    "model": "embed",
+                    "cost_model": "metered",
                 },
             }
 

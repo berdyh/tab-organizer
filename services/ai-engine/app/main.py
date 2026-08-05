@@ -21,17 +21,45 @@ from .core.llm_client import LLMClient
 
 configure_logging("ai-engine")
 
+# Vector width used to bootstrap the LanceDB table when no embedding provider
+# has been selected. It is not a provider default and never becomes one: with
+# no embedding provider, `llm_client.embed()` raises, so no row can be written
+# at this width. `reconfigure_embeddings()` resizes the (necessarily empty)
+# table the moment a provider is actually chosen.
+UNSELECTED_EMBEDDING_DIM = 768
+
 # Global instances
 llm_client = LLMClient()
 clusterer = TabClusterer()
 clusterer.set_llm_client(llm_client)
 chatbot = RAGChatbot(
     db_uri=os.getenv("VECTOR_DB_PATH", "/data/lancedb"),
-    embedding_dim=llm_client.embedding_config.dimensions,
+    embedding_dim=(
+        llm_client.embedding_config.dimensions
+        if llm_client.embedding_config
+        else UNSELECTED_EMBEDDING_DIM
+    ),
 )
 chatbot.set_llm_client(llm_client)
 provider_state_lock = asyncio.Lock()
 UNAUTHENTICATED_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _announce_active_providers() -> None:
+    """Emit one `provider.active` line per role (R4, `announce_active_provider`).
+
+    A user must never have to discover after the fact which provider answered.
+    Emitted unconditionally at startup — including when a role has no provider,
+    where the line carries the structured `{code, cause, fix}` instead. The
+    summary is catalog-derived and contains no credentials.
+    """
+    for role, summary in llm_client.get_active_providers().items():
+        log_event(
+            "provider.active",
+            level=(logging.INFO if summary.get("provider") else logging.ERROR),
+            role=role,
+            **summary,
+        )
 
 
 @asynccontextmanager
@@ -49,14 +77,16 @@ async def lifespan(_app: FastAPI):
         log_event("config.invalid", level=logging.CRITICAL, errors=errors)
         raise RuntimeError("AI model configuration is invalid: " + "; ".join(errors))
 
+    _announce_active_providers()
+
     runtime = llm_client.get_runtime_health()
     if not runtime["ready"]:
         log_event(
             "provider.unusable_at_startup",
             level=logging.ERROR,
-            llm_provider=llm_client.llm_config.provider,
+            llm_provider=runtime["llm"].get("provider"),
             llm_reason=runtime["llm"].get("reason"),
-            embedding_provider=llm_client.embedding_config.provider,
+            embedding_provider=runtime["embeddings"].get("provider"),
             embedding_reason=runtime["embeddings"].get("reason"),
         )
     yield
@@ -90,6 +120,16 @@ app.add_middleware(RequestIDMiddleware, service="ai-engine")
 
 def _current_embedding_model() -> Optional[str]:
     return getattr(llm_client.embedding_config, "model", None)
+
+
+def _current_embedding_provider() -> Optional[str]:
+    """None when no embedding provider was selected -- never a stand-in."""
+    return getattr(llm_client.embedding_config, "provider", None)
+
+
+def _current_embedding_dimensions() -> int:
+    config = llm_client.embedding_config
+    return config.dimensions if config else UNSELECTED_EMBEDDING_DIM
 
 
 # Request models
@@ -201,6 +241,14 @@ async def health():
             "table": chatbot.TABLE_NAME,
             "ready": True,
         },
+        # `providers` is the attribution contract (R4): who is answering and
+        # what it costs. It sits beside `runtime` rather than inside it because
+        # `runtime` is the diagnostic blob (availability reasons, api-key
+        # presence, installed Ollama models) whose shape follows internal
+        # needs, while this block is a small stable payload the UI badge and
+        # the TS facade read. Neither carries a token or an API key -- /health
+        # is the one unauthenticated endpoint on this service.
+        "providers": llm_client.get_active_providers(),
         "runtime": runtime,
     }
 
@@ -221,13 +269,13 @@ async def switch_provider(
         async with provider_state_lock:
             current_embedding_model = _current_embedding_model()
             target_embedding_provider = (
-                request.embedding_provider or llm_client.embedding_config.provider
+                request.embedding_provider or _current_embedding_provider()
             )
             target_embedding_model = request.embedding_model or current_embedding_model
             embedding_change_requested = bool(
                 request.embedding_provider or request.embedding_model
             ) and (
-                target_embedding_provider != llm_client.embedding_config.provider
+                target_embedding_provider != _current_embedding_provider()
                 or target_embedding_model != current_embedding_model
             )
             if embedding_change_requested and chatbot.has_indexed_documents():
@@ -243,13 +291,13 @@ async def switch_provider(
                 embedding_model=request.embedding_model,
             )
             if request.embedding_provider or request.embedding_model:
-                chatbot.reconfigure_embeddings(llm_client.embedding_config.dimensions)
+                chatbot.reconfigure_embeddings(_current_embedding_dimensions())
             llm_config = getattr(llm_client, "llm_config", None)
             log_event(
                 "provider.switched",
                 llm_provider=getattr(llm_config, "provider", None),
                 llm_model=getattr(llm_config, "model", None),
-                embedding_provider=llm_client.embedding_config.provider,
+                embedding_provider=_current_embedding_provider(),
                 embedding_model=_current_embedding_model(),
             )
             return {
@@ -285,11 +333,11 @@ async def update_runtime_config(
             embedding_change_requested = bool(embedding_provider or embedding_model)
             current_embedding_model = _current_embedding_model()
             target_embedding_provider = (
-                embedding_provider or llm_client.embedding_config.provider
+                embedding_provider or _current_embedding_provider()
             )
             target_embedding_model = embedding_model or current_embedding_model
             embedding_dimension_change_requested = embedding_change_requested and (
-                target_embedding_provider != llm_client.embedding_config.provider
+                target_embedding_provider != _current_embedding_provider()
                 or target_embedding_model != current_embedding_model
             )
             if embedding_dimension_change_requested and chatbot.has_indexed_documents():
@@ -307,7 +355,7 @@ async def update_runtime_config(
             llm_client.refresh_runtime_credentials()
 
             if embedding_dimension_change_requested:
-                chatbot.reconfigure_embeddings(llm_client.embedding_config.dimensions)
+                chatbot.reconfigure_embeddings(_current_embedding_dimensions())
 
             return {
                 "status": "updated",
