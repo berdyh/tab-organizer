@@ -2,7 +2,8 @@
 
 import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from services import url_safety
 from services.backend_core.app.api import routes
@@ -254,6 +255,57 @@ async def test_backend_service_urls_use_runtime_env(monkeypatch):
             ("POST", "http://browser.test/auth/credentials"),
         ]
         assert calls[0][2]["use_browser"] is True
+    finally:
+        session_manager.delete_session(session.id)
+
+
+def test_scrape_status_route_is_wired_to_get_scrape_status(monkeypatch):
+    """Regression: GET /scrape/status/{id} must dispatch to get_scrape_status.
+
+    The route decorator once landed on the private `_overlay_ingest_status`
+    helper instead of on `get_scrape_status` (both sit next to each other in
+    routes.py). FastAPI then read `_overlay_ingest_status`'s `payload: dict`
+    parameter as a required JSON body on a GET, so every real caller got a
+    422 instead of a status payload. A direct Python call to the helper can't
+    catch that — this test goes over HTTP through the actual router so a
+    future mis-bound decorator fails here.
+    """
+    monkeypatch.setenv("BROWSER_ENGINE_URL", "http://browser.test/")
+    session = session_manager.create_session("HTTP Status Route Regression")
+    session_manager.add_urls_to_session(session.id, ["https://example.com"])
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get(self, url, **kwargs):
+            request = httpx.Request("GET", url)
+            return httpx.Response(
+                200,
+                request=request,
+                json={"status": "completed", "success": 1, "ai_index_failed": 0},
+            )
+
+    monkeypatch.setattr(
+        "services.backend_core.app.api.routes.httpx.AsyncClient",
+        lambda: FakeClient(),
+    )
+
+    app = FastAPI()
+    app.include_router(routes.router, prefix="/api/v1")
+    client = TestClient(app)
+
+    try:
+        response = client.get(f"/api/v1/scrape/status/{session.id}")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["status"] == "completed"
+        assert body["ai_index_failed"] == 0
+        assert body["ai_index_pending"] == 0
     finally:
         session_manager.delete_session(session.id)
 

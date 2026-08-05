@@ -1164,7 +1164,6 @@ def export_session(request: ExportRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/scrape/status/{session_id}")
 def _overlay_ingest_status(session_id: str, payload: dict) -> dict:
     """Overlay backend ingest-ledger index aggregates onto the browser payload.
 
@@ -1184,6 +1183,7 @@ def _overlay_ingest_status(session_id: str, payload: dict) -> dict:
     return payload
 
 
+@router.get("/scrape/status/{session_id}")
 async def get_scrape_status(session_id: str):
     """Get scraping status for a session from browser engine.
 
