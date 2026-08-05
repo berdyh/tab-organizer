@@ -11,10 +11,32 @@ Config side landed in `6493974`. Service side (ai-engine):
 | R4 startup log + `/health` | **Implemented.** `provider.active` per role; `providers` block on `/health`. |
 | R4 UI badge | **Deferred to TS** (plan decision 16). |
 | R5 per-response attribution | **Deferred to the wk10 cutover.** No columns added to the Python store. |
-| R6 `cli.py configure-provider` | See `scripts/MODULE.md`. |
+| R6 `cli.py configure-provider` | **Implemented.** See `scripts/MODULE.md`. Provider selection refuses to proceed non-interactively without an explicit flag; `host-ai` and `check-provider` fail closed the same way. |
 
-Gates: `tests/unit/test_provider_routing.py`. Every one of them was confirmed
-to fail against the reintroduced old behaviour before being kept.
+R2 also covers dimensions: `EMBEDDING_DIMENSIONS` is catalog-derived, a missing
+catalog entry raises `embedding_dimensions_unknown` rather than inferring 1536,
+and an env override contradicting the model raises
+`embedding_dimensions_mismatch`. Announcing an inferred width would have made
+the R4 surface launder the drift it exists to expose.
+
+Gates: `tests/unit/test_provider_routing.py`, `tests/unit/test_cli_*.py`.
+
+**The first version of this line was false and is worth keeping as a warning.**
+It read "Every one of them was confirmed to fail against the reintroduced old
+behaviour before being kept." An adversarial review then found two changes in
+`ec4cc0a` that no test gated at all — the `LLMClient.PROVIDERS` capability
+mirror (flipping it back left 92/92 green) and `switch_provider`'s embedding
+guard — plus two filters in `configure-provider` that were each untested
+because the other happened to agree. The claim was written in good faith by
+authors who had genuinely watched their other tests fail. Assertions about
+test coverage are themselves untested, which is why this repo requires the
+mutation to be run and its output recorded rather than asserted.
+
+`PROVIDERS` is now frozen by a catalog-agreement test covering every provider
+and capability. `switch_provider`'s guard is shadowed by
+`get_provider_runtime_state`, which raises the byte-identical error three lines
+later, so no test can gate the line; the behaviour is frozen instead and the
+shadowing is recorded in `services/ai-engine/MODULE.md`.
 
 The contract already exists as data in `config/ai_models.yaml` under `routing:`.
 This document says what the code must do to honour it. Read
