@@ -74,6 +74,7 @@ test-ai: ## Run focused AI Engine unit tests
 		tests/unit/test_subscription_cli_providers.py \
 		tests/unit/test_rag_lancedb_persistence.py \
 		tests/unit/test_clustering.py \
+		tests/unit/test_provider_routing.py \
 		tests/unit/test_startup_config_validation.py -q
 
 test-browser: ## Run focused Browser Engine unit tests
@@ -95,6 +96,8 @@ test-ops: ## Run focused CLI/config/runtime unit tests
 	@echo "$(BLUE)Running Ops Tooling focused tests...$(NC)"
 	@docker compose --profile test-unit run --rm test-unit pytest \
 		tests/unit/test_cli_host_ai.py \
+		tests/unit/test_cli_configure_provider.py \
+		tests/unit/test_cli_check_provider.py \
 		tests/unit/test_init_script.py \
 		tests/unit/test_runtime_auth_config.py -q
 
