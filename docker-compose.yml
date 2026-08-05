@@ -39,8 +39,13 @@ services:
     ports:
       - "127.0.0.1:8090:8090"
     environment:
-      - AI_PROVIDER=${AI_PROVIDER:-openrouter}
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openrouter}
+      # No default on purpose (routing.silent_fallback: false). A `:-openrouter`
+      # here would re-supply the very default the AI Engine now refuses to
+      # invent, and the container would quietly spend metered credit nobody
+      # chose. Unset means unset: the service starts, reports degraded, and
+      # names the fix. Run `./scripts/cli.py configure-provider` to choose.
+      - AI_PROVIDER=${AI_PROVIDER:-}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-}
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
       - AI_ENGINE_ALLOW_UNAUTHENTICATED=${AI_ENGINE_ALLOW_UNAUTHENTICATED:-false}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
