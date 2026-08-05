@@ -85,6 +85,9 @@ test-browser: ## Run focused Browser Engine unit tests
 		tests/unit/test_cdp_second_hop.py \
 		tests/unit/test_browser_engine_callbacks.py \
 		tests/unit/test_auth_detector.py \
+		tests/unit/test_credential_store.py \
+		tests/unit/test_credential_domain_scope.py \
+		tests/unit/test_scraper_redirect_credentials.py \
 		tests/unit/test_startup_config_validation.py -q
 
 test-web: ## Run focused Web UI unit tests
