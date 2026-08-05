@@ -38,28 +38,57 @@ def run_command(command: List[str], *, check: bool = True, capture_output: bool 
     )
 
 
-def update_env_var(key: str, value: str) -> None:
-    """Insert or update keys in the environment file."""
+def _write_env_file_atomically(text: str) -> None:
+    """Replace .env's contents in one atomic operation (temp file + rename).
+
+    `Path.replace` is an atomic rename on the same filesystem (POSIX and
+    Windows both guarantee this), so a reader -- or a crash/IO error hitting
+    this process -- only ever sees the old file in full or the new file in
+    full, never a truncated or half-written one.
+    """
+    tmp_path = ENV_FILE.with_name(ENV_FILE.name + ".tmp")
+    tmp_path.write_text(text)
+    tmp_path.replace(ENV_FILE)
+
+
+def update_env_vars(pairs: Dict[str, str]) -> None:
+    """Insert or update multiple keys in one read-modify-write pass.
+
+    Callers that need to change several related keys together (for example
+    AI_PROVIDER + LLM_MODEL + EMBEDDING_PROVIDER + EMBEDDING_MODEL +
+    EMBEDDING_DIMENSIONS, as `cli.py configure-provider` does) must apply all
+    of them in the same pass: calling `update_env_var` once per key opens,
+    reads, and rewrites the whole file N separate times, so an IO failure (or
+    a crash) between calls leaves `.env` with only some of the keys updated --
+    a torn write across an otherwise-atomic-looking selection. Batching into
+    one in-memory edit plus one atomic write removes that window entirely.
+    """
     if not ENV_FILE.exists():
         return
 
     lines = ENV_FILE.read_text().splitlines()
-    updated = False
+    remaining = dict(pairs)
     for idx, line in enumerate(lines):
-        if line.startswith(f"{key}="):
-            lines[idx] = f"{key}={value}"
-            updated = True
+        if not remaining:
             break
-    if not updated:
+        for key in list(remaining):
+            if line.startswith(f"{key}="):
+                lines[idx] = f"{key}={remaining.pop(key)}"
+                break
+    for key, value in remaining.items():
         lines.append(f"{key}={value}")
 
-    ENV_FILE.write_text("\n".join(lines) + "\n")
+    _write_env_file_atomically("\n".join(lines) + "\n")
+
+
+def update_env_var(key: str, value: str) -> None:
+    """Insert or update a single key in the environment file."""
+    update_env_vars({key: value})
 
 
 def update_embedding_model_env(embedding_model: str) -> None:
     """Set embedding model and clear stale dimension overrides."""
-    update_env_var("EMBEDDING_MODEL", embedding_model)
-    update_env_var("EMBEDDING_DIMENSIONS", "")
+    update_env_vars({"EMBEDDING_MODEL": embedding_model, "EMBEDDING_DIMENSIONS": ""})
 
 
 def ensure_env_file() -> None:
@@ -466,10 +495,22 @@ def main(argv: List[str] | None = None) -> int:
 
     provider = args.provider
     if provider is None:
-        provider = "ollama" if sys.stdin.isatty() else "ollama"
-        if sys.stdin.isatty():
-            response = prompt_text("Use Ollama for local models? (yes/no)", default="yes")
-            provider = "ollama" if response.lower() in {"y", "yes", ""} else "claude"
+        if not sys.stdin.isatty():
+            # SPEC-provider-routing.md R3: AI_PROVIDER/EMBEDDING_PROVIDER in
+            # .env is read elsewhere as proof a human deliberately chose a
+            # provider. A non-interactive run with no --provider has no such
+            # proof, so it must refuse rather than silently write "ollama" --
+            # that would forge the exact consent record R3 requires.
+            raise SystemExit(
+                "init.py will not choose a provider on your behalf: this "
+                "session is not interactive and --provider was not given. "
+                "Pass --provider explicitly (ollama, claude, openrouter, "
+                "claude_code, codex_cli, codex_acp) -- that flag IS the "
+                "deliberate choice (SPEC-provider-routing.md R3). Nothing "
+                "was written to .env."
+            )
+        response = prompt_text("Use Ollama for local models? (yes/no)", default="yes")
+        provider = "ollama" if response.lower() in {"y", "yes", ""} else "claude"
 
     if provider == "ollama":
         provider_info = configure_ollama(args)

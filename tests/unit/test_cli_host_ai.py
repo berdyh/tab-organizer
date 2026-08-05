@@ -6,6 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from scripts import cli
 from scripts.mcp import tabs as mcp_tabs
 
@@ -133,6 +135,78 @@ def test_host_ai_rewrites_docker_ollama_host_and_sets_token(monkeypatch):
     assert env["AI_ENGINE_API_TOKEN"] == "token-AI_ENGINE_API_TOKEN"
     assert env["BACKEND_CALLBACK_TOKEN"] == "token-BACKEND_CALLBACK_TOKEN"
     assert env["AI_ENGINE_API_TOKEN"] != env["BACKEND_CALLBACK_TOKEN"]
+
+
+def test_cmd_host_ai_fails_closed_when_ai_provider_not_set(monkeypatch):
+    """host-ai is the documented way to use subscription providers (CLAUDE.md).
+
+    Before this fix it silently injected AI_PROVIDER=claude_code /
+    EMBEDDING_PROVIDER=ollama when neither a flag nor an env var supplied one
+    -- forging the exact "env var is the record of consent" invariant
+    SPEC-provider-routing.md R1/R3 requires. It must refuse instead of ever
+    invoking uvicorn with a provider nobody chose.
+    """
+    calls = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(
+        cli, "run_command", lambda cmd, env=None, **kwargs: calls.append(cmd)
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_host_ai(_host_ai_args(provider=None, embedding_provider=None))
+
+    message = str(exc_info.value)
+    assert "provider_not_selected" in message
+    assert "AI_PROVIDER" in message
+    assert "configure-provider" in message
+    assert not calls, "uvicorn must never start with an unselected provider"
+
+
+def test_cmd_host_ai_fails_closed_when_embedding_provider_not_set(monkeypatch):
+    """Same fail-closed rule for EMBEDDING_PROVIDER, isolated from AI_PROVIDER
+    by supplying --provider explicitly (real consent) so only the embedding
+    gate is under test."""
+    calls = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(
+        cli, "run_command", lambda cmd, env=None, **kwargs: calls.append(cmd)
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_host_ai(_host_ai_args(provider="claude_code", embedding_provider=None))
+
+    message = str(exc_info.value)
+    assert "provider_not_selected" in message
+    assert "EMBEDDING_PROVIDER" in message
+    assert not calls
+
+
+def test_cmd_host_ai_accepts_explicit_provider_flags(monkeypatch):
+    """The legitimate route keeps working: an explicit --provider/
+    --embedding-provider IS the deliberate choice (R3), with no AI_PROVIDER/
+    EMBEDDING_PROVIDER in the environment at all."""
+    calls = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "run_command",
+        lambda cmd, env=None, **kwargs: calls.append({"cmd": cmd, "env": env}),
+    )
+
+    cli.cmd_host_ai(_host_ai_args(provider="codex_acp", embedding_provider="ollama"))
+
+    assert calls
+    env = calls[0]["env"]
+    assert env["AI_PROVIDER"] == "codex_acp"
+    assert env["EMBEDDING_PROVIDER"] == "ollama"
 
 
 def test_host_ai_parser_default_host_is_not_bound_to_all_interfaces():

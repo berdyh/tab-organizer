@@ -1,6 +1,7 @@
 """Regression tests for the interactive init helper."""
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -150,6 +151,77 @@ def test_configure_claude_clears_stale_embedding_dimensions(tmp_path, monkeypatc
     assert "EMBEDDING_DIMENSIONS=\n" in env_text or env_text.rstrip().endswith(
         "EMBEDDING_DIMENSIONS="
     )
+
+
+def test_main_refuses_to_auto_select_provider_when_noninteractive(tmp_path, monkeypatch):
+    """A non-interactive `init.py` run with no --provider must never silently
+    write AI_PROVIDER=ollama. That line is later read (R1/R3) as proof a human
+    deliberately chose it; an unattended default forges that record just like
+    the tty-gate in cli.py's configure-provider is written to prevent.
+    """
+    assert not init.sys.stdin.isatty()  # sanity: this is exactly the scenario under test
+
+    env_file = tmp_path / ".env"
+    template_file = tmp_path / ".env.example"
+    template_file.write_text("AI_PROVIDER=\nEMBEDDING_PROVIDER=\n")
+    monkeypatch.setattr(init, "ENV_FILE", env_file)
+    monkeypatch.setattr(init, "ENV_TEMPLATE", template_file)
+    monkeypatch.setattr(init, "require_docker", lambda: None)
+    monkeypatch.setattr(init, "ensure_logs_dir", lambda: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        init.main([])
+
+    message = str(exc_info.value)
+    assert "will not choose a provider on your behalf" in message
+    assert "--provider" in message
+    assert "AI_PROVIDER=ollama" not in env_file.read_text()
+
+
+def test_update_env_vars_applies_every_key_in_one_pass(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("AI_PROVIDER=openrouter\nEMBEDDING_PROVIDER=openrouter\n")
+    monkeypatch.setattr(init, "ENV_FILE", env_file)
+
+    init.update_env_vars(
+        {
+            "AI_PROVIDER": "claude_code",
+            "LLM_MODEL": "sonnet",
+            "EMBEDDING_PROVIDER": "ollama",
+        }
+    )
+
+    env_text = env_file.read_text()
+    assert "AI_PROVIDER=claude_code" in env_text
+    assert "LLM_MODEL=sonnet" in env_text
+    assert "EMBEDDING_PROVIDER=ollama" in env_text
+
+
+def test_update_env_vars_never_leaves_a_partial_file_on_write_failure(tmp_path, monkeypatch):
+    """`cli.py configure-provider` writes AI_PROVIDER/LLM_MODEL/EMBEDDING_PROVIDER/
+    EMBEDDING_MODEL/EMBEDDING_DIMENSIONS together through this function.
+    scripts/MODULE.md treats a partially-written .env as a hard constraint to
+    avoid, so an IO failure partway through the write must leave the ORIGINAL
+    file completely untouched, never a mix of old and new keys.
+    """
+    env_file = tmp_path / ".env"
+    original = "AI_PROVIDER=openrouter\nEMBEDDING_PROVIDER=openrouter\n"
+    env_file.write_text(original)
+    monkeypatch.setattr(init, "ENV_FILE", env_file)
+
+    real_write_text = Path.write_text
+
+    def failing_write_text(self, *args, **kwargs):
+        if self.name.endswith(".tmp"):
+            raise OSError("simulated disk full")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+    with pytest.raises(OSError):
+        init.update_env_vars({"AI_PROVIDER": "claude_code", "EMBEDDING_PROVIDER": "ollama"})
+
+    assert env_file.read_text() == original
 
 
 def test_configure_codex_acp_writes_subscription_runtime_env(tmp_path, monkeypatch):

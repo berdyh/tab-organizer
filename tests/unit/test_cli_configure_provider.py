@@ -61,6 +61,15 @@ def test_unavailable_llm_provider_excluded_from_candidates(monkeypatch):
 # --------------------------------------------------------------------------
 # Gating test 2: an embedding provider that cannot embed is never offered,
 # even if a (mocked) probe would call it available.
+#
+# `_probe_available_embedding_providers` applies two catalog filters before
+# ever probing: `is_provider_supported(provider, "embeddings")` and
+# `get_provider_models(provider, "embedding")`. In the live catalog they
+# currently agree on every provider (openrouter has supports.embeddings=false
+# AND zero listed embedding models), so this test alone cannot tell you which
+# filter did the excluding -- delete either one and this test still passes,
+# because the other still catches openrouter. The two tests below isolate
+# each filter with a synthetic disagreement so each can fail on its own.
 # --------------------------------------------------------------------------
 
 
@@ -69,15 +78,82 @@ def test_openrouter_never_offered_for_embeddings_even_if_probe_says_available(mo
 
     ai_config = get_ai_config()
 
-    # Deliberately permissive probe: everything "available". If openrouter
-    # still doesn't show up, the catalog filter (supports.embeddings) is what
-    # excluded it, not the probe -- exactly the invariant this test protects.
+    # Deliberately permissive probe: everything "available". Real catalog
+    # values for both filters agree that openrouter is excluded -- this is a
+    # smoke test that the combined path behaves correctly end to end, not
+    # proof of which filter is responsible (see the two tests below for that).
     monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
 
     names = [name for name, _ in cli._probe_available_embedding_providers(ai_config)]
 
     assert "openrouter" not in names
     assert "ollama" in names
+
+
+def test_supports_embeddings_filter_excludes_provider_even_with_phantom_models(monkeypatch):
+    """Isolates `is_provider_supported(provider, "embeddings")` from the
+    `get_provider_models` filter it is redundant with today.
+
+    Reproduces the historical regression this catalog exists to prevent: the
+    catalog briefly listed three embedding model IDs for openrouter that did
+    not exist (verified 2026-08-04, none of the 338 catalogued models has an
+    embedding modality). Simulates that here by making `get_provider_models`
+    report a model for openrouter while leaving `is_provider_supported`
+    untouched (real catalog value: False). If the `is_provider_supported`
+    filter were ever deleted, this is exactly the scenario that would let
+    openrouter through.
+    """
+    from config.config_loader import get_ai_config
+
+    ai_config = get_ai_config()
+    real_get_provider_models = ai_config.get_provider_models
+
+    def phantom_models(provider, model_type=None):
+        if provider == "openrouter" and model_type == "embedding":
+            return ["phantom/fake-embed-1"]
+        return real_get_provider_models(provider, model_type)
+
+    monkeypatch.setattr(ai_config, "get_provider_models", phantom_models)
+    monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
+
+    names = [name for name, _ in cli._probe_available_embedding_providers(ai_config)]
+
+    assert "openrouter" not in names, (
+        "is_provider_supported(embeddings) must exclude a provider even when "
+        "get_provider_models reports models for it"
+    )
+
+
+def test_embedding_models_filter_excludes_provider_even_with_supports_flag_true(monkeypatch):
+    """Isolates `get_provider_models` from the `is_provider_supported` filter
+    it is redundant with today.
+
+    Simulates a catalog entry whose `supports.embeddings` flag is misconfigured
+    True but which lists no actual embedding models, leaving
+    `get_provider_models` untouched (real catalog value: empty list for
+    openrouter). If the `get_provider_models` filter were ever deleted, this
+    is exactly the scenario that would let such a provider through on the
+    strength of the flag alone.
+    """
+    from config.config_loader import get_ai_config
+
+    ai_config = get_ai_config()
+    real_is_provider_supported = ai_config.is_provider_supported
+
+    def flag_says_yes(provider, capability):
+        if provider == "openrouter" and capability == "embeddings":
+            return True
+        return real_is_provider_supported(provider, capability)
+
+    monkeypatch.setattr(ai_config, "is_provider_supported", flag_says_yes)
+    monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
+
+    names = [name for name, _ in cli._probe_available_embedding_providers(ai_config)]
+
+    assert "openrouter" not in names, (
+        "get_provider_models must exclude a provider even when "
+        "is_provider_supported(embeddings) is (misconfigured) True"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -300,6 +376,75 @@ def test_pulls_ollama_model_when_confirmed_with_yes_flag(tmp_path, monkeypatch):
     env_text = env_file.read_text()
     assert "AI_PROVIDER=ollama" in env_text
     assert "LLM_MODEL=qwen3" in env_text
+
+
+# --------------------------------------------------------------------------
+# Gating test: the five .env keys land in ONE read-modify-write pass, not
+# four/five sequential ones, so an IO failure between them cannot leave .env
+# with only some of the new selection applied. scripts/MODULE.md calls
+# partial writes a hard constraint.
+# --------------------------------------------------------------------------
+
+
+def test_configure_provider_writes_all_env_keys_in_a_single_pass(tmp_path, monkeypatch):
+    env_file = _write_env(
+        tmp_path,
+        monkeypatch,
+        contents="\n".join(
+            [
+                "AI_PROVIDER=openrouter",
+                "EMBEDDING_PROVIDER=openrouter",
+                "LLM_MODEL=",
+                "EMBEDDING_MODEL=",
+                "EMBEDDING_DIMENSIONS=999",
+            ]
+        )
+        + "\n",
+    )
+
+    monkeypatch.setattr(cli, "probe_llm_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(
+        cli,
+        "probe_ollama_installed_models",
+        lambda base_url, timeout=2.0: {"nomic-embed-text"},
+    )
+
+    calls = []
+    real_update_env_vars = init.update_env_vars
+
+    def spying_update_env_vars(pairs):
+        calls.append(dict(pairs))
+        return real_update_env_vars(pairs)
+
+    # cmd_configure_provider does `from scripts.init import ... update_env_vars`
+    # inside the function body, so it re-resolves scripts.init.update_env_vars
+    # at call time -- patch the name on init, not on cli, for the spy to take.
+    monkeypatch.setattr(init, "update_env_vars", spying_update_env_vars)
+
+    cli.cmd_configure_provider(
+        _configure_args(provider="claude_code", embedding_provider="ollama")
+    )
+
+    # Exactly one write call, carrying every key together -- not one call per
+    # key. A caller that instead did N sequential update_env_var() calls would
+    # make this list longer than 1, and an IO failure between those calls
+    # could leave .env with only some of them applied.
+    assert len(calls) == 1, (
+        f"expected configure-provider to batch all keys into one "
+        f"update_env_vars() call, got {len(calls)} separate calls: {calls}"
+    )
+    assert calls[0] == {
+        "AI_PROVIDER": "claude_code",
+        "LLM_MODEL": "sonnet",
+        "EMBEDDING_PROVIDER": "ollama",
+        "EMBEDDING_MODEL": "nomic-embed-text",
+        "EMBEDDING_DIMENSIONS": "",
+    }
+
+    env_text = env_file.read_text()
+    assert "AI_PROVIDER=claude_code" in env_text
+    assert "EMBEDDING_DIMENSIONS=999" not in env_text
 
 
 def test_ensure_env_file_creates_env_from_template_when_missing(tmp_path, monkeypatch):

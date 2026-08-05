@@ -353,14 +353,45 @@ def resolve_host_ai_bind_host(requested: str | None) -> str:
     return gateway
 
 
+def _require_explicit_provider(
+    explicit: str | None, env_var: str, role_label: str, flag_name: str
+) -> str:
+    """Return an explicitly-chosen provider; refuse rather than invent one.
+
+    SPEC-provider-routing.md R1/R3: `AI_PROVIDER`/`EMBEDDING_PROVIDER` have no
+    default anywhere, and an env var already set (in `.env` or the shell) IS
+    the record of deliberate consent -- so is an explicit CLI flag. What is
+    NOT consent is silently substituting a hardcoded provider ("claude_code",
+    "ollama", "openrouter", ...) when neither was given: that forges the exact
+    consent record R1/R3 exist to require, the same failure mode
+    `_choose_provider_interactively` above refuses to commit for
+    configure-provider. Every caller here (`host-ai`, `check-provider`) must
+    fail closed the same way instead of picking a provider on the user's
+    behalf.
+    """
+    value = (explicit or os.getenv(env_var, "")).strip()
+    if value:
+        return value
+    raise SystemExit(
+        f"code: provider_not_selected\n"
+        f"cause: {env_var} is not set. This command does not pick a "
+        f"{role_label} provider for you.\n"
+        f"fix: Run ./scripts/cli.py configure-provider, or pass {flag_name} "
+        f"explicitly, or set {env_var} in .env. Preferred: claude_code or "
+        f"codex_cli (uses your subscription). Metered: openrouter, openai, "
+        f"gemini (requires an API key and consent). Local: ollama (free, "
+        f"requires models pulled first)."
+    )
+
+
 def cmd_host_ai(args):
     """Run the AI engine on the host so it can use authenticated local CLIs."""
     load_env_file()
 
     env = os.environ.copy()
-    provider = args.provider or os.getenv("AI_PROVIDER") or "claude_code"
-    embedding_provider = (
-        args.embedding_provider or os.getenv("EMBEDDING_PROVIDER") or "ollama"
+    provider = _require_explicit_provider(args.provider, "AI_PROVIDER", "LLM", "--provider")
+    embedding_provider = _require_explicit_provider(
+        args.embedding_provider, "EMBEDDING_PROVIDER", "embedding", "--embedding-provider"
     )
     env["AI_PROVIDER"] = provider
     env["EMBEDDING_PROVIDER"] = embedding_provider
@@ -422,7 +453,7 @@ def cmd_check_provider(args):
     from services.ai_engine.app.core.llm_client import LLMClient, LLMConfig
 
     ai_config = get_ai_config()
-    provider = args.provider or os.getenv("AI_PROVIDER") or "openrouter"
+    provider = _require_explicit_provider(args.provider, "AI_PROVIDER", "LLM", "--provider")
     model = (
         args.model
         or os.getenv("LLM_MODEL")
@@ -631,8 +662,9 @@ def _choose_provider_interactively(
     AI_PROVIDER/EMBEDDING_PROVIDER in .env is read elsewhere as proof a human
     deliberately chose it (SPEC-provider-routing.md R3: "the env var is the
     record of consent"). `scripts/init.py`'s prompt_choice() silently returns
-    its first option when stdin is not a tty -- correct there, since init.py's
-    defaults were always allowed under the old contract. It is wrong here: a
+    `options[default_index]` when stdin is not a tty -- correct there, since
+    init.py's defaults were always allowed under the old contract. It is
+    wrong here: a
     piped/CI/non-interactive configure-provider run with no explicit flag
     would then write a provider nobody chose, and the resulting .env line
     would be indistinguishable from a real decision to every later reader,
@@ -707,12 +739,7 @@ def cmd_configure_provider(args):
     from the catalog and cannot drift from EMBEDDING_MODEL.
     """
     from config.config_loader import get_ai_config
-    from scripts.init import (
-        ensure_env_file,
-        prompt_choice,
-        update_embedding_model_env,
-        update_env_var,
-    )
+    from scripts.init import ensure_env_file, prompt_choice, update_env_vars
 
     ensure_env_file()
     load_env_file()
@@ -822,10 +849,21 @@ def cmd_configure_provider(args):
     if embedding_provider == "ollama":
         embedding_model = _ensure_ollama_model_pulled(embedding_model, args)
 
-    update_env_var("AI_PROVIDER", llm_provider)
-    update_env_var("LLM_MODEL", llm_model)
-    update_env_var("EMBEDDING_PROVIDER", embedding_provider)
-    update_embedding_model_env(embedding_model)
+    # All five keys land in ONE read-modify-write pass (update_env_vars), not
+    # four/five sequential ones: a mid-sequence IO failure could otherwise
+    # leave .env with e.g. AI_PROVIDER updated but EMBEDDING_PROVIDER stale --
+    # a partial write scripts/MODULE.md treats as a hard constraint to avoid.
+    # EMBEDDING_DIMENSIONS is written blank in the same pass so it resolves
+    # from the catalog and cannot drift from EMBEDDING_MODEL.
+    update_env_vars(
+        {
+            "AI_PROVIDER": llm_provider,
+            "LLM_MODEL": llm_model,
+            "EMBEDDING_PROVIDER": embedding_provider,
+            "EMBEDDING_MODEL": embedding_model,
+            "EMBEDDING_DIMENSIONS": "",
+        }
+    )
 
     print(
         f"Wrote AI_PROVIDER={llm_provider}, LLM_MODEL={llm_model}, "
@@ -1109,12 +1147,19 @@ Examples:
     host_ai_parser.add_argument(
         "--provider",
         choices=["claude_code", "codex_cli", "codex_acp", "openrouter", "ollama"],
-        help="LLM provider to run in the host AI engine; defaults to AI_PROVIDER or claude_code",
+        help=(
+            "LLM provider to run in the host AI engine; falls back to "
+            "AI_PROVIDER in .env if set, otherwise required (this command "
+            "never picks a provider for you -- run configure-provider first)"
+        ),
     )
     host_ai_parser.add_argument("--llm-model", help="Override LLM_MODEL")
     host_ai_parser.add_argument(
         "--embedding-provider",
-        help="Embedding provider to pair with the LLM provider; defaults to EMBEDDING_PROVIDER or ollama",
+        help=(
+            "Embedding provider to pair with the LLM provider; falls back "
+            "to EMBEDDING_PROVIDER in .env if set, otherwise required"
+        ),
     )
     host_ai_parser.add_argument("--embedding-model", help="Override EMBEDDING_MODEL")
     host_ai_parser.add_argument(
@@ -1163,7 +1208,10 @@ Examples:
             "deepseek",
             "gemini",
         ],
-        help="Provider to check; defaults to AI_PROVIDER",
+        help=(
+            "Provider to check; falls back to AI_PROVIDER in .env if set, "
+            "otherwise required"
+        ),
     )
     check_parser.add_argument("--model", help="Override model for the check")
     check_parser.add_argument(
