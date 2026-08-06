@@ -79,12 +79,13 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
    AI_PROVIDER=claude_code
    EMBEDDING_PROVIDER=ollama
 
-   # OpenRouter (metered — one key for many models).
-   # NOTE: OpenRouter serves NO embedding models, so EMBEDDING_PROVIDER must
-   # point somewhere else.
+   # OpenRouter (metered — one key for many models, embeddings included).
    AI_PROVIDER=openrouter
    OPENROUTER_API_KEY=<openrouter-api-key>
-   EMBEDDING_PROVIDER=ollama
+   EMBEDDING_PROVIDER=ollama          # or openrouter, for a cloud embedder
+   # EMBEDDING_PROVIDER=openrouter
+   # EMBEDDING_MODEL=openai/text-embedding-3-small
+   # EMBEDDING_DIMENSIONS=768         # truncates to match an existing 768-d table
 
    # Local-only via Ollama (opt-in; pull models first with `./scripts/cli.py init --models`)
    AI_PROVIDER=ollama

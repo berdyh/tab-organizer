@@ -30,8 +30,8 @@ providers:
       llm: true
       embeddings: true
     default_models:
-      llm: "openai/gpt-4o-mini"
-      embedding: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+      llm: "openai/gpt-5.6-luna"
+      embedding: "qwen/qwen3-embedding-8b"
 
   ollama:
     type: local
@@ -94,17 +94,19 @@ Provides recommended configurations for different use cases:
 
 ```yaml
 defaults:
-  provider: "openrouter"
+  # NOT the LLM default -- AI_PROVIDER is, and it has no default at all.
+  # This is the embedding provider used when one is chosen without a model.
+  provider: "ollama"
   use_cases:
     reasoning:
-      provider: "openrouter"
-      model: "openai/gpt-4o-mini"
+      provider: "claude_code"
+      model: "sonnet"
     coding:
       provider: "claude_code"
       model: "sonnet"
     embeddings:
-      provider: "openrouter"
-      model: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+      provider: "ollama"
+      model: "nomic-embed-text"
 ```
 
 ## Using the Configuration System
@@ -220,7 +222,7 @@ models:
 The system uses these environment variables:
 
 - `AI_PROVIDER`: The LLM provider (openrouter, ollama, openai, anthropic, claude_code, codex_cli, codex_acp, deepseek, gemini). **No default** — nothing is selected on your behalf. Unset, the AI Engine starts, reports `degraded` on `/health` with a `{code, cause, fix}`, and fails every generate call closed. Run `./scripts/cli.py configure-provider` or set it explicitly.
-- `EMBEDDING_PROVIDER`: The embedding provider (`ollama`, `openai`, `gemini`). **No default**, and no fallback: setting it to a provider that cannot embed is an error naming the ones that can, not a silent swap. The subscription CLIs serve no embedding models, and neither does OpenRouter (verified 2026-08-04).
+- `EMBEDDING_PROVIDER`: The embedding provider (`ollama`, `openrouter`, `openai`, `gemini`). **No default**, and no fallback: setting it to a provider that cannot embed is an error naming the ones that can, not a silent swap. The subscription CLIs, `anthropic` and `deepseek` serve no embedding models. OpenRouter does (corrected 2026-08-05 by calling the endpoint; the earlier claim was inferred from its chat-model listing, which does not cover `/v1/embeddings`).
 - `LLM_MODEL`: Override default LLM model
 - `EMBEDDING_MODEL`: Override default embedding model
 - `EMBEDDING_DIMENSIONS`: Override embedding dimensions (must match the model)
@@ -251,7 +253,7 @@ The system uses these environment variables:
 
 `codex_cli` is not ACP mode: it is a one-shot `codex exec --ephemeral --json -` provider. For ACP semantics use `codex_acp`, which invokes `acpx` and drives the Codex harness with the ACP session lifecycle (`sessions ensure`, `prompt --file -`, and session cleanup). This is still a repo-local LLM provider, not an OpenClaw `sessions_spawn(runtime: "acp")` orchestrator.
 
-The local CLI/ACP providers are LLM-only. Keep `EMBEDDING_PROVIDER` on `ollama`, `openai`, or `gemini` — **not** `openrouter`, which serves no embedding models. Pointing it at any LLM-only provider fails closed with a `embedding_provider_cannot_embed` error listing what can embed; it is not silently rewritten.
+The local CLI/ACP providers are LLM-only. Keep `EMBEDDING_PROVIDER` on `ollama`, `openrouter`, `openai`, or `gemini`. Pointing it at any LLM-only provider fails closed with an `embedding_provider_cannot_embed` error listing what can embed; it is not silently rewritten.
 
 For a host-run local subscription mode:
 
@@ -370,7 +372,7 @@ reload_config()
 - Ensure key has required permissions
 
 ### Embedding provider mismatch
-- Some providers (Anthropic, the subscription CLIs, and OpenRouter) serve no embedding models
+- Some providers (Anthropic, DeepSeek, and the subscription CLIs `claude_code`/`codex_cli`/`codex_acp`) serve no embedding models. OpenRouter was listed here until 2026-08-05 and does **not** belong: it serves embeddings via `POST /v1/embeddings`
 - The system does **not** fall back to a working one. It raises `embedding_provider_cannot_embed`, naming the providers that can embed (derived from the catalog), and `/health` reports `degraded`
 - Set `EMBEDDING_PROVIDER` to one of those, or run `./scripts/cli.py configure-provider`
 - The old silent fallback was removed deliberately: it substituted a provider nobody chose and reported nothing. See `docs/SPEC-provider-routing.md`

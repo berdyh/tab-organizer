@@ -68,7 +68,7 @@ just get quietly worse, or quietly cost money.
 | Location | Today | Problem |
 |---|---|---|
 | `services/ai-engine/app/core/llm_client.py:115` | `os.getenv("AI_PROVIDER") or "openrouter"` | Hardcoded metered default. An unset env var silently spends money. |
-| `services/ai-engine/app/core/llm_client.py:141` | `os.getenv("EMBEDDING_PROVIDER") or "openrouter"` | Same, and openrouter cannot embed at all — this default can only fail. |
+| `services/ai-engine/app/core/llm_client.py:141` | `os.getenv("EMBEDDING_PROVIDER") or "openrouter"` | Hardcoded metered default for the embedding role too. (This row used to add "and openrouter cannot embed at all — this default can only fail". That was false; see the correction below. The default was still wrong, for the money reason above.) |
 | `services/ai-engine/app/core/llm_client.py:148-152` | If the provider can't embed, silently swap to `defaults.provider` | The silent fallback. Nothing logs it; nothing surfaces it. |
 | everywhere | Nothing announces the active provider | The user cannot tell who answered. |
 
@@ -109,13 +109,71 @@ cannot embed. Delete that. Raise instead, naming the providers that can:
 ```
 code: "embedding_provider_cannot_embed"
 cause: "EMBEDDING_PROVIDER='claude_code' serves no embedding models."
-fix:   "Choose one of: ollama (local, free), openai, gemini.
-        Note openrouter serves NO embedding models -- verified 2026-08-04."
+fix:   "Choose one of: ollama, openrouter, openai, gemini.
+        That list comes from config/ai_models.yaml, so it is current
+        by construction."
 ```
 
 Derive the "can embed" list from the catalog (`is_provider_supported(p,
 "embeddings")`), never hardcode it. That is what made `init.py` self-correct
 when the catalog was fixed.
+
+The `fix` string names **no provider of its own**, and that is a requirement,
+not a style preference. It used to end with "Note openrouter serves NO
+embedding models -- verified 2026-08-04". See the correction below for why that
+line is gone.
+
+#### Correction, 2026-08-05 — "openrouter cannot embed" was false
+
+Recorded rather than deleted, because the repo has now been bitten four times
+by a documented-but-false invariant, and the durable lesson is the method, not
+the fact.
+
+**The claim.** On 2026-08-04 `config/ai_models.yaml` was given
+`openrouter.supports.embeddings: false`, annotated "VERIFIED FALSE ... OpenRouter
+serves NO embedding models". It propagated into this spec, `CLAUDE.md`,
+`docs/MODULE_INDEX.md`, `docs/AI_CONFIG.md`, `.env.example`, `README.md`, two
+module cards, `scripts/cli.py`, the `LLMClient.PROVIDERS` mirror, a
+user-facing error string, and four tests.
+
+**Why it was believed.** The check was real and honestly reported. It fetched
+`GET https://openrouter.ai/api/v1/models`, scanned all 340 entries, found
+output modalities of only `[audio, image, text]` and no id matching "embed",
+and concluded embeddings were unavailable.
+
+**Why the check could not work.** That listing describes the
+**chat-completions** surface. `POST /v1/embeddings` is a *separate* surface it
+never enumerates. Absence from the listing was therefore not evidence of
+absence — the method had no way to observe the thing it was ruling on.
+
+**What replaced it.** A live call to the endpoint itself, 2026-08-05:
+
+| Request | Result |
+|---|---|
+| `text-embedding-3-small` | HTTP 200, 1536-d, $0.02/Mtok |
+| `text-embedding-3-large` | HTTP 200, 3072-d, $0.13/Mtok |
+| `openai/text-embedding-3-small` | HTTP 200, 1536-d |
+| `{"dimensions": 768}` override | HTTP 200, 768-d |
+| `text-embedding-004`, `nomic-embed-text` | HTTP 400, "Model does not exist" |
+
+**The rule this yields.** A capability claim is only as strong as the method
+behind it. Asking a *listing* what a provider offers is weak evidence and must
+never be recorded as "verified"; *calling the endpoint* that serves the
+capability is authoritative. Annotating the weak result as verified is what
+made it durable — every later reader treated it as settled and copied it
+onward.
+
+**What caught it, and what did not.** Nothing did, for a day: every downstream
+check compared the claim against another copy of the claim. When the catalog
+was corrected, `scripts/init.py` and the CLI's `configure-provider` filters
+self-corrected with no edit (they ask the catalog), while the `PROVIDERS`
+mirror, the embedding adapter map, six documents and four tests each had to be
+repaired by hand. `tests/unit/test_provider_routing.py` now carries two tests
+for this specific blind spot: one asserting `supports.embeddings` agrees with
+the adapter map, and one (`requires_provider_credentials`) asserting it agrees
+with the live endpoint — the only kind of test that could have caught the
+original error, since the original error was a false belief about a remote
+service.
 
 ### R3 — Honour `requires_explicit_opt_in`
 
