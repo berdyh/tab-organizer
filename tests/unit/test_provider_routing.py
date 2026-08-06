@@ -79,9 +79,14 @@ def _catalog_embedding_providers() -> list[str]:
 def _named_choices(fix: str) -> str:
     """The 'Choose one of: ...' segment of an R2 fix string.
 
-    Sliced out deliberately: the rest of the fix text mentions openrouter by
-    name ("serves NO embedding models"), so a naive substring check over the
-    whole string would pass whether or not openrouter was offered as a choice.
+    Sliced out deliberately, so an assertion about which providers are OFFERED
+    cannot be satisfied by a provider name appearing elsewhere in the message.
+    That was not hypothetical: the fix text used to end with a hand-written
+    "Note openrouter serves NO embedding models", and a naive substring check
+    over the whole string would have passed whether or not openrouter was
+    actually offered as a choice. That note is gone (it was false), but the
+    slicing stays -- the next hardcoded name in an error string should not be
+    able to fool this either.
     """
     return fix.split("Choose one of: ", 1)[1].split(".", 1)[0]
 
@@ -228,11 +233,26 @@ def test_embedding_error_names_every_catalog_provider_that_can_embed(monkeypatch
 
     for provider in capable:
         assert provider in choices
-    # openrouter serves no embedding models (verified 2026-08-04), so it must
-    # not be offered as a choice even though the note below mentions it.
-    assert "openrouter" not in capable
-    assert "openrouter" not in choices
-    assert "openrouter serves NO embedding models" in error["fix"]
+
+    # The complement matters as much as the list: a provider the catalog says
+    # cannot embed must never appear as a choice. Derived from the catalog
+    # rather than naming a provider, because the version of this assertion that
+    # hardcoded `openrouter` outlived the (false) catalog entry it was written
+    # against and had to be deleted here.
+    incapable = [
+        provider
+        for provider in get_ai_config().get_all_providers()
+        if provider not in capable
+    ]
+    assert incapable, "every provider can embed; the assert below is vacuous"
+    for provider in incapable:
+        assert provider not in choices
+
+    # The fix text must name no provider of its own. It used to append
+    # "openrouter serves NO embedding models -- verified 2026-08-04", which was
+    # false; a hand-written provider name in an error string is a second source
+    # of truth that nothing keeps current.
+    assert "serves NO embedding models" not in error["fix"]
 
 
 def test_embedding_error_list_follows_the_catalog(monkeypatch):
@@ -908,10 +928,324 @@ def test_a_refused_embedding_switch_leaves_the_selection_untouched(monkeypatch):
     client = LLMClient()
     before = (client.embedding_config.provider, client.embedding_config.model)
 
-    for provider in ("openrouter", "claude_code", "anthropic", "deepseek"):
+    # openrouter was in this list until 2026-08-05 on the strength of a false
+    # catalog entry; it embeds, so a refusal is no longer the correct outcome
+    # for it. The remaining three are LLM-only providers with no embedding
+    # adapter at all.
+    for provider in ("claude_code", "anthropic", "deepseek"):
         with pytest.raises(ValueError, match="does not support embeddings"):
             client.switch_provider(embedding_provider=provider)
         assert (
             client.embedding_config.provider,
             client.embedding_config.model,
         ) == before
+
+
+# --------------------------------------------------------------------------- #
+# F6 -- `supports.embeddings` must agree with what the PROVIDER PATH does
+#
+# Written after the 2026-08-04/05 correction, in which the catalog carried
+# `openrouter.supports.embeddings: false` annotated "verified", and every
+# downstream artifact -- the `PROVIDERS` mirror, the adapter map, six documents
+# and two tests -- faithfully repeated it for a day. Nothing failed, because
+# every check compared the claim against another copy of the claim.
+#
+# The two tests below close the two halves of that blind spot:
+#
+#   * the hermetic one asserts the flag agrees with the CODE that would have to
+#     serve the capability. It catches the b1fe195 half of the regression -- an
+#     adapter deleted as "unreachable" on the strength of the flag -- and it
+#     runs everywhere, on every change.
+#   * the live one asserts the flag agrees with the REMOTE API. It is the only
+#     test that could have caught the original error, because the original
+#     error was a false belief about a remote service, and no amount of local
+#     cross-checking can refute that. It is deliberately a network call and is
+#     marked so it skips without credentials rather than passing vacuously.
+# --------------------------------------------------------------------------- #
+def _embedding_adapter_map() -> dict:
+    """The provider -> embedding-adapter mapping `_create_embedding_provider` uses.
+
+    Read out of the function's own source rather than duplicated here: a second
+    copy of the map is exactly the kind of mirror this test exists to police.
+    """
+    import inspect
+    import re
+
+    source = inspect.getsource(LLMClient._create_embedding_provider)
+    body = source.split("providers = {", 1)[1].split("}", 1)[0]
+    return dict(re.findall(r'"(\w+)":\s*(\w+)', body))
+
+
+# Providers where the catalog flag and the adapter map are KNOWN to disagree
+# and the disagreement has not been resolved by the only method that can
+# resolve it -- calling the provider's embedding endpoint with a real key.
+#
+# Each entry is a debt, not a dispensation. The staleness check below fails the
+# moment an entry stops diverging, so a resolved case cannot linger here and
+# turn the exception list into a rubber stamp.
+UNRESOLVED_EMBEDDING_CAPABILITY = {
+    # Found by this test on 2026-08-05, pre-existing and unrelated to the
+    # openrouter correction that prompted it: `supports.embeddings: false` in
+    # the catalog, but `DeepSeekEmbeddingProvider` is wired into the adapter
+    # map and exported from `providers/__init__.py`.
+    #
+    # NOT resolved here, deliberately. No DEEPSEEK_API_KEY is configured, and
+    # an unauthenticated probe cannot settle it: api.deepseek.com returns 401
+    # "Authentication Fails" for /v1/embeddings and /v1/chat/completions
+    # alike, so the gateway authenticates before routing and a 401 is not
+    # evidence that the surface exists. Guessing from that -- or from the
+    # adapter's mere existence -- would repeat exactly the error this test was
+    # written to catch: inferring a remote capability from a local signal that
+    # cannot see it.
+    #
+    # To resolve: set DEEPSEEK_API_KEY, POST /v1/embeddings, and make the
+    # catalog and the adapter map agree with whatever it answers.
+    "deepseek",
+}
+
+
+def test_embedding_capability_flag_agrees_with_the_adapter_map():
+    """A `supports.embeddings` flag with no adapter behind it is a lie, and so
+    is an adapter for a provider the catalog says cannot embed.
+
+    The catalog is the source of truth for capability, but a truth nothing
+    implements is not serveable. `b1fe195` deleted the openrouter adapter as
+    "unreachable" -- true only because the capability check above it was
+    reading a wrong flag -- and no test noticed the map and the catalog had
+    diverged.
+    """
+    ai_config = get_ai_config()
+    adapters = _embedding_adapter_map()
+    assert adapters, "could not parse the embedding adapter map"
+
+    for provider in sorted(ai_config.get_all_providers()):
+        if provider in UNRESOLVED_EMBEDDING_CAPABILITY:
+            continue
+        supported = ai_config.is_provider_supported(provider, "embeddings")
+        has_adapter = provider in adapters
+        assert supported == has_adapter, (
+            f"{provider}: config/ai_models.yaml says supports.embeddings="
+            f"{supported} but _create_embedding_provider "
+            f"{'has' if has_adapter else 'has no'} adapter for it. "
+            "One of the two is wrong -- decide which by calling the provider's "
+            "embedding endpoint, not by reading a catalog listing."
+        )
+
+
+def test_the_unresolved_capability_list_is_not_stale():
+    """An exception that no longer applies must be deleted, not inherited.
+
+    Without this, `UNRESOLVED_EMBEDDING_CAPABILITY` would silently become a
+    permanent hole: someone fixes deepseek, the entry stays, and the provider
+    is exempt from the agreement check forever.
+    """
+    ai_config = get_ai_config()
+    adapters = _embedding_adapter_map()
+
+    for provider in sorted(UNRESOLVED_EMBEDDING_CAPABILITY):
+        assert provider in ai_config.get_all_providers(), (
+            f"{provider} is no longer a catalog provider; remove it from "
+            "UNRESOLVED_EMBEDDING_CAPABILITY"
+        )
+        supported = ai_config.is_provider_supported(provider, "embeddings")
+        assert supported != (provider in adapters), (
+            f"{provider} no longer diverges: the catalog and the adapter map "
+            "agree. Remove it from UNRESOLVED_EMBEDDING_CAPABILITY so the "
+            "agreement check covers it again."
+        )
+
+
+@pytest.mark.requires_provider_credentials
+@pytest.mark.asyncio
+async def test_catalog_embedding_claim_matches_the_live_endpoint(monkeypatch):
+    """Ask the endpoint, not a listing. THE test that would have caught this.
+
+    Skipped without `OPENROUTER_API_KEY`, so it never passes vacuously -- an
+    absent key yields a skip naming the reason, not a green tick.
+
+    Deliberately a live network call. The original error was produced by
+    substituting a cheaper local check (scan the /v1/models catalog listing for
+    an embedding modality) for the real one (call /v1/embeddings). That listing
+    covers the chat-completions surface only; the embedding ids asserted below
+    do not appear in it and serve 200 anyway. Any hermetic version of this test
+    would re-import the same blind spot.
+
+    Uses the catalog's DEFAULT openrouter embedding model, so a default changed
+    to something the provider does not actually serve fails here.
+    """
+    import os
+
+    if not os.getenv("OPENROUTER_API_KEY"):
+        pytest.skip("OPENROUTER_API_KEY not set; cannot verify the live claim")
+
+    ai_config = get_ai_config()
+    assert ai_config.is_provider_supported("openrouter", "embeddings"), (
+        "catalog says openrouter cannot embed; this test asserts the opposite "
+        "and one of them is out of date -- rerun it and trust the endpoint"
+    )
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openrouter")
+    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "768")
+
+    client = LLMClient()
+    assert client.embedding_config_error is None, client.embedding_config_error
+    assert client.embedding_config.dimensions == 768
+
+    vectors = await client.embed(["live catalog-agreement probe"])
+
+    # The capability claim, and the width claim, both against the wire.
+    assert len(vectors) == 1
+    assert len(vectors[0]) == 768, (
+        "openrouter honours a `dimensions` override; a native-width vector "
+        "here means the adapter dropped the parameter, and every write to a "
+        "768-d LanceDB table would be refused"
+    )
+
+
+@pytest.mark.asyncio
+async def test_adapter_sends_dimensions_for_a_configurable_model():
+    """Hermetic guard on the `dimensions` passthrough.
+
+    The live test above proves the same thing against the real API, but it
+    SKIPS without a key -- i.e. in CI, which is exactly where a silent
+    regression would land. This one runs everywhere: it intercepts the request
+    and asserts the parameter is on the wire.
+
+    Why the parameter is load-bearing rather than cosmetic: the catalog's
+    default openrouter embedding model is natively 4096-d. Dropped here, a
+    `EMBEDDING_DIMENSIONS=768` deployment announces 768, receives 4096, and
+    ai-engine refuses every write to the 768-wide table -- a failure that looks
+    like a LanceDB problem and is actually a missing JSON key.
+    """
+    from services.ai_engine.app.core.llm_client import EmbeddingConfig
+    from services.ai_engine.app.providers.openai import OpenAIEmbeddingProvider
+
+    sent = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.update(json.loads(request.content))
+        width = sent.get("dimensions", 4096)
+        return httpx.Response(200, json={"data": [{"embedding": [0.0] * width}]})
+
+    transport = httpx.MockTransport(handler)
+    original = httpx.AsyncClient
+
+    def patched(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    provider = OpenAIEmbeddingProvider(
+        EmbeddingConfig(
+            provider="openrouter",
+            model="qwen/qwen3-embedding-8b",
+            api_key="sk-or-test",
+            base_url="https://openrouter.ai/api/v1",
+            dimensions=768,
+            dimensions_configurable=True,
+        )
+    )
+    httpx.AsyncClient = patched
+    try:
+        vectors = await provider.embed(["hermetic passthrough probe"])
+    finally:
+        httpx.AsyncClient = original
+
+    assert sent.get("dimensions") == 768, (
+        "the adapter dropped `dimensions`; a configurable model would return "
+        f"its native width instead of the configured one. Sent: {sent}"
+    )
+    assert len(vectors[0]) == 768
+
+
+@pytest.mark.asyncio
+async def test_adapter_omits_dimensions_for_a_fixed_width_model():
+    """The converse: a model that does not accept the parameter must not get it.
+
+    Fixed-width embedding endpoints reject an unexpected `dimensions` key
+    outright, so sending it unconditionally would break every provider that is
+    not Matryoshka-capable.
+    """
+    from services.ai_engine.app.core.llm_client import EmbeddingConfig
+    from services.ai_engine.app.providers.openai import OpenAIEmbeddingProvider
+
+    sent = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.update(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"embedding": [0.0] * 1536}]})
+
+    transport = httpx.MockTransport(handler)
+    original = httpx.AsyncClient
+
+    def patched(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    provider = OpenAIEmbeddingProvider(
+        EmbeddingConfig(
+            provider="openai",
+            model="text-embedding-3-small",
+            api_key="sk-test",
+            dimensions=1536,
+            dimensions_configurable=False,
+        )
+    )
+    httpx.AsyncClient = patched
+    try:
+        await provider.embed(["hermetic omission probe"])
+    finally:
+        httpx.AsyncClient = original
+
+    assert "dimensions" not in sent, (
+        "the adapter sent `dimensions` for a model the catalog does not mark "
+        f"configurable; fixed-width endpoints reject it. Sent: {sent}"
+    )
+
+
+@pytest.mark.requires_provider_credentials
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model", sorted(get_ai_config().get_provider_models("openrouter", "embedding"))
+)
+async def test_every_registered_openrouter_embedding_model_serves_and_truncates(model):
+    """Each registered id must actually exist AND honour `dimensions`.
+
+    Parametrized off the catalog, so registering a model that openrouter does
+    not serve -- the failure mode that started all this, in the other
+    direction -- fails here rather than at a user's first index run. One
+    small request per model.
+
+    Truncation is asserted, not just a 200: every one of these is registered
+    with `dimensions_configurable: true`, and that flag is what tells the
+    adapter it may retarget the width to match an existing LanceDB table.
+    """
+    import os
+
+    from services.ai_engine.app.core.llm_client import EmbeddingConfig
+    from services.ai_engine.app.providers.openai import OpenAIEmbeddingProvider
+
+    if not os.getenv("OPENROUTER_API_KEY"):
+        pytest.skip("OPENROUTER_API_KEY not set; cannot verify the live claim")
+
+    model_config = get_ai_config().get_model_config(model)
+    assert model_config.get("dimensions_configurable"), (
+        f"{model} is registered without dimensions_configurable; this test "
+        "assumes every openrouter embedding model was verified truncatable"
+    )
+
+    provider = OpenAIEmbeddingProvider(
+        EmbeddingConfig(
+            provider="openrouter",
+            model=model,
+            base_url="https://openrouter.ai/api/v1",
+            dimensions=768,
+            dimensions_configurable=True,
+        )
+    )
+    vectors = await provider.embed(["registered-model truncation probe"])
+
+    assert len(vectors[0]) == 768, (
+        f"{model} returned {len(vectors[0])} floats for a 768 request; it "
+        "cannot be truncated and must not carry dimensions_configurable"
+    )
