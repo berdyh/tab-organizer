@@ -26,6 +26,14 @@
     commit touching credentials, tokens, or agent subprocesses (~wk8), not
     before facade work. CORS and token scopes apply from wk1 but need no boot
     mode — they run in attached mode. See `README.md` for the fixture hedge.
+  - Every agent-subprocess probe names its provider, so the suite does NOT
+    cover a newly added CLI adapter by construction. SEC-28/31/32/33 are
+    claude-only and SEC-29/30 codex-only; SEC-46/47 were added for
+    `gemini_cli` on the same basis, and a fifth adapter needs its own pair.
+    Both gemini probes stage `~/.gemini/oauth_creds.json` into a temp HOME and
+    assert the provider switch returned 200, because that adapter reports
+    unavailable without credentials and the probe would otherwise skip
+    silently.
   - Distinct per-scope tokens are mandatory in managed mode so cross-acceptance
     is observable. As of SECSUITE 1.3.0 this also mirrors deployment:
     browser-engine's cross-scope ACCEPT fallback was removed (it accepts only
@@ -54,7 +62,7 @@
   (`test_cdp_local_only.py`), SEC-16..23 (`test_token_scopes.py`), SEC-43
   (`test_cors_policy.py`), SEC-44..45 (`test_route_exposure.py`), SEC-24..27,
   SEC-42 (`test_credential_isolation.py` + `fixtures/agent_env_allowlist.json`),
-  SEC-28..33 (`test_agent_subprocess_hardening.py`), SEC-34..36, SEC-40..41
+  SEC-28..33, SEC-46..47 (`test_agent_subprocess_hardening.py`), SEC-34..36, SEC-40..41
   (`test_prompt_envelope.py`), SEC-37..38 (`test_repo_hygiene.py` +
   `.gitleaks.toml` + `secret-scan` CI job), SEC-39 (`test_auth_wall_fixtures.py`
   + `fixtures/authwalls/*.json`).

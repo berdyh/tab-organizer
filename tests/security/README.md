@@ -21,6 +21,37 @@ in `docs/MODULE_INDEX.md`'s ledger and a bump of `SECSUITE_VERSION`. See
 RAG chat prompt-assembly seam, SEC-41 cluster-label prompt-assembly seam,
 SEC-42 agent env-allowlist drift check).
 
+## New in 1.5.0 (gemini_cli adapter)
+
+Two `sec_managed` probes for a blind spot the suite had by construction: every
+agent-subprocess probe names its provider. SEC-28/31/32/33 drive `claude_code`
+and SEC-29/30 drive `codex_cli`, so a THIRD subscription CLI adapter inherited
+only the base-class guarantees that happen to be shared (env allowlist via
+SEC-25/42) and none of the per-adapter ones. Adding `gemini_cli` without these
+would have shipped an unprobed subprocess.
+
+- **SEC-46** (`test_agent_subprocess_hardening.py`) — the gemini subprocess is
+  headless (`-p`), read-only (`--approval-mode plan`) and stdin-free, and the
+  guardrail preamble precedes the user block. Each is a one-flag regression:
+  without `-p` the CLI starts an interactive session and never returns; `yolo`
+  would hand a model driven by page text the write and shell tools; and the
+  CLI's login prompt ignores EOF, so nothing may resemble an answer to it.
+  This adapter puts the envelope in **argv**, not stdin, so SEC-31's ordering
+  invariant is re-checked on the `-p` argument.
+- **SEC-47** (same file) — scraped content never reaches gemini by default.
+  Same reasoning as SEC-30 for codex: gemini has no tool-free mode, and its
+  most restrictive documented approval mode still allows `read_file`,
+  `google_web_search` and `web_fetch` (read from the CLI's own bundled
+  `policies/read-only.toml`), each an exfiltration channel for injected
+  instructions.
+
+Both stage a HOME containing `~/.gemini/oauth_creds.json` and **assert** the
+provider switch returned 200 rather than skipping on it, because the adapter
+refuses to report available without credentials — an unstaged probe would have
+skipped silently and asserted nothing. `AgentCLIRecorder.set_control(fmt=...)`
+gained a `"gemini"` format emitting the CLI's real `{"response": ...}`
+envelope.
+
 ## New in 1.4.0 (wk0 batch B)
 
 Three black-box probes closing self-blind spots the suite had no coverage for:
@@ -73,7 +104,8 @@ pytest tests/security -q
 - **Attached mode**: set any `SEC_*_URL`; the harness issues real HTTP to the
   running services and `sec_managed` probes auto-skip (their env can't be
   controlled remotely). Attached mode is language-agnostic — it is how the
-  TypeScript port runs this suite today, and 173 of 192 probes work there.
+  TypeScript port runs this suite today, and 175 of 194 probes work there
+  (SEC-46/47 are `sec_managed` and join the 19 that auto-skip).
 
 ### `SEC_BOOT_*_CMD` — PLANNED, NOT IMPLEMENTED
 

@@ -464,6 +464,10 @@ if control.get("fmt") == "codex":
         )
         + "\\n"
     )
+elif control.get("fmt") == "gemini":
+    sys.stdout.write(
+        json.dumps({{"session_id": "stub", "response": "stub-ok"}}) + "\\n"
+    )
 else:
     sys.stdout.write(json.dumps({{"result": "stub-ok"}}) + "\\n")
 sys.exit(0)
