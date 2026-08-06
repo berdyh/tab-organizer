@@ -148,6 +148,106 @@ class AIModelConfig:
         
         return info
     
+    def get_model_cost_model(self, model: str) -> str:
+        """Get the cost model for a model, resolved through its PROVIDER.
+
+        Cost differs per provider route, not per model -- `gpt-5.6-luna` on
+        codex_cli is `subscription` and `openai/gpt-5.6-luna` on openrouter is
+        `metered`, same weights. So it is stored once, on the provider, and
+        resolved here. Never copy it onto a model entry: a copy is a second
+        source of truth that drifts the moment a provider's billing changes.
+
+        Args:
+            model: Model name (the catalog key, which is the wire id)
+
+        Returns:
+            The provider's `cost_model`, or 'unknown' if it declares none
+        """
+        provider = self.get_model_config(model).get('provider')
+        if not provider:
+            return 'unknown'
+        return self.get_provider_config(provider).get('cost_model', 'unknown')
+
+    def get_model_family(self, model: str) -> str:
+        """Get the logical family a model route belongs to.
+
+        Two entries sharing a family are the same underlying weights reached
+        through different providers under different ids. Falls back to the
+        model key so a family-less entry is its own family rather than a
+        KeyError; `validate_config()` reports the missing field separately.
+        """
+        return self.get_model_config(model).get('model_family') or model
+
+    def describe_model(self, model: str) -> Dict[str, Any]:
+        """Describe one model ROUTE: which provider serves it, at what cost.
+
+        This is the answer to "show me the provider and the model together".
+        Everything here is derived from the catalog on each call, so nothing
+        can announce a provider or a price that the catalog no longer says.
+
+        Args:
+            model: Model name (the catalog key, which is the wire id)
+
+        Returns:
+            Dict with model/provider/provider_model_id/cost_model/type/family
+            plus tier, description, dimensions and recommended where present.
+        """
+        model_config = self.get_model_config(model)
+        provider = model_config.get('provider')
+        return {
+            'model': model,
+            # The catalog key IS the provider-side wire id. Stated explicitly
+            # rather than left implicit, because it is the field a caller needs
+            # in order to talk to the provider.
+            'provider_model_id': model,
+            'provider': provider,
+            'cost_model': self.get_model_cost_model(model),
+            'type': model_config.get('type'),
+            'family': self.get_model_family(model),
+            'tier': model_config.get('tier'),
+            'description': model_config.get('description', ''),
+            'dimensions': model_config.get('dimensions'),
+            'dimensions_configurable': bool(
+                model_config.get('dimensions_configurable')
+            ),
+            'recommended': bool(model_config.get('recommended')),
+            'superseded_by': model_config.get('superseded_by'),
+        }
+
+    def get_family_routes(self, family: str) -> List[Dict[str, Any]]:
+        """Get every provider route that serves a given model family.
+
+        This is what makes "the same weights at two prices" visible as data
+        rather than as a comment: `get_family_routes('gpt-5.6-luna')` returns
+        both the codex_cli subscription route and the openrouter metered one.
+        """
+        routes = []
+        for model_name in self.config.get('models', {}):
+            if self.get_model_family(model_name) == family:
+                routes.append(self.describe_model(model_name))
+        return sorted(routes, key=lambda route: route['model'])
+
+    def format_model_description(self, model: str) -> str:
+        """Render the description slot of a menu row: route first, prose after.
+
+        Menus render as ``<model> — <this>``, so putting the route at the front
+        of the description is what guarantees the provider and the cost travel
+        with the model name in every list a human sees. Without it,
+        `gpt-5.6-luna` and `openai/gpt-5.6-luna` appear as two unrelated names
+        and nothing on screen says one is billed and the other is not.
+        """
+        route = self.describe_model(model)
+        line = f"via {route['provider']} ({route['cost_model']})"
+        if route['superseded_by']:
+            line = f"{line} — superseded by {route['superseded_by']}"
+        if route['description']:
+            line = f"{line} — {route['description']}"
+        return line
+
+    def format_model_choice(self, model: str) -> str:
+        """Render one model for a human, provider and cost always attached."""
+        return f"{model} — {self.format_model_description(model)}"
+
     def is_provider_supported(self, provider: str, capability: str) -> bool:
         """Check if a provider supports a specific capability.
         
@@ -253,12 +353,36 @@ class AIModelConfig:
                 errors.append(f"Model {model_name} missing 'provider' field")
             if 'type' not in model_config:
                 errors.append(f"Model {model_name} missing 'type' field")
-            
+            if 'model_family' not in model_config:
+                # Without this the "same weights, two providers" link exists
+                # only in prose, which is how the two gpt-5.6-luna entries got
+                # to look unrelated in the first place.
+                errors.append(f"Model {model_name} missing 'model_family' field")
+
             # Check if provider exists
             provider = model_config.get('provider')
             if provider and provider not in providers:
                 errors.append(f"Model {model_name} references unknown provider {provider}")
-        
+
+            # A `superseded_by` pointer must resolve to a real subscription
+            # route, or it silently stops protecting anything.
+            superseded_by = model_config.get('superseded_by')
+            if superseded_by:
+                target = models.get(superseded_by)
+                if target is None:
+                    errors.append(
+                        f"Model {model_name} is superseded_by unknown model "
+                        f"{superseded_by}"
+                    )
+                else:
+                    target_provider = providers.get(target.get('provider'), {})
+                    if target_provider.get('cost_model') != 'subscription':
+                        errors.append(
+                            f"Model {model_name} is superseded_by "
+                            f"{superseded_by}, which is not on a subscription "
+                            "provider"
+                        )
+
         return errors
 
 

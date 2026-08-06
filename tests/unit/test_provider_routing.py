@@ -13,6 +13,7 @@ error being raised: an error can be raised for the wrong reason, but a
 substitute cannot appear without the fallback being back.
 """
 
+import inspect
 import io
 import json
 import logging
@@ -22,6 +23,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 from fastapi import HTTPException
 
 from config.config_loader import get_ai_config
@@ -1248,4 +1250,346 @@ async def test_every_registered_openrouter_embedding_model_serves_and_truncates(
     assert len(vectors[0]) == 768, (
         f"{model} returned {len(vectors[0])} floats for a 768 request; it "
         "cannot be truncated and must not carry dimensions_configurable"
+    )
+
+
+# --------------------------------------------------------------------------
+# Catalog representation: a model is never shown, defaulted, or reasoned about
+# without the provider route it travels on.
+# --------------------------------------------------------------------------
+
+
+def _catalog_models() -> dict:
+    return get_ai_config().config.get("models", {})
+
+
+def _subscription_families() -> set:
+    """Families with at least one route on a subscription provider."""
+    ai_config = get_ai_config()
+    families = set()
+    for model in _catalog_models():
+        if ai_config.get_model_cost_model(model) == "subscription":
+            families.add(ai_config.get_model_family(model))
+    return families
+
+
+def _metered_duplicate_routes() -> dict:
+    """Routes a default must never land on: metered, and already paid for.
+
+    Two ways a route qualifies, both read from the catalog:
+      * its `model_family` also has a route on a subscription provider
+        (`gpt-5.6-luna` on codex_cli vs `openai/gpt-5.6-luna` on openrouter);
+      * it declares `superseded_by`, for the case where the subscription
+        equivalent is a nearby model rather than the identical weights
+        (`google/gemini-2.5-flash-lite` -> `gemini-3.1-flash-lite`).
+    """
+    ai_config = get_ai_config()
+    subscription_families = _subscription_families()
+    duplicates = {}
+    for model, model_config in _catalog_models().items():
+        if ai_config.get_model_cost_model(model) == "subscription":
+            continue
+        family = ai_config.get_model_family(model)
+        reason = None
+        if family in subscription_families:
+            reason = f"family {family!r} is served by a subscription provider"
+        elif model_config.get("superseded_by"):
+            reason = f"superseded_by {model_config['superseded_by']!r}"
+        if reason:
+            duplicates[model] = reason
+    return duplicates
+
+
+def test_the_metered_duplicate_set_is_not_empty():
+    """Non-vacuity guard for the invariant below.
+
+    The rule test is a scan: if nothing in the catalog ever qualified as a
+    metered duplicate it would pass forever while enforcing nothing. This
+    repo has shipped four tests that could not fail; this is the cheap way
+    not to ship a fifth.
+    """
+    duplicates = _metered_duplicate_routes()
+    assert duplicates, (
+        "no metered route is recognised as a duplicate of a subscription "
+        "one, so the never-default rule below is vacuous"
+    )
+    assert "openai/gpt-5.6-luna" in duplicates, sorted(duplicates)
+    assert "google/gemini-2.5-flash-lite" in duplicates, sorted(duplicates)
+
+
+def test_no_metered_route_is_defaulted_when_the_family_has_a_subscription_route():
+    """"Don't mix them up": registered is fine, DEFAULTED is not.
+
+    The GPT-5.6 family is spent from the Codex subscription and the cheap
+    Gemini tier from the Gemini CLI subscription. openrouter carries metered
+    copies of both, and those copies stay registered on purpose -- they are
+    the deliberate smoke-test path. What must never happen is arriving at one
+    of them without asking: as a `recommended: true` badge, a provider's
+    `default_models`, or a `defaults.use_cases` model. Each of those is a way
+    the system spends money on something the user already bought.
+
+    The rule is stated as data in `routing.metered_duplicate_policy`; this
+    test is that policy executed.
+    """
+    ai_config = get_ai_config()
+    assert (
+        ai_config.config.get("routing", {}).get("metered_duplicate_policy")
+        == "never_default"
+    ), "the catalog no longer declares the policy this test enforces"
+
+    duplicates = _metered_duplicate_routes()
+    violations = []
+
+    for model, reason in duplicates.items():
+        if _catalog_models()[model].get("recommended"):
+            violations.append(f"{model} is recommended: true ({reason})")
+
+    for provider in ai_config.get_all_providers():
+        defaults = ai_config.get_provider_config(provider).get("default_models") or {}
+        for role, model in defaults.items():
+            if model in duplicates:
+                violations.append(
+                    f"{provider}.default_models.{role} = {model} ({duplicates[model]})"
+                )
+
+    use_cases = ai_config.get_defaults().get("use_cases") or {}
+    for use_case, entry in use_cases.items():
+        model = (entry or {}).get("model")
+        if model in duplicates:
+            violations.append(
+                f"defaults.use_cases.{use_case} = {model} ({duplicates[model]})"
+            )
+
+    assert not violations, (
+        "metered copies of subscription models are being defaulted to:\n  "
+        + "\n  ".join(sorted(violations))
+    )
+
+
+def test_the_same_weights_reachable_twice_are_linked_by_family_not_by_prose():
+    """Requirement: the catalog must show provider and model together.
+
+    Before this, `gpt-5.6-luna` and `openai/gpt-5.6-luna` were two unrelated
+    entries and only a YAML comment said they were the same weights at
+    different prices. Now the link is data, and cost is resolved per route.
+    """
+    ai_config = get_ai_config()
+
+    llm_routes = ai_config.get_family_routes("gpt-5.6-luna")
+    assert {r["model"] for r in llm_routes} == {
+        "gpt-5.6-luna",
+        "openai/gpt-5.6-luna",
+    }, llm_routes
+    assert {r["cost_model"] for r in llm_routes} == {"subscription", "metered"}
+    assert {r["provider"] for r in llm_routes} == {"codex_cli", "openrouter"}
+
+    # The embedding side of the same modelling question.
+    embed_routes = ai_config.get_family_routes("bge-m3")
+    assert {r["model"] for r in embed_routes} == {"bge-m3", "baai/bge-m3"}
+    assert {r["cost_model"] for r in embed_routes} == {"free_local", "metered"}
+
+
+def test_every_catalog_route_states_its_provider_and_its_cost():
+    ai_config = get_ai_config()
+    for model in _catalog_models():
+        route = ai_config.describe_model(model)
+        assert route["provider"], f"{model} names no provider"
+        assert route["cost_model"] != "unknown", (
+            f"{model}'s provider {route['provider']} declares no cost_model, so "
+            "no listing can tell the user whether it costs money"
+        )
+        # The key is the wire id: this is what gets written to LLM_MODEL /
+        # EMBEDDING_MODEL and handed to the adapter unchanged.
+        assert route["provider_model_id"] == model
+        assert model in ai_config.get_provider_models(route["provider"])
+
+
+def test_every_model_menu_row_carries_its_provider_and_cost():
+    """A human-facing list may never show a bare model name.
+
+    `configure-provider` and `init` render every option through
+    `format_model_description`, so this covers the surfaces the user actually
+    reads.
+    """
+    ai_config = get_ai_config()
+    for model in _catalog_models():
+        rendered = ai_config.format_model_description(model)
+        route = ai_config.describe_model(model)
+        assert route["provider"] in rendered, rendered
+        assert route["cost_model"] in rendered, rendered
+
+
+def test_configure_provider_menu_rows_are_rendered_with_the_route():
+    """The renderer is actually wired into the CLI, not merely available."""
+    from scripts import cli
+
+    source = inspect.getsource(cli.cmd_configure_provider)
+    assert source.count("ai_config.format_model_description(m)") == 2, (
+        "configure-provider stopped rendering model menus through the "
+        "route-carrying formatter; a bare model name tells the user nothing "
+        "about which provider serves it or what it costs"
+    )
+
+
+def test_llm_preference_order_contains_only_subscription_providers():
+    """"Preferred" has one meaning: it spends a subscription you already have."""
+    ai_config = get_ai_config()
+    order = ai_config.config["routing"]["llm_preference_order"]
+    assert order, "the preference order is empty"
+    for provider in order:
+        config = ai_config.get_provider_config(provider)
+        assert config.get("cost_model") == "subscription", (
+            f"{provider} is in llm_preference_order but is "
+            f"{config.get('cost_model')!r}, so 'preferred' would mean "
+            "'reached first' rather than 'already paid for'"
+        )
+        assert ai_config.is_provider_supported(provider, "llm")
+
+
+def test_gemini_cli_is_a_preferred_subscription_llm_route():
+    ai_config = get_ai_config()
+    assert "gemini_cli" in ai_config.config["routing"]["llm_preference_order"]
+    assert "gemini_cli" not in ai_config.config["routing"]["explicit_opt_in_required"]
+    assert ai_config.is_provider_supported("gemini_cli", "llm")
+    assert not ai_config.is_provider_supported("gemini_cli", "embeddings")
+    assert ai_config.get_provider_models("gemini_cli", "llm"), (
+        "gemini_cli has no models, so configure-provider would offer an "
+        "empty menu after probing it as available"
+    )
+
+
+# Widths pinned INDEPENDENTLY of the catalog, so the check below is not a
+# tautology (an earlier draft compared the catalog to itself and survived a
+# mutation that changed a width -- it could not fail). Provenance: the six
+# openrouter rows were measured by live calls on 2026-08-05 (recorded in the
+# docs/MODULE_INDEX.md ledger row); the ollama and direct-cloud rows are the
+# published widths of those models. Changing a catalog width now requires
+# changing this table too, which is the point.
+VERIFIED_EMBEDDING_DIMENSIONS = {
+    "nomic-embed-text": 768,
+    "embeddinggemma": 768,
+    "bge-m3": 1024,
+    "qwen3-embedding": 1024,
+    "qwen/qwen3-embedding-8b": 4096,
+    "qwen/qwen3-embedding-4b": 2560,
+    "baai/bge-m3": 1024,
+    "google/gemini-embedding-001": 3072,
+    "openai/text-embedding-3-small": 1536,
+    "openai/text-embedding-3-large": 3072,
+    "text-embedding-3-small": 1536,
+    "text-embedding-004": 768,
+}
+
+
+def test_the_pinned_width_table_covers_every_registered_embedding_model():
+    """Non-vacuity: a new embedding route must be width-verified, not skipped."""
+    registered = {
+        name
+        for name, config in get_ai_config().config["models"].items()
+        if config.get("type") == "embedding"
+    }
+    assert registered == set(VERIFIED_EMBEDDING_DIMENSIONS), (
+        "VERIFIED_EMBEDDING_DIMENSIONS is out of step with the catalog; "
+        f"symmetric diff: {registered ^ set(VERIFIED_EMBEDDING_DIMENSIONS)}"
+    )
+
+
+@pytest.mark.parametrize("model", sorted(VERIFIED_EMBEDDING_DIMENSIONS))
+def test_dimension_resolution_is_per_route_after_the_family_restructure(
+    monkeypatch, model
+):
+    """Requirement 3 regression guard, run against every embedding route.
+
+    Every registered embedding model must still resolve, through the real
+    `LLMClient` path, to the width it actually emits -- compared against the
+    pinned table above rather than against the catalog entry the resolver
+    itself reads, so a wrong catalog width fails here instead of agreeing
+    with itself.
+
+    `test_two_routes_to_one_family_keep_their_own_vector_widths` covers the
+    separate hazard this one cannot see: resolving a width from the FAMILY
+    rather than the route.
+    """
+    ai_config = get_ai_config()
+    provider = ai_config.get_model_config(model)["provider"]
+
+    _clear_provider_env(monkeypatch)
+    _block_ollama_probe(monkeypatch)
+    monkeypatch.setenv("EMBEDDING_PROVIDER", provider)
+    monkeypatch.setenv("EMBEDDING_MODEL", model)
+
+    client = LLMClient()
+
+    assert client.embedding_config_error is None, client.embedding_config_error
+    assert client.embedding_config.provider == provider
+    assert client.embedding_config.dimensions == VERIFIED_EMBEDDING_DIMENSIONS[model], (
+        f"{model} resolves to {client.embedding_config.dimensions}-d but emits "
+        f"{VERIFIED_EMBEDDING_DIMENSIONS[model]}-d; ai-engine would refuse "
+        "every write to the table it announces"
+    )
+
+
+def test_two_routes_to_one_family_keep_their_own_vector_widths(tmp_path):
+    """The hazard `model_family` introduces, gated before it can be built.
+
+    Grouping routes by family invites hoisting shared attributes onto the
+    family. `dimensions` must never be one of them: two routes to the same
+    family can genuinely emit different widths (a local 1024-d pull and a
+    hosted 4096-d sibling), and an announced width that differs from the
+    emitted one makes ai-engine refuse every write to its LanceDB table --
+    the exact failure `_resolve_embedding_dimensions` exists to prevent.
+
+    The current catalog happens not to contain a same-family/different-width
+    pair, so a family-level lookup would pass every other test in this file.
+    This one constructs the case.
+    """
+    from config.config_loader import AIModelConfig
+
+    catalog = tmp_path / "ai_models.yaml"
+    catalog.write_text(
+        yaml.safe_dump(
+            {
+                "providers": {
+                    "ollama": {
+                        "type": "local",
+                        "cost_model": "free_local",
+                        "supports": {"llm": True, "embeddings": True},
+                        "default_models": {"llm": None, "embedding": "twin-small"},
+                    },
+                    "openrouter": {
+                        "type": "cloud",
+                        "cost_model": "metered",
+                        "supports": {"llm": True, "embeddings": True},
+                        "default_models": {"llm": None, "embedding": "vendor/twin-big"},
+                    },
+                },
+                "models": {
+                    "twin-small": {
+                        "provider": "ollama",
+                        "model_family": "twin",
+                        "type": "embedding",
+                        "dimensions": 1024,
+                    },
+                    "vendor/twin-big": {
+                        "provider": "openrouter",
+                        "model_family": "twin",
+                        "type": "embedding",
+                        "dimensions": 4096,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = AIModelConfig(config_file=str(catalog))
+
+    assert {r["model"] for r in config.get_family_routes("twin")} == {
+        "twin-small",
+        "vendor/twin-big",
+    }
+    assert config.describe_model("twin-small")["dimensions"] == 1024
+    assert config.describe_model("vendor/twin-big")["dimensions"] == 4096, (
+        "two routes to one family collapsed onto a single vector width; "
+        "every write to the other route's table would be refused"
     )

@@ -1,8 +1,11 @@
 # AI Models Configuration
 #
 # ROUTING POLICY (see `routing:` at the bottom — this is the contract):
-#   1. Local subscription CLIs (claude_code, codex_cli) are PREFERRED. They
-#      spend a subscription you already have instead of metered credit.
+#   1. Local subscription CLIs (claude_code, codex_cli, gemini_cli, codex_acp)
+#      are PREFERRED. They spend a subscription you already have instead of
+#      metered credit -- and a model you already pay for by subscription must
+#      never be routed through a metered provider by default (see the
+#      "SUBSCRIPTION AND METERED ROUTES" section below).
 #   2. Nothing falls back silently. Ever. If the preferred provider is
 #      unavailable, the service fails closed with an actionable error and the
 #      CLI asks you to choose. A provider is never selected on your behalf.
@@ -20,6 +23,46 @@
 # This distinction is not academic here: openrouter's `supports.embeddings` was
 # recorded as `false` on 2026-08-04 by the first method and was WRONG. See the
 # correction note on the openrouter provider below.
+#
+# HOW A MODEL IS ADDRESSED (the catalog's representation; read before editing
+# `models:`). Every entry under `models:` is one PROVIDER ROUTE, not one model.
+#
+#   * the entry KEY is the exact provider-side wire id. It is what gets written
+#     to `LLM_MODEL` / `EMBEDDING_MODEL` and handed verbatim to the adapter.
+#   * `provider:` names the single provider that serves that key.
+#   * `model_family:` is the logical identity SHARED by every route to the same
+#     underlying weights. `gpt-5.6-luna` (codex_cli) and `openai/gpt-5.6-luna`
+#     (openrouter) are two routes to family `gpt-5.6-luna`; `bge-m3` (ollama)
+#     and `baai/bge-m3` (openrouter) are two routes to family `bge-m3`.
+#   * cost is a PROVIDER fact and lives only on the provider (`cost_model:`).
+#     It is never copied onto a model entry -- a copy would rot. Read it with
+#     `config_loader.get_model_cost_model()`, which resolves it per route.
+#
+# So "which provider would this model be used through, and at what cost" is
+# answerable from data alone: `describe_model()` returns the route, and
+# `get_family_routes()` returns every route to the same weights. Anything that
+# shows a model to a human (`configure-provider`, `init`) renders it through
+# `format_model_choice()` so the provider and cost are never dropped.
+#
+# WHY NOT one merged entry per model with a per-provider id map: the key IS the
+# wire value, so merging would make it an abstract name needing translation in
+# every adapter; `dimensions` would move into a per-provider sub-map (ollama's
+# `qwen3-embedding` is 1024-d, openrouter's `qwen/qwen3-embedding-8b` is
+# 4096-d), adding a second way to resolve the wrong vector width -- the exact
+# failure `_resolve_embedding_dimensions` exists to prevent; and
+# `get_provider_models()` would stop returning wire ids, which
+# `configure-provider`, `init.py` and `LLMClient._validate_model` all rely on.
+#
+# SUBSCRIPTION AND METERED ROUTES MUST NOT BE MIXED UP. When a family has any
+# route on a `cost_model: subscription` provider, no metered route to that same
+# family may be `recommended: true`, a provider `default_models` entry, or a
+# `defaults.use_cases` model. The GPT-5.6 family is spent from the Codex
+# subscription and the Gemini family from the Gemini CLI subscription; the
+# openrouter copies stay REGISTERED (they are the deliberate smoke-test path --
+# `use_cases.smoke_test`) but can never be arrived at by default. Enforced by
+# `tests/unit/test_provider_routing.py::
+# test_no_metered_route_is_defaulted_when_the_family_has_a_subscription_route`,
+# from `routing.metered_duplicate_policy` below.
 #
 # LLM model IDs and prices were verified against
 # https://openrouter.ai/api/v1/models and registry.ollama.ai on 2026-08-04.
@@ -54,6 +97,42 @@ providers:
       embeddings: false
     default_models:
       llm: "gpt-5.6-luna"
+      embedding: null
+
+  gemini_cli:
+    type: local_cli
+    command_env: "GEMINI_CLI_COMMAND"
+    # PREFERRED. Uses the user's Google/Gemini subscription via the local
+    # `gemini` CLI in headless mode (`-p/--prompt`). Verified present on the
+    # host 2026-08-06 at ~/.local/bin/gemini, version 0.54.0.
+    #
+    # NOT antigravity. `antigravity` is an Electron GUI IDE
+    # (/opt/Antigravity/antigravity) with no headless mode -- it opens a window
+    # and never returns -- so it cannot back a provider adapter. The `gemini`
+    # CLI is the headless substitute.
+    #
+    # UNVERIFIED END-TO-END, 2026-08-06, and this is not a small caveat. The
+    # CLI on this machine is NOT AUTHENTICATED (`~/.gemini/settings.json` picks
+    # `oauth-personal`, `google_accounts.json` has `active: null`, and
+    # `~/.gemini/oauth_creds.json` does not exist). In that state
+    # `gemini --version` still exits 0 while `gemini -p '...'` blocks forever
+    # on "Opening authentication page in your browser ... [Y/n]" -- reproduced
+    # with stdin closed and under setsid. So: the adapter's availability
+    # preflight additionally requires oauth_creds.json (see
+    # GeminiCliLLMProvider._availability_preflight), and no generation through
+    # this provider has ever been observed. Run `gemini` once interactively to
+    # log in, then `pytest -m requires_provider_credentials
+    # tests/unit/test_subscription_cli_providers.py` to close the gap.
+    preference: 1
+    cost_model: subscription
+    supports:
+      llm: true
+      # Verified by RUNNING `gemini --help` on 2026-08-06: the command list is
+      # mcp / extensions / skills / hooks / gemma / [query] and the option list
+      # has no embedding flag. The binary exposes no way to ask for a vector.
+      embeddings: false
+    default_models:
+      llm: "gemini-2.5-flash"
       embedding: null
 
   codex_acp:
@@ -127,7 +206,13 @@ providers:
       # listing again.
       embeddings: true
     default_models:
-      llm: "openai/gpt-5.6-luna"
+      # Was `openai/gpt-5.6-luna` until 2026-08-06. That is the METERED copy of
+      # a model the user already pays for through the Codex subscription
+      # (family `gpt-5.6-luna`, whose subscription route is codex_cli's
+      # `gpt-5.6-luna`), so defaulting to it billed for something already
+      # bought. The openrouter copies stay registered as the smoke-test path;
+      # this default now names a family openrouter is the ONLY route to.
+      llm: "qwen/qwen3.7-flash"
       # Joint-cheapest of the six verified embedding models AND the strongest;
       # truncates cleanly to any width. See the embedding block below.
       embedding: "qwen/qwen3-embedding-8b"
@@ -192,6 +277,7 @@ models:
   # ---------------------------------------------------------------- claude_code
   haiku:
     provider: claude_code
+    model_family: haiku
     type: llm
     description: "Cheapest subscription tier. Bulk mechanical generation --
       cluster labels, facet extraction, per-page summaries -- where volume is
@@ -202,6 +288,7 @@ models:
 
   sonnet:
     provider: claude_code
+    model_family: sonnet
     type: llm
     description: "Interactive default: chat, reasoning, coding -- anything a
       human is waiting on"
@@ -211,6 +298,7 @@ models:
 
   opus:
     provider: claude_code
+    model_family: opus
     type: llm
     description: "Top tier, opt-in only. Never wire to a default or bulk path"
     context_length: 200000
@@ -221,41 +309,106 @@ models:
   # two below sol are affordable enough that gpt-5 has no remaining use case.
   gpt-5.6-luna:
     provider: codex_cli
+    model_family: gpt-5.6-luna
     type: llm
-    description: "Cheapest gpt-5.6 tier ($0.10 -> $0.60 /Mtok on metered
-      pricing). The codex bulk and default tier"
+    description: "Cheapest gpt-5.6 tier. The codex bulk and default tier, spent
+      from the ChatGPT/Codex subscription. Family `gpt-5.6-luna` is ALSO
+      reachable metered as openrouter's `openai/gpt-5.6-luna` at $0.10 ->
+      $0.60 /Mtok -- that route is smoke-test only, never a default"
     context_length: 1050000
     tier: low
     recommended: true
 
   gpt-5.6-terra:
     provider: codex_cli
+    model_family: gpt-5.6-terra
     type: llm
-    description: "Mid gpt-5.6 tier ($1.00 -> $6.00 /Mtok). Interactive work
-      that needs more than luna"
+    description: "Mid gpt-5.6 tier, on subscription. Interactive work that
+      needs more than luna. Metered twin: openrouter's
+      `openai/gpt-5.6-terra`, $1.00 -> $6.00 /Mtok"
     context_length: 1050000
     tier: mid
     recommended: true
 
   gpt-5.6-sol:
     provider: codex_cli
+    model_family: gpt-5.6-sol
     type: llm
-    description: "Top gpt-5.6 tier ($5.00 -> $30.00 /Mtok -- 50x luna). Reserve
-      for adversarial review. Pair with -c model_reasoning_effort=\"xhigh\".
-      Verified on ChatGPT-account auth 2026-07-24; plain `gpt-5.6` 400s there"
+    description: "Top gpt-5.6 tier, on subscription. Reserve for adversarial
+      review. Pair with -c model_reasoning_effort=\"xhigh\". Verified on
+      ChatGPT-account auth 2026-07-24; plain `gpt-5.6` 400s there. Metered
+      twin: openrouter's `openai/gpt-5.6-sol`, $5.00 -> $30.00 /Mtok"
     context_length: 1050000
     tier: high
 
   codex-acp-default:
     provider: codex_acp
+    model_family: codex-acp-default
     type: llm
     description: "Codex ACP harness via acpx; model controlled by acpx config"
     context_length: 128000
     tier: mid
 
+  # ----------------------------------------------------------------- gemini_cli
+  # Subscription route for the Gemini families, replacing the metered
+  # `google/gemini-*` openrouter copies as the default path.
+  #
+  # EVIDENCE FOR THESE IDS, stated plainly because it is weaker than this
+  # file's usual bar: they were read out of the INSTALLED @google/gemini-cli
+  # 0.54.0 bundle's own constants (DEFAULT_GEMINI_MODEL = "gemini-2.5-pro",
+  # DEFAULT_GEMINI_FLASH_MODEL = "gemini-2.5-flash",
+  # DEFAULT_GEMINI_FLASH_LITE_MODEL = "gemini-3.1-flash-lite"), i.e. from the
+  # shipped implementation rather than from a call. They could NOT be verified
+  # by invoking the CLI: it is unauthenticated on this machine (see the
+  # provider note above). `-m` passes the id straight through, so an id the
+  # backend rejects fails at call time with the provider's own error, not
+  # silently.
+  gemini-2.5-flash:
+    provider: gemini_cli
+    model_family: gemini-2.5-flash
+    type: llm
+    description: "Interactive default on the Gemini subscription. The CLI's own
+      DEFAULT_GEMINI_FLASH_MODEL"
+    context_length: 1048576
+    tier: mid
+    recommended: true
+
+  # NOT registered: a gemini_cli route to family `gemini-2.5-flash-lite`.
+  # The user asked for that family to come off openrouter and onto the
+  # subscription, and `-m gemini-2.5-flash-lite` would very likely work -- but
+  # a catalog KEY is globally unique and IS the wire id, and the bare
+  # `gemini-2.5-flash-lite` key is already the direct-API (metered) route.
+  # Registering the CLI route would need either a key that is not the wire id
+  # (a translation step no adapter has, and the reason the merged-entry design
+  # was rejected in the header) or an unverifiable guess. Instead both metered
+  # `*-flash-lite` routes carry `superseded_by: gemini-3.1-flash-lite`, so
+  # neither can be defaulted to, and the cheap Gemini tier is served from the
+  # subscription by `gemini-3.1-flash-lite` -- the id the installed CLI itself
+  # names as its flash-lite default.
+  gemini-3.1-flash-lite:
+    provider: gemini_cli
+    model_family: gemini-3.1-flash-lite
+    type: llm
+    description: "The CLI's current DEFAULT_GEMINI_FLASH_LITE_MODEL, and the
+      subscription answer for cheap Gemini work: it supersedes both metered
+      `*-2.5-flash-lite` routes"
+    context_length: 1048576
+    tier: low
+    recommended: true
+
+  gemini-2.5-pro:
+    provider: gemini_cli
+    model_family: gemini-2.5-pro
+    type: llm
+    description: "Top Gemini tier, the CLI's own DEFAULT_GEMINI_MODEL. Opt-in
+      only -- never wire to a default or bulk path"
+    context_length: 1048576
+    tier: high
+
   # --------------------------------------------------------------------- ollama
   qwen3:
     provider: ollama
+    model_family: qwen3
     type: llm
     description: "Local default. Strong instruction following and multilingual
       coverage at small size; better labeler than llama3.2:3b"
@@ -265,6 +418,7 @@ models:
 
   gemma3:
     provider: ollama
+    model_family: gemma3
     type: llm
     description: "Local alternative, broad language coverage and vision input"
     context_length: 128000
@@ -272,6 +426,7 @@ models:
 
   llama3.2:3b:
     provider: ollama
+    model_family: llama3.2-3b
     type: llm
     description: "Smallest local option. Fits tight VRAM; weaker at structured
       labeling than qwen3"
@@ -280,6 +435,7 @@ models:
 
   nomic-embed-text:
     provider: ollama
+    model_family: nomic-embed-text
     type: embedding
     description: "Safe local embedding default. English-focused; near-zero on
       cross-lingual tasks -- use bge-m3 or qwen3-embedding for multilingual"
@@ -289,6 +445,7 @@ models:
 
   embeddinggemma:
     provider: ollama
+    model_family: embeddinggemma
     type: embedding
     description: "Google EmbeddingGemma (308M), newer on-device option"
     dimensions: 768
@@ -321,6 +478,7 @@ models:
   # in these comments -- accepted, and why they cross-reference each other.
   bge-m3:
     provider: ollama
+    model_family: bge-m3
     type: embedding
     description: "Multilingual and long-context local embedding. Same weights
       as openrouter's `baai/bge-m3`, run locally and free"
@@ -330,6 +488,7 @@ models:
 
   qwen3-embedding:
     provider: ollama
+    model_family: qwen3-embedding-1024
     type: embedding
     description: "Highest local retrieval quality; competes with commercial
       embedding APIs. Reach for it when retrieval accuracy is the bottleneck.
@@ -341,41 +500,63 @@ models:
   # ----------------------------------------------------------------- openrouter
   # LLM ids and prices verified against the live API 2026-08-04. Embedding ids
   # added 2026-08-05 -- see the provider's correction note.
+  #
+  # The four entries immediately below are METERED COPIES OF SUBSCRIPTION
+  # MODELS. They are kept, not deleted, because openrouter is the deliberate
+  # smoke-test path ("run the simple llm test through openrouter to check it is
+  # working"); what changed on 2026-08-06 is that none of them can be reached
+  # by DEFAULT any more. `recommended:` was dropped from the two that carried
+  # it and every one declares `superseded_by:` naming the subscription route
+  # that should serve that work instead.
   openai/gpt-5.6-luna:
     provider: openrouter
+    model_family: gpt-5.6-luna
+    superseded_by: gpt-5.6-luna
     type: llm
-    description: "$0.10 -> $0.60 /Mtok, 1M context. Best cost/quality on the
-      metered path; the openrouter default"
+    description: "$0.10 -> $0.60 /Mtok, 1M context. METERED COPY of the codex
+      subscription's `gpt-5.6-luna`. Smoke test only -- it was the openrouter
+      default until 2026-08-06, which billed for a model already paid for"
     context_length: 1050000
     tier: low
-    recommended: true
 
   openai/gpt-5.6-terra:
     provider: openrouter
+    model_family: gpt-5.6-terra
+    superseded_by: gpt-5.6-terra
     type: llm
-    description: "$1.00 -> $6.00 /Mtok, 1M context. Metered mid tier"
+    description: "$1.00 -> $6.00 /Mtok, 1M context. METERED COPY of the codex
+      subscription's `gpt-5.6-terra`"
     context_length: 1050000
     tier: mid
 
   openai/gpt-5.6-sol:
     provider: openrouter
+    model_family: gpt-5.6-sol
+    superseded_by: gpt-5.6-sol
     type: llm
-    description: "$5.00 -> $30.00 /Mtok. Metered top tier -- 50x luna. Review
-      work only, never bulk"
+    description: "$5.00 -> $30.00 /Mtok -- 50x luna. METERED COPY of the codex
+      subscription's `gpt-5.6-sol`. Review work only, never bulk"
     context_length: 1050000
     tier: high
 
   google/gemini-2.5-flash-lite:
     provider: openrouter
+    model_family: gemini-2.5-flash-lite
+    # No gemini_cli route to this exact family is registered (catalog keys are
+    # wire ids and the bare id is taken by the direct-API route -- see the note
+    # in the gemini_cli block). `gemini-3.1-flash-lite` is the CLI's own
+    # flash-lite default and is what this work should run on.
+    superseded_by: gemini-3.1-flash-lite
     type: llm
-    description: "$0.10 -> $0.40 /Mtok, 1M context. Cheapest completion pricing
-      among the quality tier"
+    description: "$0.10 -> $0.40 /Mtok, 1M context. METERED COPY of a Gemini
+      tier the user pays for by subscription. Smoke test only -- it was
+      `recommended: true` until 2026-08-06"
     context_length: 1048576
     tier: low
-    recommended: true
 
   qwen/qwen3.7-flash:
     provider: openrouter
+    model_family: qwen3.7-flash
     type: llm
     description: "$0.03 -> $0.13 /Mtok, 1M context. Cheapest usable option for
       high-volume mechanical labeling"
@@ -385,6 +566,7 @@ models:
 
   deepseek/deepseek-v4-flash-0731:
     provider: openrouter
+    model_family: deepseek-v4-flash-0731
     type: llm
     description: "$0.09 -> $0.18 /Mtok, 1M context. Flat cheap completion"
     context_length: 1048576
@@ -392,6 +574,7 @@ models:
 
   openai/gpt-oss-20b:free:
     provider: openrouter
+    model_family: gpt-oss-20b
     type: llm
     description: "Free tier. Rate-limited -- fine for a smoke test, will
       throttle on a real corpus. Never a default"
@@ -400,6 +583,7 @@ models:
 
   openrouter/auto:
     provider: openrouter
+    model_family: openrouter-auto
     type: llm
     description: "OpenRouter automatic model routing -- it picks the model per
       request, so cost and quality are not pinned. Useful as an escape hatch,
@@ -433,6 +617,7 @@ models:
   # comment on ollama's embedding models.
   qwen/qwen3-embedding-8b:
     provider: openrouter
+    model_family: qwen3-embedding-4096
     type: embedding
     description: "$0.01/Mtok, 4096-d. DEFAULT and the best value on this
       provider: joint-cheapest of the six AND the strongest retrieval model
@@ -446,6 +631,7 @@ models:
 
   qwen/qwen3-embedding-4b:
     provider: openrouter
+    model_family: qwen3-embedding-2560
     type: embedding
     description: "$0.02/Mtok, 2560-d. Smaller sibling of the 8b -- costs twice
       as much per token for a weaker model, so it exists for completeness
@@ -456,6 +642,7 @@ models:
 
   baai/bge-m3:
     provider: openrouter
+    model_family: bge-m3
     type: embedding
     description: "$0.01/Mtok, 1024-d. Multilingual and long-context; the hosted
       twin of ollama's `bge-m3`, and a native dimension match for a table that
@@ -469,6 +656,7 @@ models:
 
   google/gemini-embedding-001:
     provider: openrouter
+    model_family: gemini-embedding-001
     type: embedding
     description: "$0.15/Mtok, 3072-d. The most expensive of the six -- 15x the
       qwen3-8b for no established retrieval advantage. Reach for it only to
@@ -479,6 +667,7 @@ models:
 
   openai/text-embedding-3-small:
     provider: openrouter
+    model_family: text-embedding-3-small
     type: embedding
     description: "$0.02/Mtok, 1536-d. OpenAI's older embedding generation,
       kept because it is widely used as a baseline and matches a corpus
@@ -489,6 +678,7 @@ models:
 
   openai/text-embedding-3-large:
     provider: openrouter
+    model_family: text-embedding-3-large
     type: embedding
     description: "$0.13/Mtok, 3072-d. Older generation and 13x the qwen3-8b
       price; register-only, for corpus compatibility"
@@ -499,6 +689,7 @@ models:
   # ---------------------------------------------------- direct cloud (API keys)
   gpt-4o-mini:
     provider: openai
+    model_family: gpt-4o-mini
     type: llm
     description: "OpenAI fast model"
     context_length: 128000
@@ -506,6 +697,7 @@ models:
 
   text-embedding-3-small:
     provider: openai
+    model_family: text-embedding-3-small
     type: embedding
     description: "Cloud embedding option. NOTE: the plan's hard gate forbids
       routing authenticated captures to a cloud embedder"
@@ -520,13 +712,23 @@ models:
 
   gemini-2.5-flash-lite:
     provider: gemini
+    model_family: gemini-2.5-flash-lite
+    # Deliberately NOT `superseded_by`, unlike its openrouter twin. The
+    # instruction was that this family must not be billed through OPENROUTER;
+    # the direct Gemini API is a separate opt-in path reached only by setting
+    # AI_PROVIDER=gemini with a GOOGLE_API_KEY, which is itself the record of
+    # consent to pay Google directly (SPEC-provider-routing R3). Marking it
+    # superseded would also leave `gemini.default_models.llm` with nothing
+    # legal to name, and an invariant with a carve-out is not an invariant.
     type: llm
-    description: "Gemini speed tier"
+    description: "Gemini speed tier via the direct metered API. Prefer
+      gemini_cli (subscription) unless you specifically want API billing"
     context_length: 1048576
     tier: low
 
   text-embedding-004:
     provider: gemini
+    model_family: text-embedding-004
     type: embedding
     description: "Gemini embedding model"
     dimensions: 768
@@ -534,6 +736,7 @@ models:
 
   claude-3-5-sonnet-latest:
     provider: anthropic
+    model_family: claude-3-5-sonnet
     type: llm
     description: "Anthropic balanced model (direct API, metered)"
     context_length: 200000
@@ -541,6 +744,7 @@ models:
 
   deepseek-chat:
     provider: deepseek
+    model_family: deepseek-chat
     type: llm
     description: "DeepSeek chat model"
     context_length: 128000
@@ -552,11 +756,22 @@ models:
 routing:
   # Ordered preference for LLM work. The CLI probes these in order and asks the
   # user to choose among what it finds. The SERVICE never picks for you.
-  llm_preference_order: ["claude_code", "codex_cli", "codex_acp"]
+  # Every entry here must be a `cost_model: subscription` provider -- that is
+  # what "preferred" means -- and that is asserted, not assumed.
+  llm_preference_order: ["claude_code", "codex_cli", "gemini_cli", "codex_acp"]
 
   # Providers that must never be selected without an explicit user decision,
   # even when they are the only thing that would work.
   explicit_opt_in_required: ["ollama", "openrouter", "openai", "gemini", "anthropic", "deepseek"]
+
+  # "Don't mix them up." A model route on a metered provider may not be
+  # `recommended: true`, a provider `default_models` value, or a
+  # `defaults.use_cases` model when EITHER its `model_family` also has a route
+  # on a subscription provider OR the route declares `superseded_by`. Registered
+  # is fine; DEFAULTED is not -- the metered copies stay reachable as the
+  # deliberate smoke-test path (`use_cases.smoke_test`) and by an explicit
+  # LLM_MODEL, but nothing arrives at them on its own.
+  metered_duplicate_policy: never_default
 
   # Hard rule. There is no automatic fallback of any kind. When the selected
   # provider cannot serve, the service raises a structured
@@ -592,6 +807,9 @@ defaults:
     bulk_labeling_offline:
       provider: "ollama"
       model: "qwen3"
+    bulk_labeling_gemini:
+      provider: "gemini_cli"
+      model: "gemini-3.1-flash-lite"
     bulk_labeling_metered:
       provider: "openrouter"
       model: "qwen/qwen3.7-flash"
@@ -609,9 +827,16 @@ defaults:
     chat_codex:
       provider: "codex_cli"
       model: "gpt-5.6-terra"
+    chat_gemini:
+      provider: "gemini_cli"
+      model: "gemini-2.5-flash"
+    # Was `openai/gpt-5.6-luna` until 2026-08-06 -- the metered copy of the
+    # codex subscription's default. Now names a family openrouter is the only
+    # route to, so the metered chat path costs money for something you are not
+    # already paying for.
     chat_metered:
       provider: "openrouter"
-      model: "openai/gpt-5.6-luna"
+      model: "deepseek/deepseek-v4-flash-0731"
 
     # Top tier is opt-in only -- never a default.
     deep_analysis:
@@ -620,6 +845,14 @@ defaults:
     adversarial_review:
       provider: "codex_cli"
       model: "gpt-5.6-sol"
+
+    # The deliberate "is the wiring working at all" path. openrouter stays
+    # available for exactly this: one cheap metered request that does not
+    # depend on any subscription CLI being installed or logged in. Real work
+    # defaults to a subscription CLI (see llm_preference_order); this does not.
+    smoke_test:
+      provider: "openrouter"
+      model: "qwen/qwen3.7-flash"
 
     # Embeddings are never a subscription CLI -- those serve none. The metered
     # path is available but stays opt-in, and never for authenticated captures.
