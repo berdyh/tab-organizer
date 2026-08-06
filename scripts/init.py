@@ -201,8 +201,8 @@ def configure_ollama(args: argparse.Namespace) -> Dict[str, str]:
     ollama_embed_models = ai_config.get_provider_models("ollama", "embedding")
     
     # Convert to choice format for prompt
-    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in ollama_llm_models]
-    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in ollama_embed_models]
+    llm_options = [(model, ai_config.format_model_description(model)) for model in ollama_llm_models]
+    embed_options = [(model, ai_config.format_model_description(model)) for model in ollama_embed_models]
     
     llm_model = args.ollama_llm or prompt_choice("Choose an Ollama LLM model:", llm_options, default_index=0)
     embedding_model = args.ollama_embedding or prompt_choice(
@@ -264,7 +264,7 @@ def configure_claude(args: argparse.Namespace) -> Dict[str, str]:
     claude_llm_models = ai_config.get_provider_models("anthropic", "llm")
     
     # Convert to choice format for prompt
-    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in claude_llm_models]
+    llm_options = [(model, ai_config.format_model_description(model)) for model in claude_llm_models]
     
     llm_model = args.claude_llm or prompt_choice(
         "Choose a Claude LLM model:", llm_options, default_index=0
@@ -292,7 +292,7 @@ def configure_claude(args: argparse.Namespace) -> Dict[str, str]:
     embed_models = ai_config.get_provider_models(embed_provider, "embedding")
     if not embed_models:
         raise SystemExit(f"Provider '{embed_provider}' has no embedding models configured.")
-    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
+    embed_options = [(model, ai_config.format_model_description(model)) for model in embed_models]
     embedding_model = args.claude_embedding or prompt_choice(
         f"Choose a {embed_provider} embedding model:", embed_options, default_index=0
     )
@@ -337,7 +337,7 @@ def _select_embedding_model(ai_config, provider: str, requested_model: str | Non
         raise SystemExit(f"Provider '{provider}' has no embedding models configured.")
     if requested_model:
         return requested_model
-    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
+    embed_options = [(model, ai_config.format_model_description(model)) for model in embed_models]
     return prompt_choice(f"Choose a {provider} embedding model:", embed_options, default_index=0)
 
 
@@ -358,8 +358,8 @@ def configure_openrouter(args: argparse.Namespace) -> Dict[str, str]:
     ai_config = get_ai_config()
     llm_models = ai_config.get_provider_models("openrouter", "llm")
     embed_models = ai_config.get_provider_models("openrouter", "embedding")
-    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in llm_models]
-    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
+    llm_options = [(model, ai_config.format_model_description(model)) for model in llm_models]
+    embed_options = [(model, ai_config.format_model_description(model)) for model in embed_models]
 
     llm_model = args.openrouter_llm or prompt_choice("Choose an OpenRouter LLM model:", llm_options, default_index=0)
     embedding_model = args.openrouter_embedding or prompt_choice(
@@ -404,7 +404,7 @@ def configure_subscription_cli(args: argparse.Namespace, provider: str) -> Dict[
 
     ai_config = get_ai_config()
     llm_models = ai_config.get_provider_models(provider, "llm")
-    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in llm_models]
+    llm_options = [(model, ai_config.format_model_description(model)) for model in llm_models]
     llm_model = args.subscription_llm or prompt_choice(
         f"Choose a {provider} LLM model:", llm_options, default_index=0
     )

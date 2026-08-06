@@ -377,8 +377,8 @@ def _require_explicit_provider(
         f"cause: {env_var} is not set. This command does not pick a "
         f"{role_label} provider for you.\n"
         f"fix: Run ./scripts/cli.py configure-provider, or pass {flag_name} "
-        f"explicitly, or set {env_var} in .env. Preferred: claude_code or "
-        f"codex_cli (uses your subscription). Metered: openrouter, openai, "
+        f"explicitly, or set {env_var} in .env. Preferred: claude_code, "
+        f"codex_cli or gemini_cli (uses your subscription). Metered: openrouter, openai, "
         f"gemini (requires an API key and consent). Local: ollama (free, "
         f"requires models pulled first)."
     )
@@ -423,6 +423,8 @@ def cmd_host_ai(args):
         env["CODEX_CLI_COMMAND"] = args.codex_cli_command
     if args.codex_acp_command:
         env["CODEX_ACP_COMMAND"] = args.codex_acp_command
+    if args.gemini_cli_command:
+        env["GEMINI_CLI_COMMAND"] = args.gemini_cli_command
 
     bind_host = resolve_host_ai_bind_host(args.host)
     print(
@@ -760,6 +762,11 @@ def cmd_configure_provider(args):
             "  claude_code -- `claude` on PATH, logged in (subscription)\n"
             "  codex_cli   -- `codex` on PATH, logged in (subscription)\n"
             "  codex_acp   -- `acpx` on PATH (subscription)\n"
+            "  gemini_cli  -- `gemini` on PATH AND logged in, i.e.\n"
+            "                 ~/.gemini/oauth_creds.json present (subscription).\n"
+            "                 `gemini --version` alone is NOT enough: an\n"
+            "                 unauthenticated CLI exits 0 there and then blocks\n"
+            "                 forever on a browser-login prompt.\n"
             "  ollama      -- reachable local server with a model pulled (free, local)\n"
             "  openrouter / openai / gemini / anthropic / deepseek -- matching API key "
             "set in .env (metered)\n"
@@ -791,8 +798,10 @@ def cmd_configure_provider(args):
     llm_models = ai_config.get_provider_models(llm_provider, "llm")
     default_llm_model = ai_config.get_default_model(llm_provider, "llm")
     default_index = llm_models.index(default_llm_model) if default_llm_model in llm_models else 0
+    # Every menu row carries its route (provider + cost_model), never a bare
+    # model name -- see config_loader.format_model_description.
     llm_model_options = [
-        (m, ai_config.get_model_config(m).get("description", "")) for m in llm_models
+        (m, ai_config.format_model_description(m)) for m in llm_models
     ]
     llm_model = args.llm_model or prompt_choice(
         f"Choose a {llm_provider} LLM model:", llm_model_options, default_index=default_index
@@ -843,7 +852,7 @@ def cmd_configure_provider(args):
         embed_models.index(default_embed_model) if default_embed_model in embed_models else 0
     )
     embed_model_options = [
-        (m, ai_config.get_model_config(m).get("description", "")) for m in embed_models
+        (m, ai_config.format_model_description(m)) for m in embed_models
     ]
     embedding_model = args.embedding_model or prompt_choice(
         f"Choose a {embedding_provider} embedding model:",
@@ -1153,7 +1162,14 @@ Examples:
     )
     host_ai_parser.add_argument(
         "--provider",
-        choices=["claude_code", "codex_cli", "codex_acp", "openrouter", "ollama"],
+        choices=[
+            "claude_code",
+            "codex_cli",
+            "gemini_cli",
+            "codex_acp",
+            "openrouter",
+            "ollama",
+        ],
         help=(
             "LLM provider to run in the host AI engine; falls back to "
             "AI_PROVIDER in .env if set, otherwise required (this command "
@@ -1186,6 +1202,10 @@ Examples:
         help="Override CODEX_ACP_COMMAND, for example an absolute acpx path",
     )
     host_ai_parser.add_argument(
+        "--gemini-cli-command",
+        help="Override GEMINI_CLI_COMMAND, for example an absolute gemini path",
+    )
+    host_ai_parser.add_argument(
         "--host",
         default=None,
         help=(
@@ -1211,6 +1231,7 @@ Examples:
             "anthropic",
             "claude_code",
             "codex_cli",
+            "gemini_cli",
             "codex_acp",
             "deepseek",
             "gemini",

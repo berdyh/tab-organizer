@@ -15,20 +15,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _host_ai_args(**overrides):
-    values = {
-        "provider": "codex_acp",
-        "embedding_provider": "ollama",
-        "llm_model": None,
-        "embedding_model": None,
-        "ollama_host": None,
-        "claude_code_command": None,
-        "codex_cli_command": None,
-        "codex_acp_command": None,
-        "host": "0.0.0.0",
-        "port": 8090,
-    }
-    values.update(overrides)
-    return argparse.Namespace(**values)
+    """Build host-ai args from the REAL parser, not a hand-copied Namespace.
+
+    The hand-built dict this replaced drifted the moment a flag was added
+    (`--gemini-cli-command`): every host-ai test blew up with AttributeError
+    on a field argparse would always have supplied. Parsing a minimal command
+    line means the fixture cannot describe a parser that does not exist.
+    """
+    argv = ["host-ai", "--provider", "codex_acp", "--embedding-provider", "ollama"]
+    args = cli.build_parser().parse_args(argv)
+    args.host = "0.0.0.0"
+    for key, value in overrides.items():
+        if not hasattr(args, key):
+            raise AssertionError(f"host-ai parser has no {key!r} argument")
+        setattr(args, key, value)
+    return args
 
 
 def _stub_service_tokens(monkeypatch):
@@ -207,6 +208,62 @@ def test_cmd_host_ai_accepts_explicit_provider_flags(monkeypatch):
     env = calls[0]["env"]
     assert env["AI_PROVIDER"] == "codex_acp"
     assert env["EMBEDDING_PROVIDER"] == "ollama"
+
+
+def test_cmd_host_ai_passes_every_subscription_cli_command_override(monkeypatch):
+    """Each --*-command flag must actually reach the host AI Engine's env.
+
+    host-ai is the ONLY way a subscription CLI provider is usable (the stock
+    image ships none of the binaries), so a flag that parses but is never
+    exported leaves the user with a provider that cannot be pointed at their
+    real binary. Covers all four together so adding a fifth adapter and
+    forgetting the passthrough fails here.
+    """
+    calls = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "run_command",
+        lambda cmd, env=None, **kwargs: calls.append({"cmd": cmd, "env": env}),
+    )
+
+    cli.cmd_host_ai(
+        _host_ai_args(
+            provider="gemini_cli",
+            claude_code_command="/opt/bin/claude",
+            codex_cli_command="/opt/bin/codex",
+            codex_acp_command="/opt/bin/acpx",
+            gemini_cli_command="/opt/bin/gemini",
+        )
+    )
+
+    env = calls[0]["env"]
+    assert env["AI_PROVIDER"] == "gemini_cli"
+    assert env["CLAUDE_CODE_COMMAND"] == "/opt/bin/claude"
+    assert env["CODEX_CLI_COMMAND"] == "/opt/bin/codex"
+    assert env["CODEX_ACP_COMMAND"] == "/opt/bin/acpx"
+    assert env["GEMINI_CLI_COMMAND"] == "/opt/bin/gemini"
+
+
+def test_host_ai_parser_offers_every_subscription_cli_provider():
+    """--provider must offer what the catalog calls preferred.
+
+    A provider missing from `choices` is unreachable through the only command
+    that can run it, however complete the adapter is.
+    """
+    from config.config_loader import get_ai_config
+
+    parser = cli.build_parser()
+    action = next(
+        a
+        for a in parser._subparsers._group_actions[0].choices["host-ai"]._actions
+        if a.dest == "provider"
+    )
+    preferred = get_ai_config().config["routing"]["llm_preference_order"]
+    assert set(preferred) <= set(action.choices), (
+        f"host-ai cannot select {sorted(set(preferred) - set(action.choices))}"
+    )
 
 
 def test_host_ai_parser_default_host_is_not_bound_to_all_interfaces():
