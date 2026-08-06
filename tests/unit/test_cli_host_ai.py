@@ -941,3 +941,40 @@ def test_tabs_cli_errors_redact_configured_agent_token(monkeypatch, capsys):
     assert "agent-token-value" not in output.out
     assert "agent-token-value" not in output.err
     assert "<redacted>" in output.err
+
+
+def test_short_token_is_not_redacted_and_warns(monkeypatch, capsys):
+    """A 1-char token must not shred output; it must warn instead.
+
+    A misconfigured BACKEND_CALLBACK_TOKEN=":" made str.replace rewrite every
+    URL and timestamp in the CLI's output as "http<redacted>//host<redacted>9222".
+    Nothing is protected by redacting a value that short, and the shredded
+    output hides the diagnostics an operator needs.
+    """
+    from scripts.mcp import tabs as mcp_tabs
+
+    monkeypatch.setattr(mcp_tabs, "_warned_short_tokens", set())
+    for key in ("BACKEND_AGENT_API_TOKEN", "AI_ENGINE_API_TOKEN",
+                "BROWSER_ENGINE_API_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", ":")
+
+    message = 'http://host.docker.internal:9222 at 14:09:40'
+    assert mcp_tabs.redact_configured_secrets(message) == message
+    assert "BACKEND_CALLBACK_TOKEN is 1 characters" in capsys.readouterr().err
+
+
+def test_a_real_length_token_is_still_redacted(monkeypatch):
+    """The floor must not become an excuse to stop redacting real tokens."""
+    from scripts.mcp import tabs as mcp_tabs
+
+    monkeypatch.setattr(mcp_tabs, "_warned_short_tokens", set())
+    for key in ("BACKEND_AGENT_API_TOKEN", "AI_ENGINE_API_TOKEN",
+                "BROWSER_ENGINE_API_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    secret = "s3cr3t-token-value-abcdefghijklmnop"
+    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", secret)
+
+    out = mcp_tabs.redact_configured_secrets(f"auth failed for {secret} on /tabs")
+    assert secret not in out
+    assert "<redacted>" in out

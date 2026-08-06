@@ -84,8 +84,29 @@ def _require_urls(urls: list[str]) -> list[str]:
     return cleaned
 
 
+MIN_REDACTABLE_TOKEN_LEN = 12
+
+_warned_short_tokens: set[str] = set()
+
+
 def redact_configured_secrets(message: str) -> str:
-    """Redact configured service tokens from user-visible text."""
+    """Redact configured service tokens from user-visible text.
+
+    A token shorter than ``MIN_REDACTABLE_TOKEN_LEN`` is NOT redacted, and the
+    reason is not leniency. ``str.replace`` has no notion of a token boundary,
+    so a one-character value turns every occurrence of that character into
+    ``<redacted>`` -- a misconfigured ``BACKEND_CALLBACK_TOKEN=":"`` rewrote
+    every URL and timestamp in this CLI's output to
+    ``"http<redacted>//host<redacted>9222"``. Nothing is protected by that: a
+    value that short has no secrecy to preserve, while the shredded output
+    actively hides the diagnostics an operator needs.
+
+    `scripts/cli.py` mints these with `secrets.token_urlsafe`, so any real
+    token is far longer than this floor. A value below it is misconfiguration,
+    which is why this warns once per token rather than staying silent -- a
+    one-character service token is itself a security problem, and silently
+    declining to redact it would hide that too.
+    """
     redacted = message
     for key in (
         AGENT_TOKEN_ENV,
@@ -94,8 +115,22 @@ def redact_configured_secrets(message: str) -> str:
         "BROWSER_ENGINE_API_TOKEN",
     ):
         token = os.getenv(key, "").strip()
-        if token:
-            redacted = redacted.replace(token, "<redacted>")
+        if not token:
+            continue
+        if len(token) < MIN_REDACTABLE_TOKEN_LEN:
+            if key not in _warned_short_tokens:
+                _warned_short_tokens.add(key)
+                print(
+                    f"warning: {key} is {len(token)} characters, below the "
+                    f"{MIN_REDACTABLE_TOKEN_LEN}-character floor for a service "
+                    "token. It is not being redacted from output, because "
+                    "redacting a value that short would corrupt every message "
+                    "instead of protecting anything. Regenerate it with "
+                    "./scripts/cli.py start.",
+                    file=sys.stderr,
+                )
+            continue
+        redacted = redacted.replace(token, "<redacted>")
     return redacted
 
 
