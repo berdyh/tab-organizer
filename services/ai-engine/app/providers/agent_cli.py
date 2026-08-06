@@ -422,6 +422,179 @@ class CodexCliLLMProvider(AgentCLILLMProvider):
         return stdout.strip()
 
 
+class GeminiCliLLMProvider(AgentCLILLMProvider):
+    """Gemini CLI headless provider using the user's local Google subscription.
+
+    Subscription, not metered: the CLI authenticates as `oauth-personal` against
+    the user's own Google account and spends that plan. `GEMINI_API_KEY` /
+    `GOOGLE_API_KEY` are deliberately NOT in `ENV_ALLOWLIST`, so this adapter
+    physically cannot hand the app's metered Gemini key to the subprocess. The
+    metered path is the separate `gemini` cloud provider.
+
+    NOT the Antigravity IDE. `antigravity` on this machine is an Electron GUI
+    (`/opt/Antigravity/antigravity`) with no headless mode; it opens a window
+    and never returns, so it cannot be a provider adapter. The `gemini` CLI is
+    the headless substitute (`-p/--prompt` is documented as
+    "Run in non-interactive (headless) mode with the given prompt").
+    """
+
+    provider_label = "Gemini CLI"
+    command_env = "GEMINI_CLI_COMMAND"
+    default_command = "gemini"
+    timeout_env = "GEMINI_CLI_TIMEOUT"
+    default_workdir = "/tmp/tab-organizer-gemini-cli"
+
+    # The whole envelope travels in argv (`-p <text>`) rather than on stdin,
+    # because `--help` documents `-p` as the non-interactive entry point and
+    # only says stdin is "appended to" it -- an ordering this adapter cannot
+    # verify. argv is bounded by ARG_MAX, so an over-long prompt is refused
+    # with a structured error instead of surfacing as OSError E2BIG from
+    # create_subprocess_exec.
+    max_prompt_bytes = 128 * 1024
+
+    APPROVAL_MODES = {"plan", "default"}
+
+    @classmethod
+    def _credentials_path(cls) -> Path:
+        """Where the CLI keeps its oauth-personal credentials.
+
+        `GEMINI_DIR = ".gemini"` and `OAUTH_FILE = "oauth_creds.json"` were read
+        out of the installed `@google/gemini-cli` bundle, not guessed. The CLI
+        offers no env var to relocate that directory, so it follows `HOME` --
+        which is in `ENV_ALLOWLIST` and therefore reaches the subprocess.
+        """
+        home = os.getenv("HOME") or str(Path.home())
+        return Path(home) / ".gemini" / "oauth_creds.json"
+
+    @classmethod
+    def _has_local_credentials(cls) -> bool:
+        try:
+            path = cls._credentials_path()
+            return path.is_file() and path.stat().st_size > 0
+        except OSError:
+            return False
+
+    @classmethod
+    def _availability_preflight(cls, command: list[str]) -> bool:
+        """`--version` is necessary but NOT sufficient for this CLI.
+
+        Measured 2026-08-06 against gemini-cli 0.54.0: with no credentials on
+        disk, `gemini --version` still exits 0, while `gemini -p '...'` prints
+        "Opening authentication page in your browser. Do you want to continue?
+        [Y/n]" and then blocks FOREVER -- confirmed with stdin closed AND under
+        `setsid` (no controlling terminal), so neither EOF nor the base class's
+        `start_new_session=True` breaks the wait. Inheriting the base preflight
+        unchanged would therefore advertise this provider as available while
+        every real request hung to the timeout.
+
+        The credential check is deliberately a NECESSARY condition, not proof
+        of a working session: an expired token still passes it and then fails
+        (or hangs to `GEMINI_CLI_TIMEOUT`) at call time. The repo's rule is to
+        call the thing rather than infer from an artifact, but here calling the
+        thing is the failure mode being guarded against -- one unauthenticated
+        probe costs an unbounded hang, and one authenticated probe spends the
+        user's subscription quota on every availability check.
+        """
+        if not super()._availability_preflight(command):
+            return False
+        return cls._has_local_credentials()
+
+    def _approval_mode(self) -> str:
+        """Read-only by default; `yolo`/`auto_edit` are not reachable from env."""
+        mode = os.getenv("GEMINI_CLI_APPROVAL_MODE", "plan").strip().lower()
+        return mode if mode in self.APPROVAL_MODES else "plan"
+
+    def _guard_prompt_length(self, prompt_text: str) -> None:
+        size = len(prompt_text.encode("utf-8"))
+        if size > self.max_prompt_bytes:
+            raise AgentCLIError(
+                f"{self.provider_label} prompt is {size} bytes, over the "
+                f"{self.max_prompt_bytes}-byte argv limit this adapter enforces"
+            )
+
+    async def generate(self, prompt: str, system: Optional[str] = None) -> str:
+        """Generate text by invoking `gemini -p` locally."""
+        if (
+            self._has_untrusted_context_marker(prompt, system)
+            and os.getenv("GEMINI_CLI_ALLOW_UNTRUSTED_CONTEXT", "").strip().lower()
+            not in TRUE_VALUES
+        ):
+            raise AgentCLIError(
+                "Gemini CLI is disabled for scraped-content prompts because it "
+                "has no tool-free mode: even --approval-mode plan allows "
+                "read_file, google_web_search and web_fetch (read from the "
+                "CLI's own bundled policies/read-only.toml), each an "
+                "exfiltration channel for injected instructions; use "
+                "claude_code for those flows"
+            )
+
+        prompt_text = self._structured_prompt_text(prompt, system)
+        self._guard_prompt_length(prompt_text)
+
+        args = [
+            *self._command(),
+            "--approval-mode",
+            self._approval_mode(),
+            "--output-format",
+            "json",
+            # The workdir is a dedicated empty scratch directory this class
+            # creates; without this the CLI can block on an interactive
+            # folder-trust prompt, the same unbounded wait the preflight
+            # exists to avoid. It grants no write/execute -- that stays with
+            # --approval-mode.
+            "--skip-trust",
+        ]
+
+        if self.config.model:
+            args.extend(["-m", self.config.model])
+
+        args.extend(self._extra_args("GEMINI_CLI_EXTRA_ARGS"))
+        # Last, so a stray GEMINI_CLI_EXTRA_ARGS cannot displace the prompt.
+        args.extend(["-p", prompt_text])
+
+        stdout, _stderr = await self._run(args)
+        return self._parse_output(stdout)
+
+    def _parse_output(self, stdout: str) -> str:
+        """Parse the CLI's `--output-format json` envelope.
+
+        Shape read from the installed bundle's own `JsonFormatter`:
+        ``{session_id?, response?, stats?, error?: {type, message, code?},
+        warnings?}``.
+        """
+        stripped = stdout.strip()
+        if not stripped:
+            return ""
+
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            return stripped
+
+        if not isinstance(data, dict):
+            return stripped
+
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = self._error_message(error)
+            logger.warning(
+                "%s reported an error: %s",
+                self.provider_label,
+                self._diagnostic_preview(message),
+            )
+            raise AgentCLIError(f"{self.provider_label} reported an error")
+
+        response = data.get("response")
+        if isinstance(response, str):
+            return response
+
+        return stripped
+
+    def _error_message(self, error: dict) -> str:
+        message = error.get("message")
+        return message if isinstance(message, str) and message else "unknown error"
+
+
 class CodexAcpLLMProvider(AgentCLILLMProvider):
     """Codex ACP provider using acpx to drive the Codex harness."""
 

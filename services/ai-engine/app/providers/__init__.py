@@ -1,6 +1,11 @@
 """AI Provider implementations."""
 
-from .agent_cli import ClaudeCodeLLMProvider, CodexAcpLLMProvider, CodexCliLLMProvider
+from .agent_cli import (
+    ClaudeCodeLLMProvider,
+    CodexAcpLLMProvider,
+    CodexCliLLMProvider,
+    GeminiCliLLMProvider,
+)
 from .anthropic import AnthropicLLMProvider
 from .deepseek import DeepSeekEmbeddingProvider, DeepSeekLLMProvider
 from .gemini import GeminiEmbeddingProvider, GeminiLLMProvider
@@ -16,6 +21,7 @@ __all__ = [
     "ClaudeCodeLLMProvider",
     "CodexAcpLLMProvider",
     "CodexCliLLMProvider",
+    "GeminiCliLLMProvider",
     "DeepSeekLLMProvider",
     "DeepSeekEmbeddingProvider",
     "GeminiLLMProvider",

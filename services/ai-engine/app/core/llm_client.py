@@ -167,6 +167,19 @@ class LLMClient:
             "subscription": True,
             "acp": True,
         },
+        # Gemini CLI headless mode. `embeddings: False` is not an assumption:
+        # `gemini --help` was run on 2026-08-06 and its command list is
+        # mcp / extensions / skills / hooks / gemma / [query] -- the binary
+        # exposes no way to ask for a vector, so there is nothing an embedding
+        # adapter could call. (The bundle carries a
+        # DEFAULT_GEMINI_EMBEDDING_MODEL constant for its own internal memory
+        # features; that is not a CLI surface.)
+        "gemini_cli": {
+            "llm": True,
+            "embeddings": False,
+            "local": True,
+            "subscription": True,
+        },
         "deepseek": {"llm": True, "embeddings": False, "local": False},
         "gemini": {"llm": True, "embeddings": True, "local": False},
         # embeddings was set False here on 2026-08-04 to mirror a catalog entry
@@ -187,6 +200,7 @@ class LLMClient:
         "claude_code": ("CLAUDE_CODE_COMMAND", "claude"),
         "codex_cli": ("CODEX_CLI_COMMAND", "codex"),
         "codex_acp": ("CODEX_ACP_COMMAND", "acpx"),
+        "gemini_cli": ("GEMINI_CLI_COMMAND", "gemini"),
     }
 
     def __init__(
@@ -590,6 +604,7 @@ class LLMClient:
             CodexAcpLLMProvider,
             CodexCliLLMProvider,
             DeepSeekLLMProvider,
+            GeminiCliLLMProvider,
             GeminiLLMProvider,
             OllamaLLMProvider,
             OpenAILLMProvider,
@@ -602,6 +617,7 @@ class LLMClient:
             "claude_code": ClaudeCodeLLMProvider,
             "codex_cli": CodexCliLLMProvider,
             "codex_acp": CodexAcpLLMProvider,
+            "gemini_cli": GeminiCliLLMProvider,
             "deepseek": DeepSeekLLMProvider,
             "gemini": GeminiLLMProvider,
             "openrouter": OpenAILLMProvider,
@@ -922,12 +938,14 @@ class LLMClient:
             ClaudeCodeLLMProvider,
             CodexAcpLLMProvider,
             CodexCliLLMProvider,
+            GeminiCliLLMProvider,
         )
 
         providers = {
             "claude_code": ClaudeCodeLLMProvider,
             "codex_cli": CodexCliLLMProvider,
             "codex_acp": CodexAcpLLMProvider,
+            "gemini_cli": GeminiCliLLMProvider,
         }
         provider_class = providers.get(provider)
         return bool(provider_class and provider_class.is_available())
