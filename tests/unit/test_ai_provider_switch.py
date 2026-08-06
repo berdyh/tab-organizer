@@ -253,6 +253,16 @@ async def test_runtime_config_updates_api_keys_models_and_reconfigures_embedding
 
     chatbot = FakeChatbot()
     llm_client = FakeLLMClient()
+    # `setenv` first, then `delenv`: this test asserts that the endpoint WRITES
+    # the key into the real `os.environ`, and that write outlives the test
+    # unless monkeypatch has something recorded to restore. `delenv(...,
+    # raising=False)` on an already-absent name records nothing, so on its own
+    # it leaks `OPENROUTER_API_KEY=sk-or-local` into every later test in the
+    # session -- which made the live-endpoint probes in
+    # `test_provider_routing.py` skip-guard on a present-but-bogus key and fail
+    # with 401 under `make test-ai`, where this file runs first. The setenv
+    # gives monkeypatch a prior value to roll back to.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(main, "chatbot", chatbot)
     monkeypatch.setattr(main, "llm_client", llm_client)
