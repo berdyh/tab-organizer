@@ -60,12 +60,21 @@ docker compose --profile test-unit run --rm test-unit \
 make lint            # flake8 (E9,F63,F7,F82) + pylint --exit-zero
 make format          # black + isort (line-length 88, py312)
 make format-check    # what CI enforces
-make type-check      # mypy --ignore-missing-imports
+make type-check      # mypy --ignore-missing-imports -- BROKEN, see below
 make security        # bandit + safety
 make quality         # all of the above
 ```
 
 These run in throwaway `python:3.12-slim` containers, so no local toolchain is needed.
+
+**`make type-check` has never checked anything**, and `make quality` inherits
+that. mypy aborts before analysis with `Duplicate module named "app"` — all four
+services have an `app/` package — then exits 2. So it is a gate in name only:
+a red result carries no information about your change, and it has never gone
+green for anyone. Fix it with `--explicit-package-bases`/`MYPYPATH` or per-service
+invocation, or stop listing it as a gate; leaving it as-is is the
+documented-but-false pattern this repo has been bitten by four times. Verified
+2026-08-06.
 
 ## Architecture
 
