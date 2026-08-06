@@ -21,6 +21,50 @@ the R4 surface launder the drift it exists to expose.
 
 Gates: `tests/unit/test_provider_routing.py`, `tests/unit/test_cli_*.py`.
 
+### Amendment, 2026-08-06 — R1 had a hole: "preferred" was not enforced downstream
+
+R1 stops the *service* choosing a provider. It said nothing about the
+*catalog* pointing a chosen provider at the metered copy of a model the user
+already pays for. `codex_cli.default_models.llm` was `gpt-5.6-luna` and
+`openrouter.default_models.llm` was `openai/gpt-5.6-luna` — same weights, two
+ids, two cost models, no link between the entries. Choosing openrouter (a
+deliberate, consented choice under R3) therefore billed for something already
+bought, and nothing on screen said so.
+
+Two changes close it, both data-first:
+
+1. **Routes are explicit.** Each `models:` entry is one provider route: the key
+   is the exact wire id, `provider:` names the provider, `model_family:` is the
+   identity shared by every route to the same weights, and `cost_model` is
+   resolved from the provider (`get_model_cost_model`). `describe_model()` /
+   `get_family_routes()` / `format_model_description()` make the route visible,
+   and every human-facing menu renders through the last of these — so a listing
+   can never show a bare model name with no provider or price attached. The
+   merged one-entry-per-model design was rejected: the key IS the wire value,
+   and merging would push `dimensions` into a per-provider sub-map, adding a
+   second way to resolve the wrong vector width.
+2. **`routing.metered_duplicate_policy: never_default`.** A metered route may
+   not be `recommended: true`, a `default_models` value, or a `use_cases`
+   model when its family has a subscription route or it declares
+   `superseded_by:`. Registered is fine — openrouter stays the deliberate
+   smoke-test path (`use_cases.smoke_test`) — but nothing arrives there on its
+   own.
+
+`gemini_cli` joins `llm_preference_order` as a fourth subscription CLI. It is
+**specified and implemented but NOT verified end-to-end**: the `gemini` CLI on
+the development host is installed (0.54.0) and unauthenticated, so its live
+`requires_provider_credentials` test skips and no generation through the
+adapter has ever been observed. `antigravity`, the originally proposed Gemini
+route, is a GUI IDE with no headless mode and cannot back a provider at all.
+
+One measured behaviour is worth stating here because it generalises to any
+future CLI adapter: **a `--version` preflight can be a false positive for
+authentication.** Logged out, `gemini --version` exits 0 while `gemini -p` blocks
+forever on an interactive browser-login prompt that ignores EOF and survives
+having no controlling terminal. An availability check that only proves the
+binary runs will advertise such a provider and hang every request to the
+timeout.
+
 **The first version of this line was false and is worth keeping as a warning.**
 It read "Every one of them was confirmed to fail against the reintroduced old
 behaviour before being kept." An adversarial review then found two changes in

@@ -12,7 +12,9 @@ The Tab Organizer uses a centralized configuration system located in `config/ai_
 - Default configurations for each provider
 - Use case recommendations
 
-OpenRouter is the docker-compose default (one API key, many models). Ollama is the `.env.example` default for running fully offline. Claude Code and Codex CLI are LLM-only options that use local CLI subscription login state instead of API keys. `codex_acp` is an LLM-only ACP harness route through `acpx` and the Codex ACP adapter. The other providers are wired in the same registry and can be swapped at runtime.
+**Routing rule (2026-08-06):** a model you already pay for by subscription is never routed through a metered provider by default. The GPT-5.6 family comes from `codex_cli` and Gemini from `gemini_cli`; openrouter's copies of both stay registered as the deliberate smoke-test path (`defaults.use_cases.smoke_test`) but carry `superseded_by:` and can never be a default or a recommendation. Each `models:` entry is one provider *route* — the key is the exact wire id, `model_family:` links routes to the same weights, and cost comes from the provider.
+
+OpenRouter is the docker-compose default (one API key, many models). Ollama is the `.env.example` default for running fully offline. Claude Code, Codex CLI and Gemini CLI are LLM-only options that use local CLI subscription login state instead of API keys. `codex_acp` is an LLM-only ACP harness route through `acpx` and the Codex ACP adapter. The other providers are wired in the same registry and can be swapped at runtime.
 
 ## Configuration Structure
 
@@ -161,7 +163,8 @@ info = client.get_provider_info()
 ```
 
 `scripts/init.py` accepts `ollama`, `claude`, `openrouter`, `claude_code`,
-`codex_cli`, and `codex_acp`. Configure OpenAI, Gemini, or DeepSeek by editing
+`codex_cli`, and `codex_acp`. `gemini_cli` is selectable through
+`./scripts/cli.py configure-provider` and `host-ai --provider gemini_cli`. Configure OpenAI, Gemini, or DeepSeek by editing
 `.env`/runtime provider settings rather than passing them to `--provider`.
 
 ## Adding New Models
@@ -221,7 +224,7 @@ models:
 
 The system uses these environment variables:
 
-- `AI_PROVIDER`: The LLM provider (openrouter, ollama, openai, anthropic, claude_code, codex_cli, codex_acp, deepseek, gemini). **No default** — nothing is selected on your behalf. Unset, the AI Engine starts, reports `degraded` on `/health` with a `{code, cause, fix}`, and fails every generate call closed. Run `./scripts/cli.py configure-provider` or set it explicitly.
+- `AI_PROVIDER`: The LLM provider (openrouter, ollama, openai, anthropic, claude_code, codex_cli, gemini_cli, codex_acp, deepseek, gemini). **No default** — nothing is selected on your behalf. Unset, the AI Engine starts, reports `degraded` on `/health` with a `{code, cause, fix}`, and fails every generate call closed. Run `./scripts/cli.py configure-provider` or set it explicitly.
 - `EMBEDDING_PROVIDER`: The embedding provider (`ollama`, `openrouter`, `openai`, `gemini`). **No default**, and no fallback: setting it to a provider that cannot embed is an error naming the ones that can, not a silent swap. The subscription CLIs, `anthropic` and `deepseek` serve no embedding models. OpenRouter does (corrected 2026-08-05 by calling the endpoint; the earlier claim was inferred from its chat-model listing, which does not cover `/v1/embeddings`).
 - `LLM_MODEL`: Override default LLM model
 - `EMBEDDING_MODEL`: Override default embedding model
@@ -236,6 +239,9 @@ The system uses these environment variables:
 - `CODEX_CLI_TIMEOUT`: Codex CLI request timeout in seconds, defaults to `300`
 - `CODEX_CLI_SANDBOX`: Codex sandbox mode, defaults to `read-only`
 - `CODEX_CLI_ALLOW_UNTRUSTED_CONTEXT`: Allow `codex_cli` for scraped-content prompts. Defaults to disabled because `codex exec` is not a tool-free LLM-only mode.
+- `GEMINI_CLI_COMMAND` / `GEMINI_CLI_TIMEOUT`: Command and timeout for `gemini_cli`.
+- `GEMINI_CLI_APPROVAL_MODE`: `plan` (read-only, default) or `default`. Anything else, including `yolo`, is clamped to `plan`.
+- `GEMINI_CLI_ALLOW_UNTRUSTED_CONTEXT`: Allow `gemini_cli` for scraped-content prompts. Defaults to disabled: gemini has no tool-free mode, and even `--approval-mode plan` allows `read_file`, `google_web_search` and `web_fetch`.
 - `CODEX_ACP_COMMAND`: ACPX command for Codex ACP harness routing, defaults to `acpx`
 - `CODEX_ACP_TIMEOUT`: Codex ACP request timeout in seconds, defaults to `300`
 - `CODEX_ACP_PERMISSION_MODE`: ACPX permission mode, defaults to `deny-all` (`approve-reads` and `approve-all` are also accepted for trusted local experiments)
@@ -250,6 +256,8 @@ The system uses these environment variables:
 ### Subscription CLI Providers
 
 `claude_code` invokes `claude -p` and uses the local Claude Code login state. `codex_cli` invokes `codex exec` and uses local Codex/ChatGPT login state. They do not require Anthropic or OpenAI API keys, but they only work where the AI engine process can execute those commands. The stock Docker image does not install these CLIs or mount their auth state; run the AI engine on the host or build a custom image for Docker-based subscription CLI routing.
+
+`gemini_cli` invokes `gemini -p` (headless) with `--approval-mode plan --output-format json` and uses the CLI's `oauth-personal` login state. It is the **subscription** Gemini route; the `gemini` provider is the metered API route, and the adapter never receives `GOOGLE_API_KEY`/`GEMINI_API_KEY` so the two cannot be confused at runtime. It will not be offered until `~/.gemini/oauth_creds.json` exists: `gemini --version` exits 0 when logged out and `gemini -p` then blocks forever on a browser-login prompt, so the binary alone is not evidence of a usable provider. **As of 2026-08-06 no generation through this adapter has been observed** — the development host's CLI is unauthenticated, so its live test skips; log in once and rerun `pytest -m requires_provider_credentials tests/unit/test_subscription_cli_providers.py`. `antigravity` is not and cannot be a provider: it is a GUI IDE with no headless mode.
 
 `codex_cli` is not ACP mode: it is a one-shot `codex exec --ephemeral --json -` provider. For ACP semantics use `codex_acp`, which invokes `acpx` and drives the Codex harness with the ACP session lifecycle (`sessions ensure`, `prompt --file -`, and session cleanup). This is still a repo-local LLM provider, not an OpenClaw `sessions_spawn(runtime: "acp")` orchestrator.
 
