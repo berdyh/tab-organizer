@@ -120,15 +120,33 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
         return headers
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for texts."""
+        """Generate embeddings for texts.
+
+        Serves both `openai` and `openrouter`: OpenRouter's `/v1/embeddings` is
+        OpenAI-compatible (verified by live call 2026-08-05), and the base_url
+        checks above already route the key and the attribution headers.
+
+        `dimensions` is sent only for a model the catalog marks
+        `dimensions_configurable`. That is not an optimisation -- it is what
+        makes the configured width true. ai-engine refuses to write vectors
+        whose width disagrees with the LanceDB table, so a 1536-d default
+        silently kept against a 768-d table fails every write; sending the
+        parameter is what lets a 768-d table be reused without a reindex.
+        Models that do not accept the parameter (ada-002 and friends) must not
+        receive it -- they reject the request outright.
+        """
+        payload: dict = {
+            "model": self.config.model,
+            "input": texts,
+        }
+        if getattr(self.config, "dimensions_configurable", False):
+            payload["dimensions"] = self.config.dimensions
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/embeddings",
                 headers=self._headers(),
-                json={
-                    "model": self.config.model,
-                    "input": texts,
-                },
+                json=payload,
                 timeout=60.0,
             )
             response.raise_for_status()

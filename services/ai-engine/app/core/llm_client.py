@@ -96,6 +96,19 @@ class EmbeddingConfig:
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     dimensions: int = 1536
+    # True when the catalog marks the model `dimensions_configurable` -- i.e.
+    # the model accepts a `dimensions` request parameter and will emit exactly
+    # that width (Matryoshka truncation, as on OpenAI's text-embedding-3-*).
+    #
+    # This is what makes `dimensions` an INSTRUCTION to the provider rather
+    # than only a declaration about it. Without it, an adapter that silently
+    # dropped the parameter would return the model's native width while
+    # `/health` announced the configured one, and ai-engine would refuse every
+    # write to a table built at the announced width -- the exact silent-drift
+    # class `_resolve_embedding_dimensions` exists to prevent. Adapters must
+    # send the parameter when this is True; a model without it is a fixed-width
+    # model and `EMBEDDING_DIMENSIONS` may only restate its catalog width.
+    dimensions_configurable: bool = False
 
 
 class BaseLLMProvider(ABC):
@@ -156,11 +169,19 @@ class LLMClient:
         },
         "deepseek": {"llm": True, "embeddings": False, "local": False},
         "gemini": {"llm": True, "embeddings": True, "local": False},
-        # openrouter serves NO embedding models (all 338 catalog entries
-        # scanned, verified 2026-08-04). This mirror of the catalog is what
-        # `/providers` displays, so claiming True here advertised a capability
-        # `ai_models.yaml` denies and `is_provider_supported()` refuses.
-        "openrouter": {"llm": True, "embeddings": False, "local": False},
+        # embeddings was set False here on 2026-08-04 to mirror a catalog entry
+        # that was itself wrong (inferred from openrouter's /v1/models chat
+        # listing instead of from a call to /v1/embeddings -- see the
+        # correction note in config/ai_models.yaml). Restored 2026-08-05 after
+        # the endpoint was called directly and answered 200.
+        #
+        # This dict is a MIRROR, never a second source of truth: it exists so
+        # `GET /providers` can answer without a catalog round-trip, and
+        # `test_provider_capability_mirror_agrees_with_the_catalog` fails the
+        # build on any divergence. It did exactly that when the catalog was
+        # corrected and this line was not -- which is the only reason the
+        # falsehood could not survive here quietly.
+        "openrouter": {"llm": True, "embeddings": True, "local": False},
     }
     CLI_PROVIDER_COMMANDS = {
         "claude_code": ("CLAUDE_CODE_COMMAND", "claude"),
@@ -248,9 +269,13 @@ class LLMClient:
     def _providers_supporting(self, capability: str) -> list[str]:
         """Catalog-derived list of providers that can serve ``capability``.
 
-        Never hardcode this. `scripts/init.py` self-corrected when the catalog
-        was fixed (openrouter's phantom embedding models) precisely because it
-        asked the catalog instead of carrying its own copy of the answer.
+        Never hardcode this. Demonstrated twice, in both directions: when the
+        catalog wrongly dropped openrouter's embedding support (2026-08-04) and
+        again when that was corrected (2026-08-05), `scripts/init.py` tracked
+        the change with no edit, purely because it asks the catalog instead of
+        carrying its own copy of the answer. Every hardcoded copy of the same
+        fact -- the `PROVIDERS` mirror, the embedding adapter map, the prose in
+        half a dozen docs -- had to be repaired by hand both times.
         """
         return [
             provider
@@ -399,20 +424,44 @@ class LLMClient:
                 ),
             ) from None
 
-        if requested != int(catalog_dimensions):
+        if requested == int(catalog_dimensions):
+            return requested
+
+        # A `dimensions_configurable` model is told what width to emit, so an
+        # override is not drift -- it is the request. The invariant is
+        # unchanged and still enforced: the announced width must equal what the
+        # model will actually produce. Truncation only goes down from the
+        # native width, so an over-ask is still refused.
+        if model_config.get("dimensions_configurable"):
+            if 0 < requested < int(catalog_dimensions):
+                return requested
             raise ProviderSelectionError(
-                code="embedding_dimensions_mismatch",
+                code="embedding_dimensions_out_of_range",
                 cause=(
-                    f"EMBEDDING_DIMENSIONS={requested} contradicts the catalog: "
-                    f"{model} emits {catalog_dimensions}-dimensional vectors."
+                    f"EMBEDDING_DIMENSIONS={requested} is not a width {model} can "
+                    f"emit: it is configurable but cannot exceed its native "
+                    f"{catalog_dimensions} (and must be positive)."
                 ),
                 fix=(
-                    "Leave EMBEDDING_DIMENSIONS blank so it resolves from the "
-                    f"catalog, or set it to {catalog_dimensions}. A mismatch makes "
-                    "ai-engine refuse every write to the LanceDB table."
+                    f"Choose a value between 1 and {catalog_dimensions}, or leave "
+                    "EMBEDDING_DIMENSIONS blank to use the native width. 768 "
+                    "matches a table built by a 768-d model (e.g. "
+                    "nomic-embed-text) and needs no reindex."
                 ),
             )
-        return requested
+
+        raise ProviderSelectionError(
+            code="embedding_dimensions_mismatch",
+            cause=(
+                f"EMBEDDING_DIMENSIONS={requested} contradicts the catalog: "
+                f"{model} emits {catalog_dimensions}-dimensional vectors."
+            ),
+            fix=(
+                "Leave EMBEDDING_DIMENSIONS blank so it resolves from the "
+                f"catalog, or set it to {catalog_dimensions}. A mismatch makes "
+                "ai-engine refuse every write to the LanceDB table."
+            ),
+        )
 
     def _default_llm_config(self) -> LLMConfig:
         """Resolve the LLM config from the environment, or fail closed.
@@ -471,11 +520,18 @@ class LLMClient:
             capable = self._providers_supporting("embeddings")
             raise ProviderSelectionError(
                 code="embedding_provider_cannot_embed",
+                # The `fix` names no provider of its own, by design. It used to
+                # append a hand-written note asserting that one specific
+                # provider served no embeddings; that note was false, and
+                # because it was a string literal rather than a catalog lookup,
+                # correcting the catalog did not correct it. Everything this
+                # message says about capability now comes from `capable`, which
+                # is derived from config/ai_models.yaml on every call.
                 cause=f"EMBEDDING_PROVIDER={provider!r} serves no embedding models.",
                 fix=(
                     f"Choose one of: {', '.join(capable) or '(none in the catalog)'}. "
-                    "Note openrouter serves NO embedding models -- verified "
-                    "2026-08-04."
+                    "That list comes from config/ai_models.yaml, so it is current "
+                    "by construction."
                 ),
             )
 
@@ -500,6 +556,7 @@ class LLMClient:
             api_key=api_key,
             base_url=self._base_url_for(provider, "EMBEDDING_BASE_URL"),
             dimensions=dimensions,
+            dimensions_configurable=bool(model_config.get("dimensions_configurable")),
         )
 
     @property
@@ -581,10 +638,15 @@ class LLMClient:
             "openai": OpenAIEmbeddingProvider,
             "deepseek": DeepSeekEmbeddingProvider,
             "gemini": GeminiEmbeddingProvider,
-            # No openrouter entry: it serves no embedding models, so the
-            # capability check above already rejects it. An adapter here would
-            # only be reachable if that check were removed, and would then
-            # issue requests against endpoints that do not exist.
+            # openrouter reuses the OpenAI adapter: /v1/embeddings is
+            # OpenAI-compatible, and OpenAIEmbeddingProvider already keys off
+            # `openrouter.ai` in the base_url for OPENROUTER_API_KEY and the
+            # HTTP-Referer/X-Title headers. This entry was deleted on
+            # 2026-08-04 as "unreachable, and would issue requests against
+            # endpoints that do not exist" -- both halves wrong: it was
+            # unreachable only because the capability check above was reading a
+            # wrong catalog flag, and the endpoint exists and answers 200.
+            "openrouter": OpenAIEmbeddingProvider,
         }
 
         provider_class = providers.get(self.embedding_config.provider)
@@ -718,9 +780,11 @@ class LLMClient:
                         ),
                     )
                 dimensions = int(model_config["dimensions"])
+                configurable = bool(model_config.get("dimensions_configurable"))
             elif current is not None:
                 target_model = current.model
                 dimensions = current_dimensions
+                configurable = current.dimensions_configurable
             else:
                 raise ProviderSelectionError(
                     code="embedding_model_not_selected",
@@ -740,6 +804,10 @@ class LLMClient:
             current.provider = target_provider
             current.model = target_model
             current.dimensions = dimensions
+            # Must move with `model`: a stale flag would either drop the
+            # `dimensions` parameter for a model that needs it or send it to
+            # one that rejects it.
+            current.dimensions_configurable = configurable
             current.api_key = self._api_key_for(target_provider)
             current.base_url = self._base_url_for(target_provider, "EMBEDDING_BASE_URL")
             self.embedding_config_error = None
