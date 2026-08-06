@@ -9,8 +9,22 @@
 #   3. The active provider is always announced — at startup, in /health, and
 #      in the UI. You should never have to guess who answered a request.
 #
-# Model IDs and prices below were verified against
+# HOW CAPABILITY IS VERIFIED (read this before editing a `supports:` flag).
+# A capability claim in this file is only as good as the method that produced
+# it. Two methods are NOT equivalent:
+#   * asking a catalog LISTING what a provider offers -- weak. A listing
+#     enumerates one surface; it is not a complete inventory of the API, and
+#     absence from it proves nothing.
+#   * CALLING the endpoint that serves the capability -- authoritative. If it
+#     answers 200 with a usable payload, the provider serves it.
+# This distinction is not academic here: openrouter's `supports.embeddings` was
+# recorded as `false` on 2026-08-04 by the first method and was WRONG. See the
+# correction note on the openrouter provider below.
+#
+# LLM model IDs and prices were verified against
 # https://openrouter.ai/api/v1/models and registry.ollama.ai on 2026-08-04.
+# Embedding capability and dimensions were verified on 2026-08-05 by calling
+# POST https://openrouter.ai/api/v1/embeddings directly.
 # Prices are USD per million tokens, prompt -> completion.
 
 providers:
@@ -86,17 +100,37 @@ providers:
     cost_model: metered
     supports:
       llm: true
-      # VERIFIED FALSE 2026-08-04: OpenRouter serves NO embedding models. All
-      # 338 catalog entries were scanned; none has an embedding modality. The
-      # three embedding IDs previously listed here
-      # (nvidia/llama-nemotron-embed-vl-1b-v2:free, qwen/qwen3-embedding-4b:free,
-      # qwen/qwen3-embedding-0.6b:free) do not exist -- indexing failed even
-      # with a valid API key. Do not re-add embeddings here without checking
-      # the live API first.
-      embeddings: false
+      # CORRECTED 2026-08-05. This flag read `false` from 2026-08-04, annotated
+      # "VERIFIED FALSE ... OpenRouter serves NO embedding models". That claim
+      # was false, and the annotation made it durable. Recorded here rather
+      # than erased, because the method is the reusable lesson:
+      #
+      #   WRONG METHOD (produced `false`): GET /api/v1/models was fetched and
+      #   its 340 entries scanned for an embedding modality. None was found --
+      #   output modalities are only [audio, image, text] and no id matches
+      #   "embed" -- so embeddings were inferred to be unavailable. That
+      #   listing describes the CHAT-completions surface. /v1/embeddings is a
+      #   separate surface the listing never mentions, so it can never carry
+      #   evidence either way. The check ran and was honestly reported; it just
+      #   could not see the answer.
+      #
+      #   RIGHT METHOD (produced `true`): POST https://openrouter.ai/api/v1/embeddings
+      #   was called with a real key on 2026-08-05. text-embedding-3-small ->
+      #   HTTP 200, 1536-d vector, $0.02/Mtok; text-embedding-3-large -> HTTP
+      #   200, 3072-d; a {"dimensions": 768} override -> HTTP 200, 768-d. The
+      #   prefixed ids below are the ones registered as models. (Gemini's
+      #   text-embedding-004 and ollama's nomic-embed-text 400 with "Model does
+      #   not exist" -- openrouter's embedding range is real but is not
+      #   everything.)
+      #
+      # Before flipping this back, CALL the endpoint. Do not infer it from a
+      # listing again.
+      embeddings: true
     default_models:
       llm: "openai/gpt-5.6-luna"
-      embedding: null
+      # Joint-cheapest of the six verified embedding models AND the strongest;
+      # truncates cleanly to any width. See the embedding block below.
+      embedding: "qwen/qwen3-embedding-8b"
 
   openai:
     type: cloud
@@ -107,7 +141,7 @@ providers:
     cost_model: metered
     supports:
       llm: true
-      embeddings: true    # a real cloud embedding option, unlike openrouter
+      embeddings: true    # direct-API cloud embeddings (no openrouter markup)
     default_models:
       llm: "gpt-4o-mini"
       embedding: "text-embedding-3-small"
@@ -260,10 +294,36 @@ models:
     dimensions: 768
     max_tokens: 2048
 
+  # bge-m3 and qwen3-embedding are ALSO reachable through openrouter, under
+  # different ids (`baai/bge-m3`, `qwen/qwen3-embedding-8b`/`-4b`). They are
+  # registered as SEPARATE entries per provider rather than as one entry with
+  # per-provider ids. Decided 2026-08-05; the reasoning, because this looks
+  # like duplication and a future reader will be tempted to merge it:
+  #
+  #   1. The catalog key IS the wire value -- `EMBEDDING_MODEL` is passed
+  #      verbatim to the provider. A merged entry would make the key an
+  #      abstract name needing per-provider translation, a lookup step no
+  #      adapter has today.
+  #   2. The variants genuinely differ in the field that must never be
+  #      ambiguous: ollama's `qwen3-embedding` is 1024-d, openrouter's
+  #      `qwen/qwen3-embedding-8b` is 4096-d. Merging would push `dimensions`
+  #      one level deeper into a per-provider map -- the same split, plus a new
+  #      way to resolve the wrong width. `EMBEDDING_DIMENSIONS` mismatches are
+  #      already the sharpest failure mode here (ai-engine refuses every write).
+  #   3. Cost model differs (free_local vs metered) and is a provider fact,
+  #      already expressed on the provider.
+  #   4. No confusing menu results: `configure-provider` asks for a PROVIDER
+  #      first, then lists only that provider's models
+  #      (`get_provider_models(embedding_provider, "embedding")`), so the two
+  #      never appear in the same list.
+  #
+  # The cost of the split is that "same weights, two providers" is visible only
+  # in these comments -- accepted, and why they cross-reference each other.
   bge-m3:
     provider: ollama
     type: embedding
-    description: "Multilingual and long-context local embedding"
+    description: "Multilingual and long-context local embedding. Same weights
+      as openrouter's `baai/bge-m3`, run locally and free"
     dimensions: 1024
     max_tokens: 8192
     recommended: true
@@ -272,12 +332,15 @@ models:
     provider: ollama
     type: embedding
     description: "Highest local retrieval quality; competes with commercial
-      embedding APIs. Reach for it when retrieval accuracy is the bottleneck"
+      embedding APIs. Reach for it when retrieval accuracy is the bottleneck.
+      This is the 1024-d local pull; openrouter serves the larger 8b (4096-d)
+      and 4b (2560-d) variants of the same family"
     dimensions: 1024
     max_tokens: 32768
 
   # ----------------------------------------------------------------- openrouter
-  # Verified against the live API 2026-08-04. LLM only -- see the provider note.
+  # LLM ids and prices verified against the live API 2026-08-04. Embedding ids
+  # added 2026-08-05 -- see the provider's correction note.
   openai/gpt-5.6-luna:
     provider: openrouter
     type: llm
@@ -344,6 +407,95 @@ models:
     context_length: 128000
     tier: mid
 
+  # openrouter embeddings. Every id here was found and verified by CALLING
+  # POST /api/v1/embeddings on 2026-08-05, never by reading a listing: the
+  # /v1/models listing is chat-only and shows no embedding model at all, which
+  # is exactly why this provider was wrongly recorded as embedding-incapable
+  # (see the correction note on the provider above). 21 candidate ids were
+  # probed; these six returned real vectors. Confirmed ABSENT (HTTP 400 "Model
+  # does not exist"): any text-embedding-4*, google/text-embedding-005,
+  # cohere/embed-*, mistralai/mistral-embed, voyage*, jina/jina-embeddings-v3,
+  # nomic-ai/nomic-embed-text-v1.5.
+  #
+  # `dimensions` truncation was verified on ALL SIX (768 requested -> exactly
+  # 768 floats returned), so any of them can write into the existing 768-wide
+  # `tab_organizer_docs` table with no reindex.
+  #
+  # PRICES ARE VERIFIED, not inferred from a rounded single-token call. Each
+  # was measured twice at very different input sizes (~2250-3000 tokens and
+  # ~2-5 tokens) and the derived $/Mtok agreed exactly at both, which is what
+  # rules out rounding artifacts. `dimensions` does not change the price --
+  # billing is per input token, not per output float.
+  #
+  # NOTE on the duplicate-looking ids: `baai/bge-m3` and the qwen3-embedding
+  # pair are the same underlying weights as ollama's `bge-m3` /
+  # `qwen3-embedding` entries, registered separately on purpose -- see the
+  # comment on ollama's embedding models.
+  qwen/qwen3-embedding-8b:
+    provider: openrouter
+    type: embedding
+    description: "$0.01/Mtok, 4096-d. DEFAULT and the best value on this
+      provider: joint-cheapest of the six AND the strongest retrieval model
+      among them. Truncate to 768 (or 1024) via EMBEDDING_DIMENSIONS to match
+      an existing table. NOTE: the plan's hard gate forbids routing
+      authenticated captures to a cloud embedder"
+    dimensions: 4096
+    dimensions_configurable: true
+    max_tokens: 32768
+    recommended: true
+
+  qwen/qwen3-embedding-4b:
+    provider: openrouter
+    type: embedding
+    description: "$0.02/Mtok, 2560-d. Smaller sibling of the 8b -- costs twice
+      as much per token for a weaker model, so it exists for completeness
+      rather than as a recommendation"
+    dimensions: 2560
+    dimensions_configurable: true
+    max_tokens: 32768
+
+  baai/bge-m3:
+    provider: openrouter
+    type: embedding
+    description: "$0.01/Mtok, 1024-d. Multilingual and long-context; the hosted
+      twin of ollama's `bge-m3`, and a native dimension match for a table that
+      local model already built. Note it tokenizes the same text ~33% longer
+      than the qwen/openai models, so cost per document is higher than the
+      identical per-token price suggests"
+    dimensions: 1024
+    dimensions_configurable: true
+    max_tokens: 8192
+    recommended: true
+
+  google/gemini-embedding-001:
+    provider: openrouter
+    type: embedding
+    description: "$0.15/Mtok, 3072-d. The most expensive of the six -- 15x the
+      qwen3-8b for no established retrieval advantage. Reach for it only to
+      match an existing Gemini-embedded corpus"
+    dimensions: 3072
+    dimensions_configurable: true
+    max_tokens: 2048
+
+  openai/text-embedding-3-small:
+    provider: openrouter
+    type: embedding
+    description: "$0.02/Mtok, 1536-d. OpenAI's older embedding generation,
+      kept because it is widely used as a baseline and matches a corpus
+      embedded through the direct OpenAI API"
+    dimensions: 1536
+    dimensions_configurable: true
+    max_tokens: 8191
+
+  openai/text-embedding-3-large:
+    provider: openrouter
+    type: embedding
+    description: "$0.13/Mtok, 3072-d. Older generation and 13x the qwen3-8b
+      price; register-only, for corpus compatibility"
+    dimensions: 3072
+    dimensions_configurable: true
+    max_tokens: 8191
+
   # ---------------------------------------------------- direct cloud (API keys)
   gpt-4o-mini:
     provider: openai
@@ -358,6 +510,12 @@ models:
     description: "Cloud embedding option. NOTE: the plan's hard gate forbids
       routing authenticated captures to a cloud embedder"
     dimensions: 1536
+    # Deliberately NOT marked dimensions_configurable, even though this model
+    # family is truncatable through openrouter. No OPENAI_API_KEY is available
+    # here, so it was never verified against the DIRECT OpenAI endpoint -- and
+    # this file's rule is that a capability is claimed only when the endpoint
+    # serving it has been called. Absence of the flag is "unverified", not
+    # "impossible": verify and set it if you have a key.
     max_tokens: 8191
 
   gemini-2.5-flash-lite:
@@ -416,10 +574,11 @@ defaults:
   # when one is explicitly chosen and no model override is given.
   #
   # It must name an embedding-capable provider. Every subscription CLI declares
-  # embeddings: false, and so does openrouter (it serves none). So the real
-  # choice is ollama (free, local, private) or an OpenAI/Gemini API key. Local
-  # is first because the plan's hard gate requires authenticated captures to be
-  # embedded locally regardless.
+  # embeddings: false (they are LLM-only and expose no embedding surface at
+  # all). The choices are ollama (free, local, private), openrouter, or an
+  # OpenAI/Gemini API key. Local stays the default because the plan's hard gate
+  # requires authenticated captures to be embedded locally regardless -- that
+  # is a data-residency rule, not a claim that the metered options do not work.
   provider: "ollama"
 
   use_cases:
@@ -462,7 +621,8 @@ defaults:
       provider: "codex_cli"
       model: "gpt-5.6-sol"
 
-    # Embeddings are never a subscription CLI and never openrouter.
+    # Embeddings are never a subscription CLI -- those serve none. The metered
+    # path is available but stays opt-in, and never for authenticated captures.
     embeddings:
       provider: "ollama"
       model: "nomic-embed-text"
@@ -472,6 +632,11 @@ defaults:
     embeddings_quality:
       provider: "ollama"
       model: "qwen3-embedding"
+    # Metered embedding, opt-in. Set EMBEDDING_DIMENSIONS=768 to write into an
+    # existing nomic-embed-text table (768-d) without a reindex.
+    embeddings_metered:
+      provider: "openrouter"
+      model: "qwen/qwen3-embedding-8b"
 
 ui_options:
   group_by_provider: true
