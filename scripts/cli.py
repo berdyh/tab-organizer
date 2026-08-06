@@ -630,9 +630,15 @@ def _probe_available_embedding_providers(ai_config) -> list[tuple[str, dict]]:
     """Return (provider, probe_state) pairs for embedding providers verified usable.
 
     Filtered strictly by the catalog's `supports.embeddings` first -- a
-    provider that cannot embed (openrouter serves none, verified 2026-08-04)
+    provider that cannot embed (the subscription CLIs, anthropic, deepseek)
     is never even probed, let alone offered, regardless of what a probe
     mock might return.
+
+    The exclusion list is deliberately not written down here. This docstring
+    used to name openrouter as the example of a provider that "serves none",
+    which was false; because the filter itself reads the catalog, correcting
+    the catalog fixed the behaviour and left the comment lying. Ask
+    `is_provider_supported`, not this paragraph.
     """
     available: list[tuple[str, dict]] = []
     for provider in ai_config.get_all_providers():
@@ -802,8 +808,7 @@ def cmd_configure_provider(args):
             "No embedding provider is verified available. AI_PROVIDER was not written: "
             "an unset/unverified EMBEDDING_PROVIDER is exactly the silent-default bug "
             "R1/R2 forbid. Pull an Ollama embedding model (e.g. nomic-embed-text) or set "
-            "OPENAI_API_KEY / GOOGLE_API_KEY, then retry. Note: openrouter serves NO "
-            "embedding models.\n"
+            "OPENROUTER_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY, then retry.\n"
             "Nothing was written to .env."
         )
 

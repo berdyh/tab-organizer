@@ -77,16 +77,19 @@ def test_subscription_provider_arguments_are_supported():
 
 @pytest.mark.parametrize(
     "provider",
-    ["deepseek", "claude_code", "codex_cli", "codex_acp", "openrouter", "anthropic"],
+    ["deepseek", "claude_code", "codex_cli", "codex_acp", "anthropic"],
 )
 def test_claude_embedding_provider_rejects_llm_only_providers(provider):
     """Every LLM-only provider must be refused as an embedding provider.
 
-    `openrouter` belongs in this list: it serves NO embedding models at all
-    (verified against the live API 2026-08-04 -- none of the 338 catalogued
-    models has an embedding modality, and the three embedding IDs previously
-    listed for it did not exist). It was long assumed to be the cloud embedding
-    fallback, so indexing failed even with a valid API key.
+    `openrouter` was in this list until 2026-08-05 and has been REMOVED, not
+    because the rule changed but because it never belonged: it does serve
+    embeddings (POST /v1/embeddings, verified by live call -- see the
+    correction note in config/ai_models.yaml). The earlier entry cited a scan
+    of openrouter's /v1/models chat listing, which cannot see that surface.
+
+    The five that remain are genuinely LLM-only: none has an embedding adapter
+    in `services/ai-engine/app/providers/`.
     """
     args = argparse.Namespace(
         claude_llm="claude-3-5-sonnet-latest",
@@ -105,7 +108,11 @@ def test_claude_embedding_provider_rejects_llm_only_providers(provider):
     # on a real embedding provider rather than a hardcoded name, so this test
     # tracks the catalog instead of freezing a stale belief about it.
     assert "ollama" in message
-    assert "openrouter" not in message.split("Supported providers:")[-1]
+    # The refused provider must not appear in the list of what *does* work.
+    # This used to assert on `openrouter` by name, which quietly became wrong
+    # when the catalog was corrected; asserting on the provider under test
+    # tracks the catalog instead of freezing a belief about one provider.
+    assert provider not in message.split("Supported providers:")[-1]
 
 
 def test_configure_claude_clears_stale_embedding_dimensions(tmp_path, monkeypatch):
@@ -126,7 +133,7 @@ def test_configure_claude_clears_stale_embedding_dimensions(tmp_path, monkeypatc
 
     # Switch to an embedding model with DIFFERENT dimensions than the 768 above,
     # so a stale value would be caught. bge-m3 is 1024. The provider must be one
-    # that genuinely embeds -- openrouter serves no embedding models at all.
+    # that genuinely embeds; ollama is the local default.
     args = argparse.Namespace(
         claude_llm="claude-3-5-sonnet-latest",
         claude_embedding_provider="ollama",

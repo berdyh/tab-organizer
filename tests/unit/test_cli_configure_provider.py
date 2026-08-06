@@ -64,29 +64,48 @@ def test_unavailable_llm_provider_excluded_from_candidates(monkeypatch):
 #
 # `_probe_available_embedding_providers` applies two catalog filters before
 # ever probing: `is_provider_supported(provider, "embeddings")` and
-# `get_provider_models(provider, "embedding")`. In the live catalog they
-# currently agree on every provider (openrouter has supports.embeddings=false
-# AND zero listed embedding models), so this test alone cannot tell you which
-# filter did the excluding -- delete either one and this test still passes,
-# because the other still catches openrouter. The two tests below isolate
-# each filter with a synthetic disagreement so each can fail on its own.
+# `get_provider_models(provider, "embedding")`. In the live catalog they agree
+# on every provider, so the first test alone cannot tell you which filter did
+# the excluding -- delete either one and it still passes, because the other
+# still catches the example. The two tests below isolate each filter with a
+# synthetic disagreement so each can fail on its own.
+#
+# NOTE ON THE EXAMPLE PROVIDER (2026-08-05). These three tests used
+# `openrouter` as their "cannot embed" example, on the strength of a catalog
+# entry that turned out to be FALSE -- openrouter serves embeddings via
+# POST /v1/embeddings (see the correction note in config/ai_models.yaml). The
+# mechanism under test was never in doubt and is unchanged: a provider whose
+# catalog entry says it cannot embed must not be offered, whatever a probe
+# says. Only the example moved, to `claude_code`.
+#
+# Why `claude_code` is a sound example, verified rather than assumed: it is a
+# `local_cli` provider that shells out to the `claude` binary, whose CLI
+# surface has no embedding command at all; `services/ai-engine/app/providers/`
+# defines only `ClaudeCodeLLMProvider(AgentCLILLMProvider)` and exports no
+# Claude embedding class, so there is no adapter that could serve one. Its
+# incapacity is structural, not a catalog opinion about a remote API -- which
+# is precisely what made openrouter the wrong choice of example.
 # --------------------------------------------------------------------------
 
+CANNOT_EMBED_EXAMPLE = "claude_code"
 
-def test_openrouter_never_offered_for_embeddings_even_if_probe_says_available(monkeypatch):
+
+def test_incapable_provider_never_offered_for_embeddings_even_if_probe_says_available(
+    monkeypatch,
+):
     from config.config_loader import get_ai_config
 
     ai_config = get_ai_config()
 
     # Deliberately permissive probe: everything "available". Real catalog
-    # values for both filters agree that openrouter is excluded -- this is a
+    # values for both filters agree that the example is excluded -- this is a
     # smoke test that the combined path behaves correctly end to end, not
     # proof of which filter is responsible (see the two tests below for that).
     monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
 
     names = [name for name, _ in cli._probe_available_embedding_providers(ai_config)]
 
-    assert "openrouter" not in names
+    assert CANNOT_EMBED_EXAMPLE not in names
     assert "ollama" in names
 
 
@@ -94,14 +113,12 @@ def test_supports_embeddings_filter_excludes_provider_even_with_phantom_models(m
     """Isolates `is_provider_supported(provider, "embeddings")` from the
     `get_provider_models` filter it is redundant with today.
 
-    Reproduces the historical regression this catalog exists to prevent: the
-    catalog briefly listed three embedding model IDs for openrouter that did
-    not exist (verified 2026-08-04, none of the 338 catalogued models has an
-    embedding modality). Simulates that here by making `get_provider_models`
-    report a model for openrouter while leaving `is_provider_supported`
-    untouched (real catalog value: False). If the `is_provider_supported`
-    filter were ever deleted, this is exactly the scenario that would let
-    openrouter through.
+    Reproduces the regression class this catalog exists to prevent: a provider
+    listing embedding model IDs it cannot actually serve. Simulates it by
+    making `get_provider_models` report a model for the example provider while
+    leaving `is_provider_supported` untouched (real catalog value: False). If
+    the `is_provider_supported` filter were ever deleted, this is exactly the
+    scenario that would let the provider through.
     """
     from config.config_loader import get_ai_config
 
@@ -109,7 +126,7 @@ def test_supports_embeddings_filter_excludes_provider_even_with_phantom_models(m
     real_get_provider_models = ai_config.get_provider_models
 
     def phantom_models(provider, model_type=None):
-        if provider == "openrouter" and model_type == "embedding":
+        if provider == CANNOT_EMBED_EXAMPLE and model_type == "embedding":
             return ["phantom/fake-embed-1"]
         return real_get_provider_models(provider, model_type)
 
@@ -118,7 +135,7 @@ def test_supports_embeddings_filter_excludes_provider_even_with_phantom_models(m
 
     names = [name for name, _ in cli._probe_available_embedding_providers(ai_config)]
 
-    assert "openrouter" not in names, (
+    assert CANNOT_EMBED_EXAMPLE not in names, (
         "is_provider_supported(embeddings) must exclude a provider even when "
         "get_provider_models reports models for it"
     )
@@ -130,9 +147,9 @@ def test_embedding_models_filter_excludes_provider_even_with_supports_flag_true(
 
     Simulates a catalog entry whose `supports.embeddings` flag is misconfigured
     True but which lists no actual embedding models, leaving
-    `get_provider_models` untouched (real catalog value: empty list for
-    openrouter). If the `get_provider_models` filter were ever deleted, this
-    is exactly the scenario that would let such a provider through on the
+    `get_provider_models` untouched (real catalog value: empty list for the
+    example provider). If the `get_provider_models` filter were ever deleted,
+    this is exactly the scenario that would let such a provider through on the
     strength of the flag alone.
     """
     from config.config_loader import get_ai_config
@@ -141,7 +158,7 @@ def test_embedding_models_filter_excludes_provider_even_with_supports_flag_true(
     real_is_provider_supported = ai_config.is_provider_supported
 
     def flag_says_yes(provider, capability):
-        if provider == "openrouter" and capability == "embeddings":
+        if provider == CANNOT_EMBED_EXAMPLE and capability == "embeddings":
             return True
         return real_is_provider_supported(provider, capability)
 
@@ -150,10 +167,33 @@ def test_embedding_models_filter_excludes_provider_even_with_supports_flag_true(
 
     names = [name for name, _ in cli._probe_available_embedding_providers(ai_config)]
 
-    assert "openrouter" not in names, (
+    assert CANNOT_EMBED_EXAMPLE not in names, (
         "get_provider_models must exclude a provider even when "
         "is_provider_supported(embeddings) is (misconfigured) True"
     )
+
+
+def test_the_cannot_embed_example_is_genuinely_incapable():
+    """Guards the example itself, which is how this suite went wrong before.
+
+    The three tests above are only meaningful if `CANNOT_EMBED_EXAMPLE` really
+    cannot embed. Their previous example (`openrouter`) silently stopped being
+    one, and nothing failed -- the tests kept passing while asserting a
+    falsehood, because they checked the mechanism against the catalog and the
+    catalog was wrong. This pins the example to something a catalog edit cannot
+    quietly invalidate: there is no Claude embedding adapter to serve one.
+    """
+    from config.config_loader import get_ai_config
+
+    import services.ai_engine.app.providers as providers
+
+    assert not get_ai_config().is_provider_supported(CANNOT_EMBED_EXAMPLE, "embeddings")
+    assert not get_ai_config().get_provider_models(CANNOT_EMBED_EXAMPLE, "embedding")
+    assert not [
+        name
+        for name in providers.__all__
+        if "Embedding" in name and "Claude" in name
+    ], "a Claude embedding adapter now exists; this example is no longer valid"
 
 
 # --------------------------------------------------------------------------
