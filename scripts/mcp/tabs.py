@@ -18,7 +18,19 @@ from typing import Any, Callable, TextIO
 
 AGENT_TOKEN_ENV = "BACKEND_AGENT_API_TOKEN"
 DEFAULT_BACKEND_URL = "http://localhost:8080"
-DEFAULT_CDP_URL = "http://localhost:9222"
+# No DEFAULT_CDP_URL here on purpose: the correct default depends on where the
+# process making the CDP connection actually runs (Browser Engine, inside the
+# container network, needs `http://host.docker.internal:9222`; a bare host
+# process would need `http://localhost:9222`). That default already lives in
+# exactly one place -- `DEFAULT_CDP_URL` in
+# `services/browser-engine/app/tabs/cdp.py`, mirrored by `TabImportRequest`/
+# `TabOpenRequest` in `services/backend-core/app/main.py` -- so this module and
+# `scripts/cli.py` never restate it; they omit `cdp_url` from the payload when
+# the caller doesn't supply one and let Backend Core/Browser Engine apply
+# their own default. A previous copy of this constant here was
+# "http://localhost:9222", which is wrong when evaluated inside the
+# Browser Engine container and made `tabs import`/`tabs open` fail whenever
+# `--cdp-url` was omitted.
 
 
 class BackendCoreError(RuntimeError):
@@ -53,6 +65,16 @@ def _require_non_empty(value: str, name: str) -> str:
     if not cleaned:
         raise ValueError(f"{name} is required")
     return cleaned
+
+
+def _optional_non_empty(value: str | None, name: str) -> str | None:
+    """Validate an optional field: `None` passes through, everything else
+    still has to be non-blank. Lets a caller omit `cdp_url` (so the
+    downstream service's own default applies) while still rejecting an
+    explicitly-passed empty string."""
+    if value is None:
+        return None
+    return _require_non_empty(value, name)
 
 
 def _require_urls(urls: list[str]) -> list[str]:
@@ -164,14 +186,19 @@ class BackendCoreClient:
 
 
 def tab_import_from_browser(
-    cdp_url: str = DEFAULT_CDP_URL,
+    cdp_url: str | None = None,
     session_id: str | None = None,
     session_name: str | None = None,
 ) -> dict[str, Any]:
-    """Start importing currently open browser tabs through Backend Core."""
+    """Start importing currently open browser tabs through Backend Core.
+
+    `cdp_url` is optional: when omitted, no `cdp_url` field is sent at all,
+    so Backend Core (and, downstream, Browser Engine) apply their own
+    correct default instead of a value guessed on this side of the network.
+    """
     payload = _clean_payload(
         {
-            "cdp_url": _require_non_empty(cdp_url, "cdp_url"),
+            "cdp_url": _optional_non_empty(cdp_url, "cdp_url"),
             "session_id": session_id,
             "session_name": session_name,
         }
@@ -217,9 +244,13 @@ def tab_cluster(session_id: str) -> dict[str, Any]:
 def tab_open(
     urls: list[str] | None = None,
     session_id: str | None = None,
-    cdp_url: str = DEFAULT_CDP_URL,
+    cdp_url: str | None = None,
 ) -> dict[str, Any]:
-    """Open URLs in the attached local browser through Backend Core."""
+    """Open URLs in the attached local browser through Backend Core.
+
+    `cdp_url` is optional; see `tab_import_from_browser` for why omitting it
+    (rather than restating a default here) is the correct behavior.
+    """
     if urls:
         cleaned_urls = _require_urls(urls)
     elif session_id:
@@ -230,7 +261,7 @@ def tab_open(
         {
             "urls": cleaned_urls,
             "session_id": session_id,
-            "cdp_url": _require_non_empty(cdp_url, "cdp_url"),
+            "cdp_url": _optional_non_empty(cdp_url, "cdp_url"),
         }
     )
     return BackendCoreClient().request("POST", "/tabs/open", payload)

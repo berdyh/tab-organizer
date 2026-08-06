@@ -714,6 +714,100 @@ def test_mcp_tab_tool_wrappers_call_backend_core(monkeypatch):
     ]
 
 
+def test_tab_import_from_browser_omits_cdp_url_when_not_provided(monkeypatch):
+    """Regression for the browser-engine-container-vs-host default mismatch.
+
+    `scripts/mcp/tabs.py` used to default `cdp_url` to its own module-level
+    constant (`http://localhost:9222`), which meant the wrapper ALWAYS sent a
+    `cdp_url` field -- even when the caller never asked for one -- and that
+    value always won over Backend Core/Browser Engine's own correct default
+    (`http://host.docker.internal:9222`, the address that resolves to the
+    host from inside the Browser Engine container). Evaluated inside that
+    container, `localhost:9222` is the container's own loopback, where
+    nothing listens, so every import with no explicit `--cdp-url` failed.
+    The fix is to omit the key entirely when the caller doesn't pass one, so
+    the downstream service's default applies. Asserting on the constructed
+    payload (not just the function's default argument value) is the point:
+    a test that only inspected the signature default would keep passing even
+    if payload construction re-inserted a hardcoded value.
+    """
+    calls = []
+
+    class FakeClient:
+        def request(self, method, path, payload=None):
+            calls.append(payload)
+            return {}
+
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", FakeClient)
+
+    mcp_tabs.tab_import_from_browser(session_id="sess_1")
+
+    assert "cdp_url" not in calls[0]
+    assert calls[0] == {"session_id": "sess_1"}
+
+
+def test_tab_import_from_browser_passes_explicit_cdp_url_unchanged(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def request(self, method, path, payload=None):
+            calls.append(payload)
+            return {}
+
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", FakeClient)
+
+    mcp_tabs.tab_import_from_browser(
+        cdp_url="http://host.docker.internal:9222", session_id="sess_1"
+    )
+
+    assert calls[0]["cdp_url"] == "http://host.docker.internal:9222"
+
+
+def test_tab_import_from_browser_rejects_explicit_empty_cdp_url(monkeypatch):
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", lambda: None)
+
+    with pytest.raises(ValueError, match="cdp_url is required"):
+        mcp_tabs.tab_import_from_browser(cdp_url="   ", session_id="sess_1")
+
+
+def test_tab_open_omits_cdp_url_when_not_provided(monkeypatch):
+    """Same fix, same regression, for the sibling `tab_open` wrapper, which
+    defaulted `cdp_url` to the identical wrong constant."""
+    calls = []
+
+    class FakeClient:
+        def request(self, method, path, payload=None):
+            calls.append(payload)
+            return {}
+
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", FakeClient)
+
+    mcp_tabs.tab_open(["https://example.com"])
+
+    assert "cdp_url" not in calls[0]
+
+
+def test_tab_open_rejects_explicit_empty_cdp_url(monkeypatch):
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", lambda: None)
+
+    with pytest.raises(ValueError, match="cdp_url is required"):
+        mcp_tabs.tab_open(["https://example.com"], cdp_url="")
+
+
+def test_tabs_cli_import_and_open_default_cdp_url_to_none(monkeypatch):
+    """CLI-level companion to the wrapper-level tests above: confirms the
+    argparse default itself is `None` (so `run_backend_tab_tool` ends up
+    calling the wrapper with `cdp_url=None`, not a restated URL string) when
+    `--cdp-url` is omitted on the command line."""
+    parser = cli.build_parser()
+
+    import_args = parser.parse_args(["tabs", "import"])
+    open_args = parser.parse_args(["tabs", "open", "https://example.com"])
+
+    assert import_args.cdp_url is None
+    assert open_args.cdp_url is None
+
+
 def test_tabs_cli_subcommands_dispatch_to_mcp_wrappers(monkeypatch, capsys):
     calls = []
 

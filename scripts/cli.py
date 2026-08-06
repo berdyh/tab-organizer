@@ -1298,8 +1298,12 @@ Examples:
     )
     tabs_import_parser.add_argument(
         "--cdp-url",
-        default=mcp_tabs.DEFAULT_CDP_URL,
-        help="Local Chrome DevTools Protocol URL",
+        default=None,
+        help=(
+            "Local Chrome DevTools Protocol URL. Defaults to the service's "
+            "own default (Browser Engine's http://host.docker.internal:9222) "
+            "when omitted."
+        ),
     )
     tabs_import_parser.add_argument(
         "--session-id",
@@ -1356,8 +1360,12 @@ Examples:
     )
     tabs_open_parser.add_argument(
         "--cdp-url",
-        default=mcp_tabs.DEFAULT_CDP_URL,
-        help="Local Chrome DevTools Protocol URL",
+        default=None,
+        help=(
+            "Local Chrome DevTools Protocol URL. Defaults to the service's "
+            "own default (Browser Engine's http://host.docker.internal:9222) "
+            "when omitted."
+        ),
     )
     tabs_open_parser.set_defaults(func=cmd_tabs_open)
 
