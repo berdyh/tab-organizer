@@ -72,6 +72,13 @@ class TabClusterer:
         # alongside the no-progress guard in cluster()).
         self.max_subcluster_depth = max_subcluster_depth
         self._llm_client = None
+        # Which geometry actually ran, recorded per call. A caller (or an
+        # evaluation) that reports "UMAP + HDBSCAN results" without checking
+        # these is reporting whatever happened to be installed. Set to the
+        # real backend by reduce_dimensions/cluster_embeddings; `None` means
+        # neither has run yet.
+        self.last_reduce_backend: Optional[str] = None
+        self.last_cluster_backend: Optional[str] = None
 
     def set_llm_client(self, client) -> None:
         """Set LLM client for label generation."""
@@ -123,9 +130,26 @@ class TabClusterer:
                 metric="cosine",
                 random_state=42,
             )
+            self.last_reduce_backend = "umap"
             return reducer.fit_transform(embeddings)
-        except ImportError:
-            # Fallback: simple PCA-like reduction using SVD
+        except ImportError as exc:
+            # Fallback: simple PCA-like reduction using SVD.
+            #
+            # This used to be SILENT. `tests/requirements.txt` installs neither
+            # umap-learn nor hdbscan (they are in services/ai-engine's
+            # requirements only), so every clustering test in CI took this
+            # branch and characterised SVD + k-means while appearing to test
+            # UMAP + HDBSCAN -- the algorithm was swapped underneath the tests
+            # and nothing said so. A degradation that reports success is the
+            # WI0-B8 class: it makes the next failure invisible.
+            self.last_reduce_backend = "svd"
+            log_event(
+                "clustering.umap_unavailable",
+                level=logging.WARNING,
+                fallback="svd",
+                n_samples=int(embeddings.shape[0]),
+                reason=str(exc),
+            )
             if embeddings.shape[1] <= self.umap_n_components:
                 return embeddings
 
@@ -150,9 +174,24 @@ class TabClusterer:
                 cluster_selection_epsilon=self.cluster_selection_epsilon,
                 metric="euclidean",
             )
+            self.last_cluster_backend = "hdbscan"
             return clusterer.fit_predict(embeddings)
-        except ImportError:
-            # Fallback: simple k-means clustering
+        except ImportError as exc:
+            # Fallback: simple k-means clustering. Announced for the same
+            # reason as the UMAP fallback above -- and this one changes the
+            # RESULT SHAPE, not just the method: `_kmeans_cluster` caps at
+            # `max_clusters=10` at any corpus size and never emits a -1 noise
+            # label, so "how many groups are there" and "which tabs are
+            # outliers" both get different answers with no indication that a
+            # different algorithm produced them.
+            self.last_cluster_backend = "kmeans"
+            log_event(
+                "clustering.hdbscan_unavailable",
+                level=logging.WARNING,
+                fallback="kmeans",
+                n_samples=int(embeddings.shape[0]),
+                reason=str(exc),
+            )
             return self._kmeans_cluster(embeddings)
 
     def _kmeans_cluster(

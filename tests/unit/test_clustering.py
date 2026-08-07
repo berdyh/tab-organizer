@@ -1,5 +1,7 @@
 """Unit tests for Clustering Pipeline."""
 
+import logging
+
 import pytest
 import numpy as np
 import sys
@@ -397,3 +399,82 @@ class TestCluster:
         cluster = Cluster(id=0, name="Test", tabs=tabs)
 
         assert len(cluster.tabs) == 2
+
+
+class TestGeometryBackendIsTheRealOne:
+    """The clustering suite must prove WHICH algorithm it exercised.
+
+    Until 2026-08-07 it did not. `tests/requirements.txt` installed neither
+    `umap-learn` nor `hdbscan` -- both live in services/ai-engine/requirements.txt
+    -- and `pipeline.py` caught the resulting ImportError and fell back to SVD +
+    `_kmeans_cluster` with no log line. So every test in this file passed while
+    characterising a different algorithm than the one it named, and an
+    evaluation run in this image would have filed k-means numbers under the
+    UMAP/HDBSCAN sidecar's name (plan decision 48).
+
+    These tests are the regression guard: drop either dependency from the test
+    image and the build fails, instead of silently swapping the algorithm.
+    """
+
+    def test_the_geometry_dependencies_are_installed_in_this_image(self):
+        import importlib
+
+        missing = [
+            name
+            for name in ("umap", "hdbscan")
+            if importlib.util.find_spec(name) is None
+        ]
+        assert not missing, (
+            f"{missing} missing from the test image, so pipeline.py's ImportError "
+            "fallbacks would run and this suite would characterise SVD + k-means "
+            "while claiming to test UMAP + HDBSCAN. Add them to "
+            "tests/requirements.txt (pinned to services/ai-engine/requirements.txt)."
+        )
+
+    def test_reduce_and_cluster_record_the_backend_that_actually_ran(self):
+        clusterer = TabClusterer(min_cluster_size=2, min_samples=1)
+        assert clusterer.last_reduce_backend is None
+        assert clusterer.last_cluster_backend is None
+
+        rng = np.random.default_rng(0)
+        embeddings = np.vstack(
+            [
+                rng.normal(loc=0.0, scale=0.1, size=(10, 16)),
+                rng.normal(loc=5.0, scale=0.1, size=(10, 16)),
+            ]
+        )
+        reduced = clusterer.reduce_dimensions(embeddings)
+        clusterer.cluster_embeddings(reduced)
+
+        # The whole point: an assertion on the ALGORITHM, not just the output.
+        assert clusterer.last_reduce_backend == "umap"
+        assert clusterer.last_cluster_backend == "hdbscan"
+
+    def test_a_missing_dependency_is_announced_rather_than_silently_swapped(
+        self, monkeypatch, caplog
+    ):
+        """Force the fallback and assert it is loud.
+
+        The fallback itself is legitimate -- a degraded pipeline beats a dead
+        one. What was not legitimate was taking it without saying so.
+        """
+        import builtins
+
+        real_import = builtins.__import__
+
+        def refuse_hdbscan(name, *args, **kwargs):
+            if name == "hdbscan":
+                raise ImportError("simulated missing hdbscan")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", refuse_hdbscan)
+
+        clusterer = TabClusterer(min_cluster_size=2, min_samples=1)
+        rng = np.random.default_rng(0)
+        embeddings = rng.normal(size=(12, 8))
+
+        with caplog.at_level(logging.WARNING):
+            clusterer.cluster_embeddings(embeddings)
+
+        assert clusterer.last_cluster_backend == "kmeans"
+        assert "clustering.hdbscan_unavailable" in caplog.text
