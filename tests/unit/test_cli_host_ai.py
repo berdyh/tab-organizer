@@ -6,6 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from scripts import cli
 from scripts.mcp import tabs as mcp_tabs
 
@@ -13,20 +15,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _host_ai_args(**overrides):
-    values = {
-        "provider": "codex_acp",
-        "embedding_provider": "ollama",
-        "llm_model": None,
-        "embedding_model": None,
-        "ollama_host": None,
-        "claude_code_command": None,
-        "codex_cli_command": None,
-        "codex_acp_command": None,
-        "host": "0.0.0.0",
-        "port": 8090,
-    }
-    values.update(overrides)
-    return argparse.Namespace(**values)
+    """Build host-ai args from the REAL parser, not a hand-copied Namespace.
+
+    The hand-built dict this replaced drifted the moment a flag was added
+    (`--gemini-cli-command`): every host-ai test blew up with AttributeError
+    on a field argparse would always have supplied. Parsing a minimal command
+    line means the fixture cannot describe a parser that does not exist.
+    """
+    argv = ["host-ai", "--provider", "codex_acp", "--embedding-provider", "ollama"]
+    args = cli.build_parser().parse_args(argv)
+    args.host = "0.0.0.0"
+    for key, value in overrides.items():
+        if not hasattr(args, key):
+            raise AssertionError(f"host-ai parser has no {key!r} argument")
+        setattr(args, key, value)
+    return args
 
 
 def _stub_service_tokens(monkeypatch):
@@ -133,6 +136,134 @@ def test_host_ai_rewrites_docker_ollama_host_and_sets_token(monkeypatch):
     assert env["AI_ENGINE_API_TOKEN"] == "token-AI_ENGINE_API_TOKEN"
     assert env["BACKEND_CALLBACK_TOKEN"] == "token-BACKEND_CALLBACK_TOKEN"
     assert env["AI_ENGINE_API_TOKEN"] != env["BACKEND_CALLBACK_TOKEN"]
+
+
+def test_cmd_host_ai_fails_closed_when_ai_provider_not_set(monkeypatch):
+    """host-ai is the documented way to use subscription providers (CLAUDE.md).
+
+    Before this fix it silently injected AI_PROVIDER=claude_code /
+    EMBEDDING_PROVIDER=ollama when neither a flag nor an env var supplied one
+    -- forging the exact "env var is the record of consent" invariant
+    SPEC-provider-routing.md R1/R3 requires. It must refuse instead of ever
+    invoking uvicorn with a provider nobody chose.
+    """
+    calls = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(
+        cli, "run_command", lambda cmd, env=None, **kwargs: calls.append(cmd)
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_host_ai(_host_ai_args(provider=None, embedding_provider=None))
+
+    message = str(exc_info.value)
+    assert "provider_not_selected" in message
+    assert "AI_PROVIDER" in message
+    assert "configure-provider" in message
+    assert not calls, "uvicorn must never start with an unselected provider"
+
+
+def test_cmd_host_ai_fails_closed_when_embedding_provider_not_set(monkeypatch):
+    """Same fail-closed rule for EMBEDDING_PROVIDER, isolated from AI_PROVIDER
+    by supplying --provider explicitly (real consent) so only the embedding
+    gate is under test."""
+    calls = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(
+        cli, "run_command", lambda cmd, env=None, **kwargs: calls.append(cmd)
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_host_ai(_host_ai_args(provider="claude_code", embedding_provider=None))
+
+    message = str(exc_info.value)
+    assert "provider_not_selected" in message
+    assert "EMBEDDING_PROVIDER" in message
+    assert not calls
+
+
+def test_cmd_host_ai_accepts_explicit_provider_flags(monkeypatch):
+    """The legitimate route keeps working: an explicit --provider/
+    --embedding-provider IS the deliberate choice (R3), with no AI_PROVIDER/
+    EMBEDDING_PROVIDER in the environment at all."""
+    calls = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "run_command",
+        lambda cmd, env=None, **kwargs: calls.append({"cmd": cmd, "env": env}),
+    )
+
+    cli.cmd_host_ai(_host_ai_args(provider="codex_acp", embedding_provider="ollama"))
+
+    assert calls
+    env = calls[0]["env"]
+    assert env["AI_PROVIDER"] == "codex_acp"
+    assert env["EMBEDDING_PROVIDER"] == "ollama"
+
+
+def test_cmd_host_ai_passes_every_subscription_cli_command_override(monkeypatch):
+    """Each --*-command flag must actually reach the host AI Engine's env.
+
+    host-ai is the ONLY way a subscription CLI provider is usable (the stock
+    image ships none of the binaries), so a flag that parses but is never
+    exported leaves the user with a provider that cannot be pointed at their
+    real binary. Covers all four together so adding a fifth adapter and
+    forgetting the passthrough fails here.
+    """
+    calls = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: None)
+    _stub_service_tokens(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "run_command",
+        lambda cmd, env=None, **kwargs: calls.append({"cmd": cmd, "env": env}),
+    )
+
+    cli.cmd_host_ai(
+        _host_ai_args(
+            provider="gemini_cli",
+            claude_code_command="/opt/bin/claude",
+            codex_cli_command="/opt/bin/codex",
+            codex_acp_command="/opt/bin/acpx",
+            gemini_cli_command="/opt/bin/gemini",
+        )
+    )
+
+    env = calls[0]["env"]
+    assert env["AI_PROVIDER"] == "gemini_cli"
+    assert env["CLAUDE_CODE_COMMAND"] == "/opt/bin/claude"
+    assert env["CODEX_CLI_COMMAND"] == "/opt/bin/codex"
+    assert env["CODEX_ACP_COMMAND"] == "/opt/bin/acpx"
+    assert env["GEMINI_CLI_COMMAND"] == "/opt/bin/gemini"
+
+
+def test_host_ai_parser_offers_every_subscription_cli_provider():
+    """--provider must offer what the catalog calls preferred.
+
+    A provider missing from `choices` is unreachable through the only command
+    that can run it, however complete the adapter is.
+    """
+    from config.config_loader import get_ai_config
+
+    parser = cli.build_parser()
+    action = next(
+        a
+        for a in parser._subparsers._group_actions[0].choices["host-ai"]._actions
+        if a.dest == "provider"
+    )
+    preferred = get_ai_config().config["routing"]["llm_preference_order"]
+    assert set(preferred) <= set(action.choices), (
+        f"host-ai cannot select {sorted(set(preferred) - set(action.choices))}"
+    )
 
 
 def test_host_ai_parser_default_host_is_not_bound_to_all_interfaces():
@@ -375,6 +506,40 @@ def test_service_env_replaces_blank_env_tokens_from_dotenv(monkeypatch):
     assert len({env[name] for name in cli.SERVICE_TOKEN_ENVS}) == 4
 
 
+def test_cmd_test_loads_env_file_like_other_stack_commands(monkeypatch):
+    """`test` must load .env like `start`/`host-ai`/`check-provider` do.
+
+    cmd_test recreates the stack (docker compose up, for integration/e2e)
+    through service_env_with_tokens(), which resolves each token from
+    os.environ first and only falls back to the persisted
+    data/service-tokens.json store when nothing is configured there.
+    Skipping load_env_file() meant an explicit .env token/config override
+    was invisible to `test`, so `test --type integration` could recreate the
+    stack on different values than `start -d` used for the exact same .env
+    -- the two commands would then hold the running stack open on divergent
+    tokens. Every other command that calls service_env_with_tokens() calls
+    load_env_file() first; `test` was the one place that didn't.
+    """
+    loaded = []
+    monkeypatch.setattr(cli, "load_env_file", lambda: loaded.append(True))
+    monkeypatch.setattr(cli, "service_env_with_tokens", lambda: {})
+    monkeypatch.setattr(
+        cli,
+        "docker_compose",
+        lambda *args, profiles=None, env=None: None,
+    )
+    monkeypatch.setattr(
+        cli, "wait_for_default_stack", lambda include_web_ui=False: None
+    )
+
+    cli.cmd_test(argparse.Namespace(type="unit"))
+    assert loaded == [True], "cmd_test(unit) must call load_env_file()"
+
+    loaded.clear()
+    cli.cmd_test(argparse.Namespace(type="integration"))
+    assert loaded == [True], "cmd_test(integration) must call load_env_file()"
+
+
 def test_integration_test_waits_for_default_stack(monkeypatch):
     calls = []
     waits = []
@@ -549,6 +714,100 @@ def test_mcp_tab_tool_wrappers_call_backend_core(monkeypatch):
     ]
 
 
+def test_tab_import_from_browser_omits_cdp_url_when_not_provided(monkeypatch):
+    """Regression for the browser-engine-container-vs-host default mismatch.
+
+    `scripts/mcp/tabs.py` used to default `cdp_url` to its own module-level
+    constant (`http://localhost:9222`), which meant the wrapper ALWAYS sent a
+    `cdp_url` field -- even when the caller never asked for one -- and that
+    value always won over Backend Core/Browser Engine's own correct default
+    (`http://host.docker.internal:9222`, the address that resolves to the
+    host from inside the Browser Engine container). Evaluated inside that
+    container, `localhost:9222` is the container's own loopback, where
+    nothing listens, so every import with no explicit `--cdp-url` failed.
+    The fix is to omit the key entirely when the caller doesn't pass one, so
+    the downstream service's default applies. Asserting on the constructed
+    payload (not just the function's default argument value) is the point:
+    a test that only inspected the signature default would keep passing even
+    if payload construction re-inserted a hardcoded value.
+    """
+    calls = []
+
+    class FakeClient:
+        def request(self, method, path, payload=None):
+            calls.append(payload)
+            return {}
+
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", FakeClient)
+
+    mcp_tabs.tab_import_from_browser(session_id="sess_1")
+
+    assert "cdp_url" not in calls[0]
+    assert calls[0] == {"session_id": "sess_1"}
+
+
+def test_tab_import_from_browser_passes_explicit_cdp_url_unchanged(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def request(self, method, path, payload=None):
+            calls.append(payload)
+            return {}
+
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", FakeClient)
+
+    mcp_tabs.tab_import_from_browser(
+        cdp_url="http://host.docker.internal:9222", session_id="sess_1"
+    )
+
+    assert calls[0]["cdp_url"] == "http://host.docker.internal:9222"
+
+
+def test_tab_import_from_browser_rejects_explicit_empty_cdp_url(monkeypatch):
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", lambda: None)
+
+    with pytest.raises(ValueError, match="cdp_url is required"):
+        mcp_tabs.tab_import_from_browser(cdp_url="   ", session_id="sess_1")
+
+
+def test_tab_open_omits_cdp_url_when_not_provided(monkeypatch):
+    """Same fix, same regression, for the sibling `tab_open` wrapper, which
+    defaulted `cdp_url` to the identical wrong constant."""
+    calls = []
+
+    class FakeClient:
+        def request(self, method, path, payload=None):
+            calls.append(payload)
+            return {}
+
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", FakeClient)
+
+    mcp_tabs.tab_open(["https://example.com"])
+
+    assert "cdp_url" not in calls[0]
+
+
+def test_tab_open_rejects_explicit_empty_cdp_url(monkeypatch):
+    monkeypatch.setattr(mcp_tabs, "BackendCoreClient", lambda: None)
+
+    with pytest.raises(ValueError, match="cdp_url is required"):
+        mcp_tabs.tab_open(["https://example.com"], cdp_url="")
+
+
+def test_tabs_cli_import_and_open_default_cdp_url_to_none(monkeypatch):
+    """CLI-level companion to the wrapper-level tests above: confirms the
+    argparse default itself is `None` (so `run_backend_tab_tool` ends up
+    calling the wrapper with `cdp_url=None`, not a restated URL string) when
+    `--cdp-url` is omitted on the command line."""
+    parser = cli.build_parser()
+
+    import_args = parser.parse_args(["tabs", "import"])
+    open_args = parser.parse_args(["tabs", "open", "https://example.com"])
+
+    assert import_args.cdp_url is None
+    assert open_args.cdp_url is None
+
+
 def test_tabs_cli_subcommands_dispatch_to_mcp_wrappers(monkeypatch, capsys):
     calls = []
 
@@ -682,3 +941,76 @@ def test_tabs_cli_errors_redact_configured_agent_token(monkeypatch, capsys):
     assert "agent-token-value" not in output.out
     assert "agent-token-value" not in output.err
     assert "<redacted>" in output.err
+
+
+def test_short_token_does_not_shred_unrelated_text_and_warns(monkeypatch, capsys):
+    """A 1-char token must not shred output.
+
+    A misconfigured BACKEND_CALLBACK_TOKEN=":" made str.replace rewrite every
+    URL and timestamp in the CLI's output as "http<redacted>//host<redacted>9222".
+    Boundary-aware matching leaves those alone: every colon here is flanked by
+    token characters, so none of them is the token as a whole token.
+    """
+    from scripts.mcp import tabs as mcp_tabs
+
+    monkeypatch.setattr(mcp_tabs, "_warned_short_tokens", set())
+    for key in ("BACKEND_AGENT_API_TOKEN", "AI_ENGINE_API_TOKEN",
+                "BROWSER_ENGINE_API_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", ":")
+
+    message = 'http://host.docker.internal:9222 at 14:09:40'
+    assert mcp_tabs.redact_configured_secrets(message) == message
+    assert "BACKEND_CALLBACK_TOKEN is 1 characters" in capsys.readouterr().err
+
+
+def test_short_token_is_still_redacted_where_it_is_a_whole_token(monkeypatch):
+    """Not shredding must not become not redacting.
+
+    Every service's bearer check accepts a short token verbatim, so it is a
+    working credential; skipping redaction for it meant the CLI printed a
+    usable credential whenever one turned up in a backend payload or error.
+    """
+    from scripts.mcp import tabs as mcp_tabs
+
+    monkeypatch.setattr(mcp_tabs, "_warned_short_tokens", set())
+    for key in ("BACKEND_AGENT_API_TOKEN", "AI_ENGINE_API_TOKEN",
+                "BROWSER_ENGINE_API_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "hunter2")
+
+    for message, expected in (
+        # a Bearer header echoed back in an error
+        ("rejected Authorization: Bearer hunter2", "Bearer <redacted>"),
+        # a JSON body field
+        ('{"token": "hunter2"}', '{"token": "<redacted>"}'),
+        # a query string
+        ("GET /tabs?token=hunter2&x=1", "GET /tabs?token=<redacted>&x=1"),
+        # end of string, no trailing delimiter at all
+        ("callback token is hunter2", "callback token is <redacted>"),
+    ):
+        out = mcp_tabs.redact_configured_secrets(message)
+        assert "hunter2" not in out, message
+        assert expected in out, message
+
+    # ...and it is still a whole-token match, not a substring one.
+    assert (
+        mcp_tabs.redact_configured_secrets("see hunter2000 for details")
+        == "see hunter2000 for details"
+    )
+
+
+def test_a_real_length_token_is_still_redacted(monkeypatch):
+    """The floor must not become an excuse to stop redacting real tokens."""
+    from scripts.mcp import tabs as mcp_tabs
+
+    monkeypatch.setattr(mcp_tabs, "_warned_short_tokens", set())
+    for key in ("BACKEND_AGENT_API_TOKEN", "AI_ENGINE_API_TOKEN",
+                "BROWSER_ENGINE_API_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    secret = "s3cr3t-token-value-abcdefghijklmnop"
+    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", secret)
+
+    out = mcp_tabs.redact_configured_secrets(f"auth failed for {secret} on /tabs")
+    assert secret not in out
+    assert "<redacted>" in out

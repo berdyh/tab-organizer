@@ -177,6 +177,17 @@ class SyncAPIClient:
             "GET", f"{self.ai_url}/providers", headers=self._ai_headers()
         )
 
+    def get_ai_engine_health(self) -> dict:
+        """Fetch ai-engine's own /health.
+
+        Used by the settings page for the `providers` block (R4 attribution:
+        which provider is active per role, and its cost_model). Reuses
+        `_probe_health` so an unreachable/erroring ai-engine degrades to a
+        status string instead of raising -- the settings page must still
+        render the rest of the provider config when this fails.
+        """
+        return self._probe_health(f"{self.ai_url}/health", self._ai_headers())
+
     def switch_provider(
         self,
         llm_provider: Optional[str] = None,

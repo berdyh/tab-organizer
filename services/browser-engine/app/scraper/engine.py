@@ -5,13 +5,23 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional, cast
 from urllib.parse import urljoin, urlparse
 
 import httpx
-from playwright.async_api import Browser, Page
+from playwright.async_api import Browser
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
+
+if TYPE_CHECKING:
+    # Annotation-only. The unit-test image installs playwright STUBS, not the
+    # package, so `Playwright` is not importable there at runtime and a
+    # top-level import of it fails collection for six test modules with
+    # "cannot import name 'Playwright' ... (unknown location)". A name needed
+    # solely for a type annotation must not become a runtime import
+    # requirement -- the type checker is not allowed to change what the
+    # program needs in order to start.
+    from playwright.async_api import Playwright
 
 from services.observability import log_event
 from services.url_safety import resolve_scrape_targets, validate_scrape_url
@@ -683,7 +693,7 @@ class RobotsChecker:
 
     def _parse_robots(self, content: str) -> dict:
         """Parse robots.txt content."""
-        rules = {"disallow": [], "allow": []}
+        rules: dict[str, list[str]] = {"disallow": [], "allow": []}
         current_agent = None
 
         for line in content.split("\n"):
@@ -722,7 +732,7 @@ class ScraperEngine:
         self.respect_robots = respect_robots
 
         self._browser: Optional[Browser] = None
-        self._playwright = None
+        self._playwright: Optional["Playwright"] = None
         self._browser_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._extractor = ContentExtractor()
@@ -1275,12 +1285,19 @@ class ScraperEngine:
         # Convert exceptions to failed results
         final_results = []
         for url, result in zip(urls, results):
-            if isinstance(result, Exception):
+            # BaseException, not Exception. `gather(return_exceptions=True)`
+            # returns whatever the child raised, and CancelledError derives from
+            # BaseException -- so with the narrower check a cancelled task fell
+            # through to the else and was appended AS IF IT WERE a ScrapeResult.
+            # Every consumer then attribute-errors on `.status`/`.url`, far from
+            # the cancellation that caused it. A cancelled scrape is a failed
+            # scrape, and says so.
+            if isinstance(result, BaseException):
                 final_results.append(
                     ScrapeResult(
                         url=url,
                         status="failed",
-                        error=str(result),
+                        error=f"{type(result).__name__}: {result}",
                     )
                 )
             else:

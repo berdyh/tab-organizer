@@ -12,7 +12,9 @@ The Tab Organizer uses a centralized configuration system located in `config/ai_
 - Default configurations for each provider
 - Use case recommendations
 
-OpenRouter is the docker-compose default (one API key, many models). Ollama is the `.env.example` default for running fully offline. Claude Code and Codex CLI are LLM-only options that use local CLI subscription login state instead of API keys. `codex_acp` is an LLM-only ACP harness route through `acpx` and the Codex ACP adapter. The other providers are wired in the same registry and can be swapped at runtime.
+**Routing rule (2026-08-06):** a model you already pay for by subscription is never routed through a metered provider by default. The GPT-5.6 family comes from `codex_cli` and Gemini from `gemini_cli`; openrouter's copies of both stay registered as the deliberate smoke-test path (`defaults.use_cases.smoke_test`) but carry `superseded_by:` and can never be a default or a recommendation. Each `models:` entry is one provider *route* — the key is the exact wire id, `model_family:` links routes to the same weights, and cost comes from the provider.
+
+OpenRouter is the docker-compose default (one API key, many models). Ollama is the `.env.example` default for running fully offline. Claude Code, Codex CLI and Gemini CLI are LLM-only options that use local CLI subscription login state instead of API keys. `codex_acp` is an LLM-only ACP harness route through `acpx` and the Codex ACP adapter. The other providers are wired in the same registry and can be swapped at runtime.
 
 ## Configuration Structure
 
@@ -30,8 +32,8 @@ providers:
       llm: true
       embeddings: true
     default_models:
-      llm: "openai/gpt-4o-mini"
-      embedding: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+      llm: "openai/gpt-5.6-luna"
+      embedding: "qwen/qwen3-embedding-8b"
 
   ollama:
     type: local
@@ -94,17 +96,19 @@ Provides recommended configurations for different use cases:
 
 ```yaml
 defaults:
-  provider: "openrouter"
+  # NOT the LLM default -- AI_PROVIDER is, and it has no default at all.
+  # This is the embedding provider used when one is chosen without a model.
+  provider: "ollama"
   use_cases:
     reasoning:
-      provider: "openrouter"
-      model: "openai/gpt-4o-mini"
+      provider: "claude_code"
+      model: "sonnet"
     coding:
       provider: "claude_code"
       model: "sonnet"
     embeddings:
-      provider: "openrouter"
-      model: "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+      provider: "ollama"
+      model: "nomic-embed-text"
 ```
 
 ## Using the Configuration System
@@ -159,7 +163,8 @@ info = client.get_provider_info()
 ```
 
 `scripts/init.py` accepts `ollama`, `claude`, `openrouter`, `claude_code`,
-`codex_cli`, and `codex_acp`. Configure OpenAI, Gemini, or DeepSeek by editing
+`codex_cli`, and `codex_acp`. `gemini_cli` is selectable through
+`./scripts/cli.py configure-provider` and `host-ai --provider gemini_cli`. Configure OpenAI, Gemini, or DeepSeek by editing
 `.env`/runtime provider settings rather than passing them to `--provider`.
 
 ## Adding New Models
@@ -219,8 +224,8 @@ models:
 
 The system uses these environment variables:
 
-- `AI_PROVIDER`: Default AI provider (openrouter, ollama, openai, anthropic, claude_code, codex_cli, codex_acp, deepseek, gemini)
-- `EMBEDDING_PROVIDER`: Default embedding provider
+- `AI_PROVIDER`: The LLM provider (openrouter, ollama, openai, anthropic, claude_code, codex_cli, gemini_cli, codex_acp, deepseek, gemini). **No default** — nothing is selected on your behalf. Unset, the AI Engine starts, reports `degraded` on `/health` with a `{code, cause, fix}`, and fails every generate call closed. Run `./scripts/cli.py configure-provider` or set it explicitly.
+- `EMBEDDING_PROVIDER`: The embedding provider (`ollama`, `openrouter`, `openai`, `gemini`). **No default**, and no fallback: setting it to a provider that cannot embed is an error naming the ones that can, not a silent swap. The subscription CLIs, `anthropic` and `deepseek` serve no embedding models. OpenRouter does (corrected 2026-08-05 by calling the endpoint; the earlier claim was inferred from its chat-model listing, which does not cover `/v1/embeddings`).
 - `LLM_MODEL`: Override default LLM model
 - `EMBEDDING_MODEL`: Override default embedding model
 - `EMBEDDING_DIMENSIONS`: Override embedding dimensions (must match the model)
@@ -232,14 +237,18 @@ The system uses these environment variables:
 - `CLAUDE_CODE_DISABLE_TOOLS`: Disable Claude Code tools for app LLM calls, defaults to `true`
 - `CODEX_CLI_COMMAND`: Codex CLI command, defaults to `codex`
 - `CODEX_CLI_TIMEOUT`: Codex CLI request timeout in seconds, defaults to `300`
-- `CODEX_CLI_SANDBOX`: Codex sandbox mode, defaults to `read-only`
+- `CODEX_CLI_SANDBOX`: Codex sandbox mode, defaults to `read-only`. Clamped to `{read-only, workspace-write}` — anything else, including `danger-full-access`, falls back to `read-only`. Same reasoning as `GEMINI_CLI_APPROVAL_MODE` below: the subprocess may be carrying scraped page text, so dropping its sandbox must not be reachable from the environment.
 - `CODEX_CLI_ALLOW_UNTRUSTED_CONTEXT`: Allow `codex_cli` for scraped-content prompts. Defaults to disabled because `codex exec` is not a tool-free LLM-only mode.
+- `GEMINI_CLI_COMMAND` / `GEMINI_CLI_TIMEOUT`: Command and timeout for `gemini_cli`.
+- `GEMINI_CLI_APPROVAL_MODE`: `plan` (read-only, default) or `default`. Anything else, including `yolo`, is clamped to `plan`.
+- `GEMINI_CLI_ALLOW_UNTRUSTED_CONTEXT`: Allow `gemini_cli` for scraped-content prompts. Defaults to disabled: gemini has no tool-free mode, and even `--approval-mode plan` allows `read_file`, `google_web_search` and `web_fetch`.
 - `CODEX_ACP_COMMAND`: ACPX command for Codex ACP harness routing, defaults to `acpx`
 - `CODEX_ACP_TIMEOUT`: Codex ACP request timeout in seconds, defaults to `300`
 - `CODEX_ACP_PERMISSION_MODE`: ACPX permission mode, defaults to `deny-all` (`approve-reads` and `approve-all` are also accepted for trusted local experiments)
 - `CODEX_ACP_NON_INTERACTIVE_PERMISSIONS`: ACPX policy for non-interactive permission prompts, defaults to `fail` (`deny` is also accepted)
 - `CODEX_ACP_QUEUE_TTL_SECONDS`: ACPX queue-owner TTL for each prompt turn, defaults to `0.1`
 - `CODEX_ACP_SESSION_NAME`: Optional persistent ACP session name. If unset, each app LLM call creates and closes a unique ACP session to avoid cross-request context bleed.
+- `CLAUDE_CODE_EXTRA_ARGS` / `CODEX_CLI_EXTRA_ARGS` / `GEMINI_CLI_EXTRA_ARGS`: extra argv for the corresponding CLI. **Allow-listed, and every adapter currently ships an EMPTY allow-list, so any non-blank value is refused with an `agent_cli_extra_arg_rejected` error and no subprocess runs.** These are appended to the same argv that carries each adapter's safety flags, so an unreviewed flag re-opens them — `GEMINI_CLI_EXTRA_ARGS="--approval-mode yolo"` walked straight around the `--approval-mode` clamp, and `--policy`, `--allowed-tools`, `--dangerously-skip-permissions` and `--dangerously-bypass-approvals-and-sandbox` are not that flag at all, so no deny-list would have caught them. To permit one, add it to that adapter's `EXTRA_ARG_ALLOWLIST` in `services/ai-engine/app/providers/agent_cli.py` in a reviewed change, having checked it grants no tool, file, shell, network or policy access.
 - `AGENT_CLI_WORKDIR`: Working directory for local agent CLI calls, defaults to `/tmp/tab-organizer-agent-cli`
 - `AI_ENGINE_API_TOKEN`: Bearer token required by generation, indexing, clustering, chat, search, summarization, document deletion, and provider-switch endpoints. `scripts/cli.py start` and `scripts/cli.py host-ai` generate it automatically, storing one independent token per service scope in `data/service-tokens.json` (0600). The four scopes (`AI_ENGINE_API_TOKEN`, `BACKEND_CALLBACK_TOKEN`, `BACKEND_AGENT_API_TOKEN`, `BROWSER_ENGINE_API_TOKEN`) must stay distinct.
 - `BACKEND_CALLBACK_TOKEN`: Bearer token required for browser-engine scrape callbacks into backend-core. Defaults operationally to the same generated local token when started through `scripts/cli.py`.
@@ -249,9 +258,11 @@ The system uses these environment variables:
 
 `claude_code` invokes `claude -p` and uses the local Claude Code login state. `codex_cli` invokes `codex exec` and uses local Codex/ChatGPT login state. They do not require Anthropic or OpenAI API keys, but they only work where the AI engine process can execute those commands. The stock Docker image does not install these CLIs or mount their auth state; run the AI engine on the host or build a custom image for Docker-based subscription CLI routing.
 
+`gemini_cli` invokes `gemini -p` (headless) with `--approval-mode plan --output-format json` and uses the CLI's `oauth-personal` login state. It is the **subscription** Gemini route; the `gemini` provider is the metered API route, and the adapter never receives `GOOGLE_API_KEY`/`GEMINI_API_KEY` so the two cannot be confused at runtime. It will not be offered until `~/.gemini/oauth_creds.json` exists: `gemini --version` exits 0 when logged out and `gemini -p` then blocks forever on a browser-login prompt, so the binary alone is not evidence of a usable provider. **As of 2026-08-06 no generation through this adapter has been observed** — the development host's CLI is unauthenticated, so its live test skips; log in once and rerun `pytest -m requires_provider_credentials tests/unit/test_subscription_cli_providers.py`. `antigravity` is not and cannot be a provider: it is a GUI IDE with no headless mode.
+
 `codex_cli` is not ACP mode: it is a one-shot `codex exec --ephemeral --json -` provider. For ACP semantics use `codex_acp`, which invokes `acpx` and drives the Codex harness with the ACP session lifecycle (`sessions ensure`, `prompt --file -`, and session cleanup). This is still a repo-local LLM provider, not an OpenClaw `sessions_spawn(runtime: "acp")` orchestrator.
 
-The local CLI/ACP providers are LLM-only. Keep `EMBEDDING_PROVIDER` on `ollama`, `openrouter`, `openai`, or `gemini`.
+The local CLI/ACP providers are LLM-only. Keep `EMBEDDING_PROVIDER` on `ollama`, `openrouter`, `openai`, or `gemini`. Pointing it at any LLM-only provider fails closed with an `embedding_provider_cannot_embed` error listing what can embed; it is not silently rewritten.
 
 For a host-run local subscription mode:
 
@@ -261,6 +272,13 @@ For a host-run local subscription mode:
 ./scripts/cli.py start -d --host-ai
 ./scripts/cli.py check-provider --provider codex_acp --generate
 ```
+
+To pick a provider interactively instead of hand-editing `.env`, run
+`./scripts/cli.py configure-provider`. It probes real availability (is the
+CLI binary on PATH and authenticated, is Ollama reachable and which models
+are actually pulled, which API keys are set) and only offers -- and only
+ever writes -- a provider its own probe verified. It never selects one for
+you and never falls back silently (SPEC-provider-routing.md R6).
 
 Use `--provider codex_cli` for one-shot Codex CLI or `--provider claude_code` for Claude Code print mode. `--host-ai` sets the Docker services to call `http://host.docker.internal:8090`, while the AI Engine process itself runs on the host and can access your authenticated CLI state. The CLI creates a local `data/service-tokens.json` and passes its `AI_ENGINE_API_TOKEN` entry so containers can call the host AI Engine without exposing unauthenticated generation and provider-switching endpoints.
 
@@ -326,16 +344,6 @@ if errors:
         print(f"Config error: {error}")
 ```
 
-## Reloading Configuration
-
-To reload configuration without restarting:
-
-```python
-from config.config_loader import reload_config
-
-reload_config()
-```
-
 ## Best Practices
 
 1. **Keep descriptions informative**: Include model size, capabilities, and use cases
@@ -350,7 +358,7 @@ reload_config()
 ### Model not found
 - Check if model is in `config/ai_models.yaml`
 - Verify provider is correct
-- Reload configuration with `reload_config()`
+- Restart the service; the catalog is read once at startup
 
 ### Provider not supported
 - Ensure provider is in `providers` section
@@ -363,6 +371,7 @@ reload_config()
 - Ensure key has required permissions
 
 ### Embedding provider mismatch
-- Some providers (like Anthropic) don't support embeddings
-- System will automatically fallback to default provider
-- Configure `EMBEDDING_PROVIDER` explicitly if needed
+- Some providers (Anthropic, DeepSeek, and the subscription CLIs `claude_code`/`codex_cli`/`codex_acp`) serve no embedding models. OpenRouter was listed here until 2026-08-05 and does **not** belong: it serves embeddings via `POST /v1/embeddings`
+- The system does **not** fall back to a working one. It raises `embedding_provider_cannot_embed`, naming the providers that can embed (derived from the catalog), and `/health` reports `degraded`
+- Set `EMBEDDING_PROVIDER` to one of those, or run `./scripts/cli.py configure-provider`
+- The old silent fallback was removed deliberately: it substituted a provider nobody chose and reported nothing. See `docs/SPEC-provider-routing.md`

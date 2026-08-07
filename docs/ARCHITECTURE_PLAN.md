@@ -111,11 +111,14 @@ what superseded it and when. Never leave a stale doc live; a stale doc is worse 
 ## Codebase cleanup (user directive 2026-07-24)
 
 Cleanup runs **during and after** implementation, not as a deferred phase. Standing rule:
-every phase deletes what it replaces in the same commit. Known targets: dead
-`services/web-ui/.env.example` (React vars Streamlit never reads), unused `BackgroundTasks`
-param + stale docstring (`routes.py:572/604`), legacy timestamp deprecations, hardcoded
-inter-service URLs, the B2B platform subsystem (pending Q6), and every Python module
-retired by the cutover.
+every phase deletes what it replaces in the same commit. Known targets, with their
+status as of 2026-08-07: dead `services/web-ui/.env.example` (React vars Streamlit never
+reads) — **done**, and its sibling `services/web-ui/.gitignore` with it; unused
+`BackgroundTasks` param + stale docstring — **done** (the line numbers recorded here,
+`routes.py:572/604`, had themselves gone stale; the real sites were `:631` and `:686`);
+hardcoded inter-service URLs — **done** (finding 32); legacy timestamp deprecations and
+the B2B platform subsystem (pending Q6) — still open, the latter deliberately so under
+decision 41; and every Python module retired by the cutover.
 
 ## New workstreams (user directives 2026-07-23)
 
@@ -596,8 +599,8 @@ second user/company on the platform routes, or a stated commercialization roadma
 **UNRESOLVED DECISIONS:**
 - Framework: Next.js vs TanStack Start; better-sqlite3 vs libsql (non-blocking; defaults
   Next.js + better-sqlite3 unless overridden)
-- Clustering evaluation not yet run (100/500/2000-page corpora; purity, coherence, useful
-  singleton rate, stability across reruns) — until then the Python geometry sidecar stays
+- ~~Clustering evaluation not yet run~~ — **RUN 2026-08-07. Verdict: DROP the sidecar.**
+  Decision 25 is resolved; see `docs/EVAL-clustering.md` and decision 49 below.
 
 ## WI0 addendum (2026-07-24)
 
@@ -635,3 +638,180 @@ Also confirmed: scraping itself is healthy (46/50 real-world success); the full 
 correctly — the deployment *default*, not the product, has never been a working
 configuration. See "Reordering consequence for wk0 tasks" in the WI0 notes for how these
 folded into the phase-1 task list.
+
+### Addendum 2026-08-05 — T6 retriggered; migration status after wk0
+
+| # | Decision | Class |
+|---|---|---|
+| 42 | `SEC_BOOT_*_CMD` (T6) lands before the first TS commit touching credentials, tokens, or agent subprocesses — NOT before facade work begins | Revises the wk0 triage's date-box |
+| 43 | wk1 runs the frozen suite against the TS facade in **attached mode**; no new harness needed | Mechanical |
+| 44 | `sec_managed` probe inputs and expected refusals get extracted to language-neutral JSON fixtures while Python behaviour is verified | Mechanical (hedge) |
+
+**Why 42 revises the earlier date-box.** The wk0 triage set T6 "before TS facade
+work begins" without checking what the `sec_managed` probes actually cover.
+(That count was recorded as 19 here and in `tests/security/README.md`; collection
+reports **21** as of SECSUITE 1.5.0 — SEC-46/47 updated the prose and not the
+arithmetic. Corrected 2026-08-07.)
+They break down as: agent subprocess hardening (SEC-28..33, whole file) →
+ai-engine providers; credential isolation and URL-safety-under-config →
+browser-engine; prompt envelope → ai-engine RAG/clustering; plus token scopes
+and CORS. The first four groups validate components that port at the **wk10
+cutover or later** (capture ports last, decision 24). Building boot mode at wk1
+would mean validating a TypeScript implementation that does not exist yet, using
+a Python stack scheduled for deletion as the proving ground.
+
+**Why 43 covers the wk1 gap.** Only CORS and token scopes bite from the first
+facade commit, and neither needs harness-controlled env — they are plain HTTP
+assertions. Attached mode already runs 192 of 213 probes against any
+implementation. Point `SEC_BACKEND_URL` at the TS facade and they run.
+
+**Why 44 exists.** The argument for deferring T6 is sound; the risk in deferring
+is not forgetting but arriving at wk8 under cutover pressure, where the cheapest
+path is weakening a probe to pass against what was built — which inverts the
+purpose of freezing them. Extracting the contracts to fixtures now makes that
+softening a visible diff instead of a quiet edit. It is the pattern SEC-25/42
+already use for the agent env allowlist, and it worked.
+
+**Standing counter-argument, recorded so it is not relitigated from scratch.**
+"We are rewriting in TypeScript, so a documented invariant will be implemented
+correctly" has a measured track record in this repo, and it is 0 for 3: CLAUDE.md
+documented the token fallback as intended while the setup script made it a
+permanent scope collapse; MODULE_INDEX documented the credential store as
+"keyring or env key" while keyring was in no requirements file; premise 4
+documented an API-layer backstop that did not exist. All three were written by
+people who believed them, and all three were caught only by execution. The wk0
+security rounds add six more instances: every first-attempt fix was refuted,
+three by executed exploits, each having implemented the *example* in the finding
+rather than its *class*. Documentation states the class; only a probe tests it.
+
+**Migration status at this addendum:** wk0 complete and merged. No TypeScript
+exists — no `package.json`, no `tsconfig.json`, no `.ts` file. wk1-6 (facade,
+UI, agent layer) not started. The wk16 reverse kill-switch clock started when
+wk0 landed.
+
+### Addendum 2026-08-07 — G4 clustering evaluation: protocol and decision rule
+
+This section is written **before the evaluation runs**, deliberately. Decision 25 keeps
+the Python UMAP/HDBSCAN sidecar "pending a real clustering evaluation", and the failure
+mode of an un-preregistered eval is that mixed numbers get read through whichever prior
+the reader brought. The rule below is committed first; the numbers land under it.
+
+| # | Decision | Class |
+|---|---|---|
+| 45 | The G4 verdict is decided by a **pre-registered rule with `drop` as the null hypothesis**: a tie is a drop | Mechanical |
+| 46 | G4 measures **decision-39 group survival under increments**, not plain rerun-ARI | Mechanical |
+| 47 | The eval corpus is **tab-shaped**, not vanilla 20 Newsgroups | Mechanical |
+| 48 | Clustering tests that do not prove which algorithm ran are not evidence (see below) | Mechanical |
+
+**Decision rule (pre-registered).** Keep the Python geometry sidecar only if, on the
+tab-shaped corpus at BOTH 500 and 2000 docs, the production pipeline beats the best
+TypeScript-candidate arm by **≥ 0.10 ARI or ≥ 10 points purity**, AND is **no worse on
+decision-39 group survival**. Anything else — including a tie, including a win at 2000
+only — is a DROP.
+
+**Why the null hypothesis is `drop`.** The sidecar carries a standing cost the metrics
+do not see: a whole Python process inside what is otherwise an `npx`/Tauri-distributable
+TypeScript app, plus the decision-26 invariant that Python and TypeScript never write the
+same SQLite. The product's stated corpora are hundreds of tabs, so a sidecar that only
+earns its keep at 2000 does not earn its keep. The burden of proof is on keeping it.
+
+**Why group survival, not rerun-ARI.** `pipeline.py` pins `random_state=42`, so rerunning
+UMAP on identical input returns identical output and a plain "stability across reruns"
+number is vacuously 1.0 — it would pass while measuring nothing, the could-not-fail class
+this repo has now hit five times. The metric that decides the product question is
+decision 39's own rule applied across increments: add 10 tabs, re-run, match groups at
+Jaccard ≥ 0.5 greedy one-to-one, and report what fraction of groups keep their identity.
+If geometry re-partitions the corpus every time ten tabs arrive, user relabels and pins do
+not survive, and a quality edge is worth nothing.
+
+**Why not vanilla 20 Newsgroups.** Balanced, equal-sized, single-topic classes are exactly
+where k-means and agglomerative do well and where HDBSCAN's real advantages (unknown k,
+variable density, skewed sizes, genuine noise) never get exercised — a `drop` verdict from
+that corpus would be pre-baked, and a `keep` verdict could not arise. The corpus is
+therefore shaped like real tabs: power-law group sizes, injected near-duplicates from one
+domain, injected low-content navigational stubs, injected one-off outliers, and
+`remove=('headers','footers','quotes')` so purity cannot be scored on hostname matching.
+
+**Useful singleton rate, defined.** A singleton is not automatically a failure — a
+genuinely unrelated tab SHOULD be alone. Against the injected one-offs, report singleton
+**precision** (produced singletons that are real one-offs), singleton **recall** (one-offs
+that ended up isolated), and **orphan rate** (docs whose true group had ≥ min_cluster_size
+members present but which still landed in "Uncategorized"). These are computed from
+HDBSCAN's `-1` labels, not from the API payload: `pipeline.py:226-233` turns every noise
+point into its own cluster row, so the response cannot distinguish "12 groups" from
+"3 groups + 9 orphans".
+
+**Decision 48 — a clustering test that does not prove which algorithm ran is not evidence.**
+`tests/requirements.txt` installs neither `umap-learn` nor `hdbscan` (both are in
+`services/ai-engine/requirements.txt` only), and `pipeline.py:127`/`:154` catch `ImportError`
+and fall back to SVD + `_kmeans_cluster` **silently**. Every clustering test in CI has
+therefore been characterizing the fallback while appearing to test UMAP+HDBSCAN, and an
+eval run in that image would have filed k-means numbers under the sidecar's name. The
+degradation must be logged, and any run claiming to measure the geometry pipeline must
+assert the real imports succeeded.
+
+### Addendum 2026-08-07 (b) — G4 result: decision 25 resolved, sidecar DROPPED
+
+The evaluation pre-registered above ran. Full report and reproduction:
+`docs/EVAL-clustering.md`; harness in `scripts/eval/`.
+
+| # | Decision | Class |
+|---|---|---|
+| 49 | **Drop the Python UMAP/HDBSCAN sidecar.** TypeScript ships agglomerative or k-means over cosine similarity. Supersedes decision 25 | Mechanical, by the pre-registered rule |
+| 50 | Freeform geometry carries LESS load than the plan assumed; the facet path (`GROUP BY facet_value`) carries more | Mechanical, forced by the numbers |
+
+**The numbers, against the rule as written.**
+
+| | n=500 | n=2000 |
+|---|---|---|
+| Production UMAP+HDBSCAN, ARI | 0.274 | 0.179 |
+| Best TypeScript-candidate arm, ARI | 0.144 | 0.112 |
+| ARI margin (rule needs ≥ +0.10) | +0.130 PASS | +0.067 **FAIL** |
+| Purity margin (rule needs ≥ +10 pts) | −0.260 **FAIL** | −0.310 **FAIL** |
+| Decision-39 group survival | 0.782 vs 0.969 **FAIL** | 0.916 vs 0.992 **FAIL** |
+
+The rule required the quality leg at **both** sizes plus no-worse survival. A
+single-size win is explicitly a drop, and this is not even a tie. The verdict is
+unchanged under every resolution of the rule's ambiguities, and unchanged if the
+agglomerative arms are deleted and only k-means is compared.
+
+**Three findings that matter more than the verdict.**
+
+1. **HDBSCAN's stated advantage did not appear.** The corpus was built to
+   exercise exactly what geometry is supposed to be good at — unknown k, skewed
+   sizes, genuine noise. Arm A isolated **1 of 10** injected one-off outliers at
+   n=500 and **0 of 10** at n=2000, and all five of its noise points at n=2000
+   were orphans from well-populated groups. The argument for keeping the sidecar
+   was that facets "cannot discover themes"; the sidecar did not discover them
+   either.
+2. **Arm A is order-dependent.** `random_state=42` fixes the seed, not the row
+   order: shuffling input gives ARI 0.022 / 0.462 / 0.746 against the base run at
+   100/500/2000. Agglomerative is exactly 1.000, order-invariant by construction.
+   Tab ingest order is arbitrary in production, so this is the property most
+   destructive to decision-39 group identity — the user's relabels do not survive
+   a re-run that saw the same tabs in a different order.
+3. **Its clusters have almost no cosine coherence** (intra−inter of
+   0.008/0.033/0.013, against 0.089–0.321 for every non-degenerate alternative).
+   The groups are UMAP-geometry artifacts rather than similarity in the space
+   hybrid search actually ranks in.
+
+**Also worth stating plainly: nobody organises this corpus well.** The best ARI
+anywhere in the study is 0.274. This is a choice among mediocre options, and the
+sidecar is the most expensive one — which is decision 50, and an argument for
+investing in facets rather than in better geometry.
+
+**Honest limits, from the report's own §5/§6.** One corpus seed and one embedding
+model, so the 0.033 ARI shortfall at n=2000 sits inside plausible seed variance —
+§5 names the re-run that would settle it, and the survival and purity legs fail by
+margins that seed variance does not explain. The rule's purity leg is close to
+unusable (purity rises monotonically with cluster count; an arm scores 0.977 by
+putting 604 documents in their own clusters) and its survival leg has no validity
+floor (an arm emitting 2 clusters forever has perfect survival). Both are recorded
+as flaws in the rule; the verdict was taken on the rule as written rather than on
+a rule rewritten after seeing the numbers.
+
+**One protocol deviation, disclosed.** Arm B's silhouette-selected threshold
+degenerated to k=2 (ARI 0.002), so a B2 arm with a k≥5 floor was added to avoid
+crediting arm A against a broken comparator. That change strengthens the
+TypeScript side — it pushes toward the null. The verdict is identical with B2
+deleted.

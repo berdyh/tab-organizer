@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 
 from services.observability import log_event, request_id_headers
 
@@ -24,11 +24,9 @@ from ..platform.store import (
     PlatformValidationError,
 )
 from ..sessions.manager import (
-    SCRAPE_STATUS_TO_URL_STATUS,
     IngestCapture,
     SessionManager,
 )
-from ..url_input.store import URLStore
 from . import ingest
 
 # Global instances
@@ -628,7 +626,7 @@ def get_urls(session_id: str, status: Optional[str] = None):
 
 # Scraping endpoints
 @router.post("/scrape")
-async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTasks):
+async def start_scraping(request: ScrapeRequest):
     session = session_manager.get_session(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -683,7 +681,16 @@ async def trigger_scraping(
     urls: list[str],
     use_browser: bool = False,
 ):
-    """Background task to trigger browser engine scraping."""
+    """Dispatch the scrape to Browser Engine, inline and awaited.
+
+    NOT a background task, despite what this docstring said from 3f1dcd8
+    until 2026-08-07. It is awaited inside the request (`start_scraping`),
+    wrapped in the try/except that turns a dispatch failure into a 502 and
+    marks the URLs failed. That is the whole point of the change: a
+    fire-and-forget dispatch swallowed browser-engine outages and reported
+    the batch as started. Calling it a background task invited someone to
+    "restore" the scheduling and take the error surfacing back out.
+    """
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{_browser_engine_url()}/scrape",
@@ -1164,7 +1171,6 @@ def export_session(request: ExportRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/scrape/status/{session_id}")
 def _overlay_ingest_status(session_id: str, payload: dict) -> dict:
     """Overlay backend ingest-ledger index aggregates onto the browser payload.
 
@@ -1184,6 +1190,7 @@ def _overlay_ingest_status(session_id: str, payload: dict) -> dict:
     return payload
 
 
+@router.get("/scrape/status/{session_id}")
 async def get_scrape_status(session_id: str):
     """Get scraping status for a session from browser engine.
 
@@ -1307,12 +1314,19 @@ def scrape_complete_callback(
         level=logging.WARNING,
         session_id=data.get("session_id"),
     )
+    # The legacy body is an unvalidated `dict`; these three fields are forwarded
+    # exactly as they arrive (a missing one still reaches ingest as None and
+    # comes back session_not_found / url_not_registered, as it does today).
+    # Typed `Any` to say "unvalidated", not to assert they are `str`.
+    legacy_session_id: Any = data.get("session_id")
+    legacy_url: Any = data.get("url")
+    legacy_status: Any = data.get("status")
     capture = IngestCapture(
         capture_id=str(uuid.uuid4()),
         attempt=0,
-        session_id=data.get("session_id"),
-        url=data.get("url"),
-        status=data.get("status"),
+        session_id=legacy_session_id,
+        url=legacy_url,
+        status=legacy_status,
         content=data.get("content"),
         metadata=data.get("metadata", {}) or {},
         auth_used=False,

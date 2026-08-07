@@ -22,67 +22,121 @@ import os
 
 import pytest
 
+from tests.security import contracts
+
 pytestmark = [pytest.mark.security]
 
-FOREIGN_ORIGIN = "https://evil.example"
+FIXTURE = "cors_policy"
+_CORS = contracts.load_fixture(FIXTURE)
+_SHARED = _CORS["shared"]
+_CHECKS = _CORS["probes"]["SEC-43"]["checks"]
+
+FOREIGN_ORIGIN = _SHARED["foreign_origin"]
 
 # Same env contract the services read (services/cors.py). The TS port must
 # honour the same variable and the same default.
-CORS_ORIGINS_ENV = "CORS_ALLOWED_ORIGINS"
-DEFAULT_UI_ORIGIN = "http://localhost:8089"
+CORS_ORIGINS_ENV = _SHARED["origins_env"]
+DEFAULT_UI_ORIGIN = _SHARED["default_ui_origin"]
 
-SERVICES = ["backend", "ai", "browser"]
+SERVICES = _SHARED["services"]
+PROBE_PATH = _SHARED["probe_path"]
+
+_CHECK_EXPECT_KEYS = {
+    "access_control_allow_origin_not_in",
+    "access_control_allow_origin_equals",
+    "access_control_allow_credentials_not",
+}
 
 
 def _configured_origin() -> str:
-    raw = os.getenv(CORS_ORIGINS_ENV, "")
+    source = _CHECKS["configured_ui_origin_allowed"]["origin_source"]
+    assert source["take"] == "first_non_empty_comma_separated_entry"
+    assert source["strip_trailing_slash"] is True
+    raw = os.getenv(_subst(source["env"]), "")
     for candidate in raw.split(","):
         candidate = candidate.strip().rstrip("/")
         if candidate:
             return candidate
-    return DEFAULT_UI_ORIGIN
+    return _subst(source["default"])
 
 
-def _assert_no_credentials(response) -> None:
+def _subst(value: str, **extra) -> str:
+    """Resolve a fixture placeholder against the shared block."""
+    table = {
+        "{foreign_origin}": FOREIGN_ORIGIN,
+        "{origins_env}": CORS_ORIGINS_ENV,
+        "{default_ui_origin}": DEFAULT_UI_ORIGIN,
+        **{f"{{{k}}}": v for k, v in extra.items()},
+    }
+    if value in table:
+        return table[value]
+    if value.startswith("{") and value.endswith("}"):
+        raise contracts.FixtureContractError(
+            f"{FIXTURE}: unresolved placeholder {value!r}"
+        )
+    return value
+
+
+def _assert_no_credentials(response, forbidden: str) -> None:
     allow_credentials = response.headers.get("access-control-allow-credentials")
-    assert (allow_credentials or "").lower() != "true", (
+    assert (allow_credentials or "").lower() != forbidden, (
         "access-control-allow-credentials must never be true: combined with a "
         "reflected origin it lets a foreign page read authenticated responses"
     )
 
 
+def _run_check(client, service, check_name, **subs):
+    """Issue one fixture-declared CORS check and apply its expectations."""
+    check = _CHECKS[check_name]
+    expect = check["expect"]
+    unknown = set(expect) - _CHECK_EXPECT_KEYS
+    if unknown:
+        raise contracts.FixtureContractError(
+            f"{FIXTURE}/{check_name}: unknown expectation keys {sorted(unknown)}"
+        )
+    headers = {k: _subst(v, **subs) for k, v in check["request_headers"].items()}
+    response = client.request(
+        check["method"], PROBE_PATH, token=None, headers=headers
+    )
+    allow_origin = response.headers.get("access-control-allow-origin")
+
+    if "access_control_allow_origin_not_in" in expect:
+        forbidden = [_subst(v, **subs) for v in expect["access_control_allow_origin_not_in"]]
+        assert allow_origin not in forbidden, (
+            f"{service}/{check_name} granted a forbidden origin "
+            f"(access-control-allow-origin={allow_origin!r}, forbidden={forbidden!r})"
+        )
+    if "access_control_allow_origin_equals" in expect:
+        required = _subst(expect["access_control_allow_origin_equals"], **subs)
+        assert allow_origin == required, (
+            f"{service} did not grant its own configured UI origin {required!r}; "
+            "the allowlist is misconfigured or CORS was removed entirely"
+        )
+    assert "access_control_allow_credentials_not" in expect, (
+        f"{FIXTURE}/{check_name}: every CORS check must forbid credentials"
+    )
+    _assert_no_credentials(response, expect["access_control_allow_credentials_not"])
+    return response
+
+
 @pytest.mark.parametrize("service", SERVICES)
 def test_sec43_preflight_does_not_admit_foreign_origin(request, service):
     """A preflight from an arbitrary site must not be granted."""
-    client = request.getfixturevalue(service)
-    response = client.request(
-        "OPTIONS",
-        "/health",
-        token=None,
-        headers={
-            "Origin": FOREIGN_ORIGIN,
-            "Access-Control-Request-Method": "GET",
-        },
+    assert _CHECKS["foreign_origin_preflight_refused"]["managed_only"] is False
+    _run_check(
+        request.getfixturevalue(service), service, "foreign_origin_preflight_refused"
     )
-    allow_origin = response.headers.get("access-control-allow-origin")
-    assert allow_origin not in (FOREIGN_ORIGIN, "*"), (
-        f"{service} preflight granted foreign origin {FOREIGN_ORIGIN!r} "
-        f"(access-control-allow-origin={allow_origin!r})"
-    )
-    _assert_no_credentials(response)
 
 
 @pytest.mark.parametrize("service", SERVICES)
 def test_sec43_simple_request_does_not_echo_foreign_origin(request, service):
     """The actual (non-preflight) response must not be readable cross-site."""
-    client = request.getfixturevalue(service)
-    response = client.get("/health", token=None, headers={"Origin": FOREIGN_ORIGIN})
-    allow_origin = response.headers.get("access-control-allow-origin")
-    assert allow_origin not in (FOREIGN_ORIGIN, "*"), (
-        f"{service} response is readable by {FOREIGN_ORIGIN!r} "
-        f"(access-control-allow-origin={allow_origin!r})"
+    assert _CHECKS["foreign_origin_simple_request_not_echoed"]["managed_only"] is False
+    _run_check(
+        request.getfixturevalue(service),
+        service,
+        "foreign_origin_simple_request_not_echoed",
     )
-    _assert_no_credentials(response)
 
 
 @pytest.mark.sec_managed
@@ -93,16 +147,10 @@ def test_sec43_configured_ui_origin_is_still_allowed(request, service):
     Managed-only because attached mode cannot know the running server's
     configured origin.
     """
-    client = request.getfixturevalue(service)
-    origin = _configured_origin()
-    response = client.request(
-        "OPTIONS",
-        "/health",
-        token=None,
-        headers={"Origin": origin, "Access-Control-Request-Method": "GET"},
+    assert _CHECKS["configured_ui_origin_allowed"]["managed_only"] is True
+    _run_check(
+        request.getfixturevalue(service),
+        service,
+        "configured_ui_origin_allowed",
+        configured_origin=_configured_origin(),
     )
-    assert response.headers.get("access-control-allow-origin") == origin, (
-        f"{service} did not grant its own configured UI origin {origin!r}; "
-        "the allowlist is misconfigured or CORS was removed entirely"
-    )
-    _assert_no_credentials(response)

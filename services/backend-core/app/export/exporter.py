@@ -13,11 +13,36 @@ from ..sessions.manager import Session
 class Exporter:
     """Export sessions to various formats."""
 
+    # Where `templates/` lands inside the service image (see the Dockerfile's
+    # `COPY templates/`). Kept as a named constant because the source-tree path
+    # below and the container path are genuinely different roots, not one path
+    # with a different prefix.
+    CONTAINER_TEMPLATES_DIR = Path("/app/templates")
+
     def __init__(self, templates_dir: Optional[str] = None):
-        self.templates_dir = templates_dir or str(
-            Path(__file__).parent.parent.parent.parent.parent / "templates"
-        )
+        self.templates_dir = templates_dir or str(self._resolve_templates_dir())
         self._env: Optional[Environment] = None
+
+    @classmethod
+    def _resolve_templates_dir(cls) -> Path:
+        """Find `templates/`, in the container and in a source checkout.
+
+        This used to be `Path(__file__).parent x5 / "templates"`, which is the
+        repo root from `services/backend-core/app/export/exporter.py` but `/`
+        from `/app/app/export/exporter.py` inside the image. Combined with the
+        Dockerfile never copying `templates/` at all, `export_html` fell into
+        its `except Exception` and returned `_generate_basic_html` on EVERY
+        deployed request -- so the 185-line `export.html.j2` was live only when
+        someone ran from a checkout. Two independent faults, each of which
+        masks the other: fixing only the Dockerfile still resolves to `/`.
+
+        Verified against the running container before the fix:
+            $ docker exec tab-organizer-backend ls /app/templates
+            ls: cannot access '/app/templates': No such file or directory
+        """
+        if cls.CONTAINER_TEMPLATES_DIR.is_dir():
+            return cls.CONTAINER_TEMPLATES_DIR
+        return Path(__file__).resolve().parents[4] / "templates"
 
     @property
     def env(self) -> Environment:
@@ -138,61 +163,6 @@ class Exporter:
                 lines.append(f"- [{title}]({record.original})")
 
         return "\n".join(lines)
-
-    def export_notion(self, session: Session) -> dict:
-        """Export session to Notion-compatible format (blocks)."""
-        blocks = [
-            {
-                "object": "block",
-                "type": "heading_1",
-                "heading_1": {
-                    "rich_text": [{"type": "text", "text": {"content": session.name}}]
-                },
-            }
-        ]
-
-        if session.clusters:
-            for cluster in session.clusters:
-                cluster_name = cluster.get("name", "Unnamed Cluster")
-
-                # Add cluster heading
-                blocks.append(
-                    {
-                        "object": "block",
-                        "type": "heading_2",
-                        "heading_2": {
-                            "rich_text": [
-                                {"type": "text", "text": {"content": cluster_name}}
-                            ]
-                        },
-                    }
-                )
-
-                # Add URLs as bookmarks
-                for url_data in cluster.get("urls", []):
-                    url = (
-                        url_data
-                        if isinstance(url_data, str)
-                        else url_data.get("url", "")
-                    )
-                    blocks.append(
-                        {
-                            "object": "block",
-                            "type": "bookmark",
-                            "bookmark": {"url": url},
-                        }
-                    )
-        else:
-            for record in session.url_store.get_all():
-                blocks.append(
-                    {
-                        "object": "block",
-                        "type": "bookmark",
-                        "bookmark": {"url": record.original},
-                    }
-                )
-
-        return {"blocks": blocks}
 
     def export_html(self, session: Session) -> str:
         """Export session to HTML format."""

@@ -28,6 +28,8 @@ Everything runs in Docker; `scripts/cli.py` is the wrapper CI also uses.
 ./scripts/cli.py stop / status / logs -f <svc> / restart / clean
 ./scripts/cli.py host-ai --provider claude_code   # run AI Engine on the host for subscription CLI providers
 ./scripts/cli.py check-provider --provider codex_acp --generate
+./scripts/cli.py configure-provider               # call the provider for real, then write the verified choice to .env
+./scripts/cli.py configure-provider --allow-unverified   # accept a route the probe could not reach (offline); recorded as unverified
 ```
 
 `start` / `host-ai` generate **four independent** local bearer tokens (`AI_ENGINE_API_TOKEN`, `BACKEND_CALLBACK_TOKEN`, `BACKEND_AGENT_API_TOKEN`, `BROWSER_ENGINE_API_TOKEN`), persisted per scope in `data/service-tokens.json` (0600) so they stay stable across restarts — services fail closed without them, so prefer these over raw `docker compose up`. The four values must never be equal: one shared value makes the agent token also open browser-engine's scrape/CDP/credential control plane.
@@ -59,12 +61,31 @@ docker compose --profile test-unit run --rm test-unit \
 make lint            # flake8 (E9,F63,F7,F82) + pylint --exit-zero
 make format          # black + isort (line-length 88, py312)
 make format-check    # what CI enforces
-make type-check      # mypy --ignore-missing-imports
+make type-check      # mypy, per service (scripts/type-check.sh)
 make security        # bandit + safety
 make quality         # all of the above
 ```
 
 These run in throwaway `python:3.12-slim` containers, so no local toolchain is needed.
+
+**`make type-check` is green and enforced as of 2026-08-07** — it had never
+checked anything before that. `mypy services/` in one pass aborts with
+`Duplicate module named "app"` (backend-core, ai-engine and browser-engine each
+ship a top-level `app` package) and exits 2 before analysing a line; CI ran the
+same command with `|| true`, so the gate was simultaneously permanently red
+locally and permanently green in CI. `scripts/type-check.sh` now runs mypy once
+per service (`cd services/<svc> && mypy app`, plus `src`/`app.py` for web-ui and
+the shared `services/*.py` + underscore shims), which is also what each service
+sees in its own container. Both `make type-check` and the CI step call that one
+script, its mypy/stub versions are pinned inside it, and
+`tests/unit/test_type_check_gate.py` fails if either caller drifts back to its
+own copy or CI re-acquires a `|| true`.
+
+What it covers: our own code — signatures, `Optional`, annotations, overrides.
+What it does not: third-party runtime deps are not installed (only their stub
+packages), so `--ignore-missing-imports` makes fastapi/playwright/lancedb/
+streamlit `Any`. Type-checking against real library stubs is a different, much
+slower gate; add it as a separate target rather than widening this one.
 
 ## Architecture
 
@@ -90,9 +111,11 @@ Two separate persistence stores, each owned by exactly one service:
 
 ### AI provider system
 
-`services/ai-engine/app/providers/` holds one adapter per provider (ollama, openai, anthropic, deepseek, gemini, openrouter, plus `agent_cli.py` for `claude_code` / `codex_cli` / `codex_acp`). The static catalog of providers, default models, dimensions, and capabilities lives in `config/ai_models.yaml` + `config/models.json`, read through `config/config_loader.py`. Providers can be hot-swapped via `POST /providers/switch`.
+`services/ai-engine/app/providers/` holds one adapter per provider (ollama, openai, anthropic, deepseek, gemini, openrouter, plus `agent_cli.py` for `claude_code` / `codex_cli` / `codex_acp` / `gemini_cli`). The static catalog of providers, default models, dimensions, and capabilities lives in `config/ai_models.yaml`, read through `config/config_loader.py` — which is now the only catalog. (`config/models.json` was once listed here as part of it and never was: `config_loader.py` never opened it, nothing imported it, and its contents were a stale Ollama-only model list from `591f6e7`. Deleted 2026-08-07.) **Each `models:` entry is one provider ROUTE**: the key is the exact wire id, `provider:` names the one provider serving it, `model_family:` links routes to the same weights across providers, and `cost_model` is resolved from the provider — so `gpt-5.6-luna` (codex_cli, subscription) and `openai/gpt-5.6-luna` (openrouter, metered) are visibly the same model on different bills. A metered route to a family that has a subscription route may never be `recommended`, a `default_models` value, or a `use_cases` model (`routing.metered_duplicate_policy`); it stays registered as the deliberate smoke-test path. Providers can be hot-swapped via `POST /providers/switch`.
 
-LLM-only providers (`claude_code`, `codex_cli`, `codex_acp`) shell out to locally-authenticated CLIs; the stock Docker image ships none of those binaries, so they require `./scripts/cli.py host-ai` + `start --host-ai`. `EMBEDDING_PROVIDER` must stay on an embedding-capable provider, and `EMBEDDING_DIMENSIONS` must match the embedding model or ai-engine refuses to write to the LanceDB table.
+LLM-only providers (`claude_code`, `codex_cli`, `codex_acp`, `gemini_cli`) shell out to locally-authenticated CLIs; the stock Docker image ships none of those binaries, so they require `./scripts/cli.py host-ai` + `start --host-ai`. `gemini_cli` is the *subscription* Gemini route and `gemini` the *metered* one — the CLI subprocess never receives `GOOGLE_API_KEY`/`GEMINI_API_KEY`, and it reports unavailable unless `~/.gemini/oauth_creds.json` exists, because a logged-out `gemini` exits 0 on `--version` and then blocks forever on a browser-login prompt. `EMBEDDING_PROVIDER` must stay on an embedding-capable provider (`ollama`, `openrouter`, `openai`, `gemini` — `anthropic`, `deepseek` and the four CLIs serve none), and `EMBEDDING_DIMENSIONS` must match the embedding model or ai-engine refuses to write to the LanceDB table. A model the catalog marks `dimensions_configurable` (all six openrouter embedding models) is *told* what width to emit, so `EMBEDDING_DIMENSIONS` may select any width up to its native one and the adapter must send it downstream — that is what lets a 4096-d model write into an existing 768-d table without a reindex.
+
+- **A `supports:` capability flag comes from calling the endpoint, never from reading a listing.** `openrouter.supports.embeddings` was recorded `false` and annotated "verified 2026-08-04" on the strength of a scan of `GET /v1/models`; that listing is chat-only and cannot see `POST /v1/embeddings`, which serves six embedding models. The false flag reached eleven downstream artifacts in a day because every check compared the claim against another copy of it. If you cannot call the endpoint, record the claim as unverified rather than asserting it. `docs/SPEC-provider-routing.md` carries the full correction; `tests/unit/test_provider_routing.py` holds the line with a hermetic catalog-vs-adapter agreement test and a `requires_provider_credentials` live-endpoint test.
 
 ## Conventions and invariants
 
@@ -102,6 +125,7 @@ LLM-only providers (`claude_code`, `codex_cli`, `codex_acp`) shell out to locall
 - **Auth is fail-closed and scope-isolated**: ai-engine endpoints (except `/health`) require `AI_ENGINE_API_TOKEN`; browser-engine scrape/auth control endpoints require `BROWSER_ENGINE_API_TOKEN` **and nothing else** (the former callback/AI accept-fallback was removed — it collapsed all four principals into one because the CLI minted a single shared value); backend agent tab APIs *and* the backend `/api/v1/auth/pending` + `/api/v1/auth/credentials` proxies require `BACKEND_AGENT_API_TOKEN`. Each service must accept exactly its own scope on the receive side; outbound token *selection* (which token backend/browser sends downstream) is a separate concern and may still fall back. Never route agent browser-control calls through unauthenticated paths, and never print generated tokens from `scripts/`.
 - **Published ports are loopback-only**: every `ports:` entry in `docker-compose.yml` binds `127.0.0.1` (`"127.0.0.1:8080:8080"`, …), including the Streamlit UI on 8089 and Ollama on 11434. These services are unauthenticated or thinly authenticated and hold the user's captured page content, so the whole LAN must not reach them. Container-to-container traffic uses docker-network service names (`backend-core:8080`) and never the published mapping, so integration/E2E tests are unaffected, and `scripts/cli.py`'s health checks hit `localhost`, which loopback still serves. To deliberately expose the stack to another device, drop the `127.0.0.1:` prefix from the one service you want reachable (or front it with a reverse proxy that terminates auth) — do not strip the prefixes wholesale as a "fix" for a connection problem.
 - **Browser origins (CORS) are an allowlist, never `*`**: backend-core, ai-engine and browser-engine resolve `allow_origins` through `services/cors.py` (default `http://localhost:8089` + `http://127.0.0.1:8089`, overridable via `CORS_ALLOWED_ORIGINS`) and set `allow_credentials=False`. Web UI calls all three from the *server* side with `requests`, so none of them has a legitimate browser-side caller; `allow_origins=["*"]` + `allow_credentials=True` previously let any page the user had open read the entire corpus.
+- **No provider is ever selected implicitly**: `AI_PROVIDER` and `EMBEDDING_PROVIDER` have **no default anywhere** — not in `llm_client.py`, not in `docker-compose.yml` (`${AI_PROVIDER:-}`, not `:-openrouter`), not in `.env.example`. Unset means unset: ai-engine starts, `GET /health` reports `degraded` with a `{code, cause, fix}` naming the fix, and every generate/embed call fails closed. The embedding path does **not** substitute a capable provider when the chosen one cannot embed — that silent swap is deleted, and the error names the capable providers derived from the catalog (`is_provider_supported(p, "embeddings")`), never a hardcoded list. `routing:` in `config/ai_models.yaml` is the contract (`silent_fallback: false`); `docs/SPEC-provider-routing.md` is the behaviour spec; `tests/unit/test_provider_routing.py` freezes it. Do not "fix" a degraded stack by reinstating a default — run `./scripts/cli.py configure-provider` or set the var. The active provider is announced at startup (`provider.active` per role) and in `/health`'s `providers` block; neither may carry a key, a token, **or URL userinfo** (`http://user:pw@host`), since `/health` is unauthenticated — the first no-secrets test here passed while leaking a credentialed `OLLAMA_HOST`, because its canaries were named keys rather than credentials in general. "No default anywhere" includes `scripts/`: `host-ai` and `check-provider` shipped `or "claude_code"` / `or "ollama"` / `or "openrouter"` fallbacks that defeated this invariant on the *documented* subscription path while ai-engine's own tests stayed green, so they now route through `_require_explicit_provider()`. An explicit flag is consent and an already-set env var is consent; anything else is a forged consent record, because `.env` is what R1/R3 read as proof a human chose.
 - **CDP is attach-only and local-only** — never launch or close the user's browser/profile; reject non-local CDP endpoints.
 - **Known monoliths** (`backend-core/app/api/routes.py`, both `app/main.py` files, `platform/store.py`, `web-ui/src/pages/platform.py`) are slated for behavior-preserving splits behind compatible routes — keep `routes.py` working as a compatibility aggregator.
 - Conventional commits (`feat(scope): ...`, `fix(scope): ...`).

@@ -9,9 +9,11 @@ Ground rules (frozen with the suite, see MODULE.md and README.md):
 * Managed vs attached. ``SEC_BACKEND_URL`` / ``SEC_AI_URL`` /
   ``SEC_BROWSER_URL`` point the harness at already-running servers (attached
   mode). With none set, the harness runs each FastAPI app in-process through an
-  ASGI transport with a fully controlled environment (managed mode). The
-  in-process transport is this Python harness's boot adapter; the TS port
-  substitutes real servers via ``SEC_BOOT_*_CMD`` and the same env contract.
+  ASGI transport with a fully controlled environment (managed mode). It gets
+  that control by importing the Python module (``_load_app``), so managed mode
+  works only against this stack. ``SEC_BOOT_*_CMD`` -- harness-launched servers
+  in any language -- is PLANNED, NOT IMPLEMENTED; see ``README.md`` for what
+  that costs a TS port and when it must land.
 * Platform exclusion (plan decision 41). Any request whose path contains
   ``/platform/`` raises ``PlatformPathBlocked`` so the exclusion is enforced.
 * Global redaction audit. Every response body is recorded and, at session
@@ -461,6 +463,10 @@ if control.get("fmt") == "codex":
               "item": {{"type": "agent_message", "text": "stub-ok"}}}}
         )
         + "\\n"
+    )
+elif control.get("fmt") == "gemini":
+    sys.stdout.write(
+        json.dumps({{"session_id": "stub", "response": "stub-ok"}}) + "\\n"
     )
 else:
     sys.stdout.write(json.dumps({{"result": "stub-ok"}}) + "\\n")

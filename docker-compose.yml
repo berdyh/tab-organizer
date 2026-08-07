@@ -39,8 +39,13 @@ services:
     ports:
       - "127.0.0.1:8090:8090"
     environment:
-      - AI_PROVIDER=${AI_PROVIDER:-openrouter}
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openrouter}
+      # No default on purpose (routing.silent_fallback: false). A `:-openrouter`
+      # here would re-supply the very default the AI Engine now refuses to
+      # invent, and the container would quietly spend metered credit nobody
+      # chose. Unset means unset: the service starts, reports degraded, and
+      # names the fix. Run `./scripts/cli.py configure-provider` to choose.
+      - AI_PROVIDER=${AI_PROVIDER:-}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-}
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
       - AI_ENGINE_ALLOW_UNAUTHENTICATED=${AI_ENGINE_ALLOW_UNAUTHENTICATED:-false}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
@@ -74,6 +79,11 @@ services:
       - CODEX_ACP_NON_INTERACTIVE_PERMISSIONS=${CODEX_ACP_NON_INTERACTIVE_PERMISSIONS:-fail}
       - CODEX_ACP_QUEUE_TTL_SECONDS=${CODEX_ACP_QUEUE_TTL_SECONDS:-0.1}
       - CODEX_ACP_SESSION_NAME=${CODEX_ACP_SESSION_NAME:-}
+      - GEMINI_CLI_COMMAND=${GEMINI_CLI_COMMAND:-gemini}
+      - GEMINI_CLI_TIMEOUT=${GEMINI_CLI_TIMEOUT:-300}
+      - GEMINI_CLI_APPROVAL_MODE=${GEMINI_CLI_APPROVAL_MODE:-plan}
+      - GEMINI_CLI_ALLOW_UNTRUSTED_CONTEXT=${GEMINI_CLI_ALLOW_UNTRUSTED_CONTEXT:-false}
+      - GEMINI_CLI_EXTRA_ARGS=${GEMINI_CLI_EXTRA_ARGS:-}
     depends_on:
       - ollama
     volumes:
@@ -159,6 +169,7 @@ services:
       - ./config:/app/config
       - ./scripts:/app/scripts:ro
       - ./docs:/app/docs:ro
+      - ./templates:/app/templates:ro
       - ./.github:/app/.github:ro
       - ./Makefile:/app/Makefile:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
@@ -185,6 +196,9 @@ services:
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
       - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
       - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
+      # The ingest suite proves the four scopes stay isolated, which means
+      # holding the other principals' tokens to watch them get rejected.
+      - BACKEND_AGENT_API_TOKEN=${BACKEND_AGENT_API_TOKEN:-}
     volumes:
       - ./tests:/app/tests
       - ./services:/app/services
@@ -213,6 +227,10 @@ services:
       - AI_ENGINE_API_TOKEN=${AI_ENGINE_API_TOKEN:-}
       - BACKEND_CALLBACK_TOKEN=${BACKEND_CALLBACK_TOKEN:-}
       - BROWSER_ENGINE_API_TOKEN=${BROWSER_ENGINE_API_TOKEN:-}
+      # Needed by the capture-ingest workflow: backend `/api/v1/search` is an
+      # agent-scoped route, and keyword search is how the E2E proves the FTS
+      # row landed in the same transaction as the ingest ledger row.
+      - BACKEND_AGENT_API_TOKEN=${BACKEND_AGENT_API_TOKEN:-}
     volumes:
       - ./tests:/app/tests
       - ./test-results:/app/test-results

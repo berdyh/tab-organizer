@@ -10,7 +10,7 @@ A **local-first web scraping and tab organization tool** that helps you analyze,
 - **Live Browser Tab Import**: Attach to a local Chrome/Chromium CDP endpoint, import open tabs, extract readable content, and index it
 - **Parallel Authentication**: Non-blocking scraping that continues for public sites while waiting for credentials
 - **AI-Powered Clustering**: UMAP + HDBSCAN clustering with LLM-generated labels
-- **Multi-Provider AI**: Support for OpenRouter (default), Ollama, OpenAI, Anthropic Claude, Codex CLI/ACP, DeepSeek, and Google Gemini
+- **Multi-Provider AI**: OpenRouter, Ollama, OpenAI, Anthropic Claude, Claude Code, Codex CLI/ACP, DeepSeek, and Google Gemini — always your explicit choice, never a default, and always announced
 - **RAG Chatbot**: Query your scraped content using natural language (LanceDB native search)
 - **Agent/CLI Access**: Protected CLI and MCP-oriented wrappers for importing, searching, clustering, opening, and exporting tabs
 - **Export Options**: Markdown, JSON, HTML, Obsidian-compatible formats
@@ -71,12 +71,21 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
    cp .env.example .env
    ```
 
-2. **Configure AI provider** (edit `.env`):
+2. **Configure AI provider** — there is no default, and nothing is chosen for
+   you. Either run `./scripts/cli.py configure-provider`, or edit `.env`:
    ```bash
-   # OpenRouter (docker-compose AND .env.example default — single key for many models)
+   # Subscription CLIs (preferred: spends a subscription you already pay for).
+   # LLM-only, so pair with an embedding-capable provider.
+   AI_PROVIDER=claude_code
+   EMBEDDING_PROVIDER=ollama
+
+   # OpenRouter (metered — one key for many models, embeddings included).
    AI_PROVIDER=openrouter
-   EMBEDDING_PROVIDER=openrouter
    OPENROUTER_API_KEY=<openrouter-api-key>
+   EMBEDDING_PROVIDER=ollama          # or openrouter, for a cloud embedder
+   # EMBEDDING_PROVIDER=openrouter
+   # EMBEDDING_MODEL=openai/text-embedding-3-small
+   # EMBEDDING_DIMENSIONS=768         # truncates to match an existing 768-d table
 
    # Local-only via Ollama (opt-in; pull models first with `./scripts/cli.py init --models`)
    AI_PROVIDER=ollama
@@ -126,6 +135,7 @@ The vector store is **LanceDB**, embedded inside the AI Engine container and per
 ./scripts/cli.py host-ai --provider codex_cli
 ./scripts/cli.py host-ai --provider codex_acp
 ./scripts/cli.py check-provider --provider codex_acp --generate
+./scripts/cli.py configure-provider   # probe real availability, write a verified provider choice to .env
 
 # Management
 ./scripts/cli.py status            # Show service status
@@ -189,8 +199,8 @@ browser, never closes that browser/profile, and rejects non-local CDP endpoints.
 
 | Variable | docker-compose default | `.env.example` default | Description |
 |----------|-----------------------|------------------------|-------------|
-| `AI_PROVIDER` | `openrouter` | `ollama` | LLM provider (openrouter/ollama/openai/anthropic/claude_code/codex_cli/codex_acp/deepseek/gemini) |
-| `EMBEDDING_PROVIDER` | `openrouter` | `ollama` | Embedding provider |
+| `AI_PROVIDER` | _(none)_ | _(none)_ | LLM provider (openrouter/ollama/openai/anthropic/claude_code/codex_cli/codex_acp/deepseek/gemini). No default anywhere — unset means the AI Engine reports `degraded` and names the fix rather than picking one |
+| `EMBEDDING_PROVIDER` | _(none)_ | _(none)_ | Embedding provider (ollama/openai/gemini). No default and no fallback; an LLM-only provider here is an error, not a silent swap |
 | `LLM_MODEL` | provider default | provider default | Model name for chat/analysis |
 | `EMBEDDING_MODEL` | provider default | provider default | Model for embeddings |
 | `EMBEDDING_DIMENSIONS` | model default | model default | Embedding vector size (must match the embedding model) |
@@ -211,7 +221,7 @@ browser, never closes that browser/profile, and rejects non-local CDP endpoints.
 | `SCRAPE_ALLOW_PRIVATE_NETWORKS` | `false` | `false` | Opt-in escape hatch for scraping localhost/private-network targets |
 | `CREDENTIAL_ENCRYPTION_KEY` | — | — | Fernet key for encrypted credential storage (browser-engine) |
 
-`claude_code` and `codex_cli` are LLM-only providers that call the local `claude -p` or `codex exec` CLI using existing subscription login state. `codex_cli` is one-shot Codex CLI execution, not ACP mode, and is disabled by default for scraped-content prompts because `codex exec` is not a tool-free LLM-only mode. Use `codex_acp` when you want the app's LLM calls to go through an ACP Codex harness via `acpx`. ACP defaults to `deny-all` permissions for app-routed prompts; relax it only for trusted local experiments. Leave `LLM_MODEL` blank unless you need a provider-specific override, and keep `EMBEDDING_PROVIDER` on `ollama` or another embedding-capable provider. The stock Docker image does not install these CLIs, `acpx`, ACP adapters, or mount their auth state; use `./scripts/cli.py host-ai --provider claude_code` plus `./scripts/cli.py start -d --host-ai`, or build a custom image for Docker-based CLI/ACP routing.
+`claude_code` and `codex_cli` are LLM-only providers that call the local `claude -p` or `codex exec` CLI using existing subscription login state. `codex_cli` is one-shot Codex CLI execution, not ACP mode, and is disabled by default for scraped-content prompts because `codex exec` is not a tool-free LLM-only mode. Use `codex_acp` when you want the app's LLM calls to go through an ACP Codex harness via `acpx`. ACP defaults to `deny-all` permissions for app-routed prompts; relax it only for trusted local experiments. Leave `LLM_MODEL` blank unless you need a provider-specific override, and keep `EMBEDDING_PROVIDER` on `ollama`, `openai`, or `gemini` — the only embedding-capable providers in the catalog. The stock Docker image does not install these CLIs, `acpx`, ACP adapters, or mount their auth state; use `./scripts/cli.py host-ai --provider claude_code` plus `./scripts/cli.py start -d --host-ai`, or build a custom image for Docker-based CLI/ACP routing.
 
 AI Engine generation, embedding, indexing, chat, search, clustering, summarization, document deletion, and provider-switch endpoints fail closed unless `AI_ENGINE_API_TOKEN` is configured. Browser Engine scrape/auth control endpoints and Backend Core agent tab-management endpoints also require local service tokens. Use `./scripts/cli.py start`; for host-run AI, run `./scripts/cli.py host-ai` and `./scripts/cli.py start -d --host-ai` so the shared local token is generated and passed to the services.
 
@@ -338,7 +348,9 @@ The tab-management endpoints require bearer auth with `BACKEND_AGENT_API_TOKEN`.
 | `/api/v1/export` | POST | Export session |
 | `/api/v1/auth/pending` | GET | List domains awaiting credentials |
 | `/api/v1/auth/credentials` | POST | Submit credentials for a pending domain |
-| `/api/v1/callback/scrape-complete` | POST | Internal callback used by browser-engine |
+| `/api/v1/chat` | POST | Chat over the indexed corpus; proxies AI Engine `/chat` (agent token) |
+| `/api/v1/ingest/v1` | POST | **The** content-write path: browser-engine delivers every capture here (capture_id + attempt give replay protection and newest-wins ordering). Backend Core is the only ai-engine `/index` writer |
+| `/api/v1/callback/scrape-complete` | POST | **Deprecated** shim over `/ingest/v1`, kept for compatibility; new callers use `/ingest/v1` |
 | `/api/v1/platform/auth/signup` | POST | Create local platform account |
 | `/api/v1/platform/auth/login` | POST | Create platform session |
 | `/api/v1/platform/me` | GET | Current platform user profile |
@@ -389,7 +401,7 @@ targets are limited to public `http`/`https` URLs unless
 | `/auth/pending/{session_id}` | GET | Pending auth requests for one session |
 | `/auth/pending/{domain}` | DELETE | Drop a pending auth request |
 | `/auth/credentials` | POST | Submit credentials |
-| `/auth/expire` | POST | Force-expire a stored credential |
+| `/auth/expire` | POST | Expire old *pending auth requests* (`max_age_seconds`, default 3600). It does not touch stored credentials |
 
 ## Contributing
 

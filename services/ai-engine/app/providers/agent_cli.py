@@ -73,6 +73,55 @@ class AgentCLILLMProvider(BaseLLMProvider):
         "CLAUDE_CONFIG_DIR",
     }
 
+    # Which flags a `*_EXTRA_ARGS` env var may contribute to argv, as
+    # {flag: takes_a_value}. EMPTY means the adapter accepts no extra args at
+    # all, which is the shipped state for every adapter here.
+    #
+    # This is an ALLOW-list on purpose. Each adapter's safety decision lives in
+    # argv (`--approval-mode plan`, `-s read-only`, `--tools ""`), and extra
+    # args were appended AFTER it, so the environment was a channel into the
+    # safety configuration. A deny-list of "dangerous flags" is wrong by
+    # default -- it cannot know the flag the next CLI release adds. It is also
+    # already demonstrably too narrow: a deny-list built around the clamped
+    # flag would have missed every one of these, all read out of the installed
+    # CLIs' own `--help` on 2026-08-07:
+    #   gemini 0.54.0 : --policy / --admin-policy (load extra tool policies),
+    #                   --allowed-tools, --include-directories, --raw-output
+    #   claude        : --dangerously-skip-permissions, --permission-mode,
+    #                   --allowedTools, --add-dir, --settings, --mcp-config
+    #   codex exec    : --dangerously-bypass-approvals-and-sandbox,
+    #                   -c sandbox_permissions=[...] (arbitrary config override)
+    # Each re-opens write/shell/exfiltration capability on a subprocess that is
+    # fed scraped, untrusted web content, and none of them is the flag a clamp
+    # on `--approval-mode`/`-s` would watch.
+    #
+    # Ordering is NOT a substitute for this. "Put our safety flags last and let
+    # the parser take the last occurrence" only fails closed if the parser is
+    # last-wins, which is per-CLI, per-version and unverifiable from here:
+    # measured on gemini-cli 0.54.0, a duplicated `--approval-mode` does not
+    # take the last value at all, it becomes the array `plan,yolo` and the CLI
+    # aborts. Correct behaviour must not rest on that accident.
+    #
+    # The value says whether the flag takes a value, so the parser never has to
+    # guess arity and can refuse a stray positional -- which, for gemini, would
+    # become the prompt.
+    EXTRA_ARG_ALLOWLIST: dict[str, bool] = {}
+
+    # The complete list of env->argv channels, so nobody has to re-derive it:
+    #   *_EXTRA_ARGS        -- gated here, by EXTRA_ARG_ALLOWLIST
+    #   *_COMMAND           -- gated by _validate_command (program only)
+    #   GEMINI_CLI_APPROVAL_MODE / CODEX_CLI_SANDBOX / CODEX_ACP_PERMISSION_MODE
+    #                       -- clamped to enumerated safe values at their sites
+    #   CODEX_ACP_PREFLIGHT_ARGS -- NOT gated, deliberately. It reaches only
+    #     `is_available()`'s preflight, which runs a `--version`-shaped probe
+    #     with stdin at DEVNULL and no prompt, so no scraped or untrusted
+    #     content is ever in that process. Gating it while argv[0] stays
+    #     operator-chosen would be theatre: an operator who can set the program
+    #     can already run any program. What they must NOT be able to do is
+    #     re-open a safety flag on the CONTENT-facing invocation, which is what
+    #     the two rules above cover. Revisit if the preflight ever grows a
+    #     prompt.
+
     def __init__(self, config: LLMConfig):
         self.config = config
         self.timeout = self._read_timeout()
@@ -88,15 +137,58 @@ class AgentCLILLMProvider(BaseLLMProvider):
             return self.default_timeout
 
     def _command(self) -> list[str]:
-        raw = os.getenv(self.command_env, self.default_command)
-        return shlex.split(raw)
+        return self._validate_command(os.getenv(self.command_env, self.default_command))
+
+    @classmethod
+    def _validate_command(cls, raw: str) -> list[str]:
+        """Resolve `*_COMMAND` to a PROGRAM, never a program plus arguments.
+
+        `_command()`'s result is splatted into argv at position 0, ahead of
+        every safety flag the adapter then appends, so a multi-token value was
+        a complete bypass of `EXTRA_ARG_ALLOWLIST` -- the same flag, refused
+        through `*_EXTRA_ARGS`, sailed through here:
+
+            CLAUDE_CODE_COMMAND='claude --dangerously-skip-permissions --add-dir /'
+            -> ['claude', '--dangerously-skip-permissions', '--add-dir', '/']
+
+        The allowlist commit stated the invariant as "nothing reachable from
+        the environment may re-open a safety-relevant flag" and then left this
+        channel open, which is this repo's recurring shape: the fix closed the
+        instance it was shown and not the class. Every adapter's
+        `default_command` is a single token (`claude`, `codex`, `gemini`,
+        `acpx`, `agent`), so nothing legitimate needs more than one; an
+        operator who genuinely must wrap the binary points this at a wrapper
+        script, which keeps the argument list under their review rather than
+        under an env var's.
+        """
+        tokens = shlex.split(raw)
+        if not tokens:
+            raise AgentCLIError(
+                f"{cls.command_env} is empty; set it to the path of the CLI to run."
+            )
+        if len(tokens) > 1:
+            # Never echo the extra tokens: one of them could be a pasted secret.
+            raise AgentCLIError(
+                f"agent_cli_command_rejected: {cls.command_env} must name a single "
+                f"program, but it carries {len(tokens) - 1} extra argument(s). "
+                "Arguments here land in argv ahead of the adapter's safety flags "
+                "and bypass the reviewed extra-argument allowlist. Fix: point "
+                f"{cls.command_env} at the binary (or a wrapper script) and pass "
+                "nothing else."
+            )
+        return tokens
 
     @classmethod
     def is_available(cls) -> bool:
         """Return whether the configured CLI command can start in this runtime."""
         raw = os.getenv(cls.command_env, cls.default_command)
-        command = shlex.split(raw)
-        if not command:
+        try:
+            command = cls._validate_command(raw)
+        except AgentCLIError:
+            # A rejected command means the provider is NOT available. Reporting
+            # availability here and refusing at generate() time would advertise
+            # a provider that cannot answer -- the `gemini --version` hazard
+            # this adapter family already documents.
             return False
         if shutil.which(command[0]) is None:
             return False
@@ -159,8 +251,75 @@ class AgentCLILLMProvider(BaseLLMProvider):
         return env
 
     def _extra_args(self, env_name: str) -> list[str]:
+        """Return the operator's extra argv, refusing anything unreviewed.
+
+        See `EXTRA_ARG_ALLOWLIST`. The whole string is refused on the first bad
+        token: a partially-applied argv is exactly the state that made the
+        clamp look enforced while it was not.
+        """
         raw = os.getenv(env_name, "")
-        return shlex.split(raw) if raw else []
+        if not raw.strip():
+            return []
+        return self._validate_extra_args(env_name, shlex.split(raw))
+
+    def _validate_extra_args(self, env_name: str, tokens: list[str]) -> list[str]:
+        allowed = self.EXTRA_ARG_ALLOWLIST
+        validated: list[str] = []
+        awaiting_value_for: Optional[str] = None
+
+        for token in tokens:
+            if awaiting_value_for is not None:
+                awaiting_value_for = None
+                validated.append(token)
+                continue
+
+            if not token.startswith("-") or token == "-":
+                # Never echo a bare value back: it is the one token that could
+                # be a pasted secret rather than a flag name.
+                raise AgentCLIError(
+                    self._extra_arg_refusal(
+                        env_name,
+                        f"argument {len(validated) + 1}",
+                        "it is a bare value, not a permitted flag",
+                    )
+                )
+
+            name, separator, _value = token.partition("=")
+            if name not in allowed:
+                raise AgentCLIError(
+                    self._extra_arg_refusal(
+                        env_name, name, "it is not a reviewed, permitted flag"
+                    )
+                )
+            takes_value = allowed[name]
+            if separator and not takes_value:
+                raise AgentCLIError(
+                    self._extra_arg_refusal(env_name, name, "it takes no value")
+                )
+            validated.append(token)
+            if takes_value and not separator:
+                awaiting_value_for = name
+
+        if awaiting_value_for is not None:
+            raise AgentCLIError(
+                self._extra_arg_refusal(
+                    env_name, awaiting_value_for, "its value is missing"
+                )
+            )
+        return validated
+
+    def _extra_arg_refusal(self, env_name: str, subject: str, cause: str) -> str:
+        permitted = ", ".join(sorted(self.EXTRA_ARG_ALLOWLIST)) or "(none)"
+        return (
+            f"agent_cli_extra_arg_rejected: {env_name} carries {subject}, and "
+            f"{cause}. Cause: extra arguments land in the same argv as this "
+            f"adapter's safety flags, so an unreviewed one can re-open them. "
+            f"Flags accepted for {self.provider_label}: {permitted}. "
+            f"Fix: remove it from {env_name}, or add the flag to "
+            f"{type(self).__name__}.EXTRA_ARG_ALLOWLIST in a reviewed change, "
+            "having checked it grants no tool, file, shell, network or policy "
+            "access."
+        )
 
     def _user_prompt_text(self, prompt: str) -> str:
         return prompt.strip()
@@ -224,6 +383,21 @@ class AgentCLILLMProvider(BaseLLMProvider):
             raise AgentCLIError(
                 f"{self.provider_label} timed out after {self.timeout:.0f}s"
             ) from exc
+        except BaseException:
+            # Cancellation from OUTSIDE this coroutine, not our own timeout.
+            # `verify_provider_live` wraps the adapter call in its own
+            # `asyncio.wait_for(..., 20)`, and the resulting CancelledError
+            # propagates through `communicate()` without reaching the branch
+            # above -- while the child was spawned `start_new_session=True`, so
+            # it does not receive the parent's signals either. Result: one
+            # detached CLI per attempt. The documented `gemini -p` hazard makes
+            # that concrete: logged out, it blocks forever on a browser-login
+            # prompt, so every probe of an unauthenticated gemini_cli left a
+            # process holding the user's subscription session.
+            #
+            # `BaseException` deliberately: CancelledError is not an Exception.
+            await self._terminate_process(process)
+            raise
 
         stdout_text = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
@@ -354,6 +528,14 @@ class CodexCliLLMProvider(AgentCLILLMProvider):
     default_command = "codex"
     timeout_env = "CODEX_CLI_TIMEOUT"
 
+    # `codex exec -s` accepts read-only | workspace-write | danger-full-access.
+    # The third is not reachable from the environment: it drops the sandbox for
+    # a subprocess that may be carrying scraped page text, which is the same
+    # hazard `GEMINI_CLI_APPROVAL_MODE=yolo` is clamped for. `CODEX_CLI_SANDBOX`
+    # took its value verbatim, so the clamp on one adapter and the raw
+    # passthrough on its sibling contradicted each other.
+    SANDBOX_MODES = {"read-only", "workspace-write"}
+
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text by invoking `codex exec` locally."""
         if (
@@ -368,7 +550,7 @@ class CodexCliLLMProvider(AgentCLILLMProvider):
             )
 
         prompt_text = self._structured_prompt_text(prompt, system)
-        sandbox = os.getenv("CODEX_CLI_SANDBOX", "read-only")
+        sandbox = self._sandbox_mode()
         args = [
             *self._command(),
             "exec",
@@ -392,6 +574,11 @@ class CodexCliLLMProvider(AgentCLILLMProvider):
 
         stdout, _stderr = await self._run(args, prompt_text)
         return self._parse_jsonl(stdout)
+
+    def _sandbox_mode(self) -> str:
+        """Sandboxed by default; `danger-full-access` is not reachable from env."""
+        mode = os.getenv("CODEX_CLI_SANDBOX", "read-only").strip().lower()
+        return mode if mode in self.SANDBOX_MODES else "read-only"
 
     def _parse_jsonl(self, stdout: str) -> str:
         output_parts: list[str] = []
@@ -422,6 +609,189 @@ class CodexCliLLMProvider(AgentCLILLMProvider):
         return stdout.strip()
 
 
+class GeminiCliLLMProvider(AgentCLILLMProvider):
+    """Gemini CLI headless provider using the user's local Google subscription.
+
+    Subscription, not metered: the CLI authenticates as `oauth-personal` against
+    the user's own Google account and spends that plan. `GEMINI_API_KEY` /
+    `GOOGLE_API_KEY` are deliberately NOT in `ENV_ALLOWLIST`, so this adapter
+    physically cannot hand the app's metered Gemini key to the subprocess. The
+    metered path is the separate `gemini` cloud provider.
+
+    NOT the Antigravity IDE. `antigravity` on this machine is an Electron GUI
+    (`/opt/Antigravity/antigravity`) with no headless mode; it opens a window
+    and never returns, so it cannot be a provider adapter. The `gemini` CLI is
+    the headless substitute (`-p/--prompt` is documented as
+    "Run in non-interactive (headless) mode with the given prompt").
+    """
+
+    provider_label = "Gemini CLI"
+    command_env = "GEMINI_CLI_COMMAND"
+    default_command = "gemini"
+    timeout_env = "GEMINI_CLI_TIMEOUT"
+    default_workdir = "/tmp/tab-organizer-gemini-cli"
+
+    # The whole envelope travels in argv (`-p <text>`) rather than on stdin,
+    # because `--help` documents `-p` as the non-interactive entry point and
+    # only says stdin is "appended to" it -- an ordering this adapter cannot
+    # verify. argv is bounded by ARG_MAX, so an over-long prompt is refused
+    # with a structured error instead of surfacing as OSError E2BIG from
+    # create_subprocess_exec.
+    max_prompt_bytes = 128 * 1024
+
+    APPROVAL_MODES = {"plan", "default"}
+
+    @classmethod
+    def _credentials_path(cls) -> Path:
+        """Where the CLI keeps its oauth-personal credentials.
+
+        `GEMINI_DIR = ".gemini"` and `OAUTH_FILE = "oauth_creds.json"` were read
+        out of the installed `@google/gemini-cli` bundle, not guessed. The CLI
+        offers no env var to relocate that directory, so it follows `HOME` --
+        which is in `ENV_ALLOWLIST` and therefore reaches the subprocess.
+        """
+        home = os.getenv("HOME") or str(Path.home())
+        return Path(home) / ".gemini" / "oauth_creds.json"
+
+    @classmethod
+    def _has_local_credentials(cls) -> bool:
+        try:
+            path = cls._credentials_path()
+            return path.is_file() and path.stat().st_size > 0
+        except OSError:
+            return False
+
+    @classmethod
+    def _availability_preflight(cls, command: list[str]) -> bool:
+        """`--version` is necessary but NOT sufficient for this CLI.
+
+        Measured 2026-08-06 against gemini-cli 0.54.0: with no credentials on
+        disk, `gemini --version` still exits 0, while `gemini -p '...'` prints
+        "Opening authentication page in your browser. Do you want to continue?
+        [Y/n]" and then blocks FOREVER -- confirmed with stdin closed AND under
+        `setsid` (no controlling terminal), so neither EOF nor the base class's
+        `start_new_session=True` breaks the wait. Inheriting the base preflight
+        unchanged would therefore advertise this provider as available while
+        every real request hung to the timeout.
+
+        The credential check is deliberately a NECESSARY condition, not proof
+        of a working session: an expired token still passes it and then fails
+        (or hangs to `GEMINI_CLI_TIMEOUT`) at call time. The repo's rule is to
+        call the thing rather than infer from an artifact, but here calling the
+        thing is the failure mode being guarded against -- one unauthenticated
+        probe costs an unbounded hang, and one authenticated probe spends the
+        user's subscription quota on every availability check.
+        """
+        if not super()._availability_preflight(command):
+            return False
+        return cls._has_local_credentials()
+
+    def _approval_mode(self) -> str:
+        """Read-only by default; `yolo`/`auto_edit` are not reachable from env.
+
+        This clamp is only half the guarantee. It bounds the value of the flag
+        this adapter sets; `EXTRA_ARG_ALLOWLIST` on the base class bounds what
+        else the environment may append to the same argv, which is where a
+        second `--approval-mode yolo` used to land.
+        """
+        mode = os.getenv("GEMINI_CLI_APPROVAL_MODE", "plan").strip().lower()
+        return mode if mode in self.APPROVAL_MODES else "plan"
+
+    def _guard_prompt_length(self, prompt_text: str) -> None:
+        size = len(prompt_text.encode("utf-8"))
+        if size > self.max_prompt_bytes:
+            raise AgentCLIError(
+                f"{self.provider_label} prompt is {size} bytes, over the "
+                f"{self.max_prompt_bytes}-byte argv limit this adapter enforces"
+            )
+
+    async def generate(self, prompt: str, system: Optional[str] = None) -> str:
+        """Generate text by invoking `gemini -p` locally."""
+        if (
+            self._has_untrusted_context_marker(prompt, system)
+            and os.getenv("GEMINI_CLI_ALLOW_UNTRUSTED_CONTEXT", "").strip().lower()
+            not in TRUE_VALUES
+        ):
+            raise AgentCLIError(
+                "Gemini CLI is disabled for scraped-content prompts because it "
+                "has no tool-free mode: even --approval-mode plan allows "
+                "read_file, google_web_search and web_fetch (read from the "
+                "CLI's own bundled policies/read-only.toml), each an "
+                "exfiltration channel for injected instructions; use "
+                "claude_code for those flows"
+            )
+
+        prompt_text = self._structured_prompt_text(prompt, system)
+        self._guard_prompt_length(prompt_text)
+
+        args = [
+            *self._command(),
+            "--approval-mode",
+            self._approval_mode(),
+            "--output-format",
+            "json",
+            # The workdir is a dedicated empty scratch directory this class
+            # creates; without this the CLI can block on an interactive
+            # folder-trust prompt, the same unbounded wait the preflight
+            # exists to avoid. It grants no write/execute -- that stays with
+            # --approval-mode.
+            "--skip-trust",
+        ]
+
+        if self.config.model:
+            args.extend(["-m", self.config.model])
+
+        # Anything this env var carries is validated against
+        # EXTRA_ARG_ALLOWLIST first, so it cannot append a second
+        # `--approval-mode`, a `--policy` file, `--allowed-tools`, or a bare
+        # positional. `-p` still goes last so a future allowlisted flag cannot
+        # displace the prompt.
+        args.extend(self._extra_args("GEMINI_CLI_EXTRA_ARGS"))
+        args.extend(["-p", prompt_text])
+
+        stdout, _stderr = await self._run(args)
+        return self._parse_output(stdout)
+
+    def _parse_output(self, stdout: str) -> str:
+        """Parse the CLI's `--output-format json` envelope.
+
+        Shape read from the installed bundle's own `JsonFormatter`:
+        ``{session_id?, response?, stats?, error?: {type, message, code?},
+        warnings?}``.
+        """
+        stripped = stdout.strip()
+        if not stripped:
+            return ""
+
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            return stripped
+
+        if not isinstance(data, dict):
+            return stripped
+
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = self._error_message(error)
+            logger.warning(
+                "%s reported an error: %s",
+                self.provider_label,
+                self._diagnostic_preview(message),
+            )
+            raise AgentCLIError(f"{self.provider_label} reported an error")
+
+        response = data.get("response")
+        if isinstance(response, str):
+            return response
+
+        return stripped
+
+    def _error_message(self, error: dict) -> str:
+        message = error.get("message")
+        return message if isinstance(message, str) and message else "unknown error"
+
+
 class CodexAcpLLMProvider(AgentCLILLMProvider):
     """Codex ACP provider using acpx to drive the Codex harness."""
 
@@ -448,6 +818,29 @@ class CodexAcpLLMProvider(AgentCLILLMProvider):
 
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text by prompting a Codex ACP harness session via acpx."""
+        # `approve-all` auto-approves every tool call the model makes. This
+        # adapter is SAFE BY DEFAULT (`--deny-all`) and had no untrusted-content
+        # gate for that reason -- but `CODEX_ACP_PERMISSION_MODE=approve-all`
+        # removes the property the absence of a gate relied on, and this is the
+        # adapter the codex_cli refusal explicitly routes scraped content TO
+        # ("use codex_acp or claude_code for those flows"). So the one
+        # combination that must not exist is full tool approval plus page text
+        # an attacker wrote.
+        #
+        # The knob is not removed: it is a documented consent control
+        # (docs/AI_CONFIG.md, web-ui settings). Only the COMBINATION is refused,
+        # so an operator can still approve-all for their own prompts.
+        if self._permission_mode() == "approve-all" and (
+            self._has_untrusted_context_marker(prompt, system)
+        ):
+            raise AgentCLIError(
+                "agent_cli_untrusted_context_refused: CODEX_ACP_PERMISSION_MODE="
+                "approve-all auto-approves every tool call, and this prompt "
+                "carries scraped web content. Fix: leave "
+                "CODEX_ACP_PERMISSION_MODE unset (deny-all) or set it to "
+                "approve-reads for flows that index page content."
+            )
+
         prompt_text = self._structured_prompt_text(prompt, system)
         session_name = self._session_name()
         close_after_turn = not os.getenv(self.session_name_env, "").strip()
@@ -463,11 +856,31 @@ class CodexAcpLLMProvider(AgentCLILLMProvider):
             if close_after_turn:
                 await self._close_session(session_name)
 
+    # The shape `_session_name` generates for itself. An operator-supplied name
+    # must match it too: the value is emitted as the VALUE of `--name`/`--session`
+    # and as a bare positional on `sessions close`, so one starting with `-`
+    # (`CODEX_ACP_SESSION_NAME='--approve-all'`) is parsed by acpx as a flag
+    # rather than as the option's argument -- the same env-into-argv class as
+    # `*_COMMAND`, with a smaller reach.
+    # The FIRST character may not be `-`, which is the whole point: a character
+    # class of `[A-Za-z0-9._-]` alone happily matches `--approve-all`, so the
+    # first version of this rule permitted exactly the value it exists to
+    # reject. Caught by writing the hostile cases before the rule.
+    SESSION_NAME_RE = re.compile(r"\A[A-Za-z0-9._][A-Za-z0-9._-]{0,127}\Z")
+
     def _session_name(self) -> str:
         configured = os.getenv(self.session_name_env, "").strip()
-        if configured:
-            return configured
-        return f"tab-organizer-llm-{uuid.uuid4().hex}"
+        if not configured:
+            return f"tab-organizer-llm-{uuid.uuid4().hex}"
+        if not self.SESSION_NAME_RE.match(configured):
+            # Not echoed: an operator could paste anything in here.
+            raise AgentCLIError(
+                f"agent_cli_session_name_rejected: {self.session_name_env} must "
+                "match [A-Za-z0-9._-] and be at most 128 characters. A value "
+                "beginning with '-' is read by the CLI as a flag rather than as "
+                "the session name."
+            )
+        return configured
 
     def _base_args(self) -> list[str]:
         return [
@@ -524,8 +937,18 @@ class CodexAcpLLMProvider(AgentCLILLMProvider):
             session_name,
         ]
 
-    def _permission_args(self) -> list[str]:
+    def _permission_mode(self) -> str:
+        """The clamped permission mode. One reader, so generate() and the argv
+        builder can never disagree about what is in effect."""
         mode = os.getenv("CODEX_ACP_PERMISSION_MODE", "deny-all").strip().lower()
+        return (
+            mode
+            if mode in {"approve-all", "deny-all", "approve-reads"}
+            else ("approve-reads")
+        )
+
+    def _permission_args(self) -> list[str]:
+        mode = self._permission_mode()
         if mode == "approve-all":
             return ["--approve-all"]
         if mode == "deny-all":

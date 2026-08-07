@@ -8,6 +8,7 @@ file, selecting model providers, and pulling required docker images.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import textwrap
@@ -24,6 +25,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = PROJECT_ROOT / ".env"
 ENV_TEMPLATE = PROJECT_ROOT / ".env.example"
 
+# .env carries provider API keys and all four service bearer tokens, so it is
+# created owner-only -- the same rule `scripts/cli.py` already applies to
+# `data/service-tokens.json`.
+SECRET_FILE_MODE = 0o600
+
 
 
 def run_command(command: List[str], *, check: bool = True, capture_output: bool = False) -> subprocess.CompletedProcess:
@@ -38,28 +44,107 @@ def run_command(command: List[str], *, check: bool = True, capture_output: bool 
     )
 
 
-def update_env_var(key: str, value: str) -> None:
-    """Insert or update keys in the environment file."""
+def _target_env_mode() -> int:
+    """The mode .env should end up with: never wider than owner-only.
+
+    Preserving the existing mode was the first version of this fix, and it
+    remediated nobody. The bug being fixed IS what produced today's 0644 files
+    (`Path.write_text` under the stock 022 umask, whose mode `replace` then
+    carried onto .env), so "a mode the operator deliberately set" is
+    indistinguishable from "the mode our own bug left behind" -- and every
+    existing install would have kept its group/world-readable secrets forever.
+    A `cp .env.example .env` produces the same 0644.
+
+    So a wider-than-0600 mode is narrowed, once, out loud. Anything already at
+    or below 0600 is left exactly as it is (an operator running 0400 keeps it).
+    """
+    if not ENV_FILE.exists():
+        return SECRET_FILE_MODE
+    current = ENV_FILE.stat().st_mode & 0o777
+    if current & 0o077:
+        print(
+            f"Narrowing {ENV_FILE.name} from {current:04o} to {SECRET_FILE_MODE:04o}: "
+            "it holds provider API keys and all four service bearer tokens, and was "
+            "readable by other local accounts."
+        )
+        return SECRET_FILE_MODE
+    return current
+
+
+def _write_env_file_atomically(text: str) -> None:
+    """Replace .env's contents in one atomic operation (temp file + rename).
+
+    `Path.replace` is an atomic rename on the same filesystem (POSIX and
+    Windows both guarantee this), so a reader -- or a crash/IO error hitting
+    this process -- only ever sees the old file in full or the new file in
+    full, never a truncated or half-written one.
+
+    The temp file is created 0600 and .env's existing mode is restored onto it
+    before the rename. `Path.write_text` would create the temp file with the
+    process umask (0644 under the stock 022), and `replace` carries the TEMP
+    file's mode onto the destination -- so an owner-only .env silently became
+    group/world-readable on the next write. .env holds provider API keys and
+    all four service bearer tokens, so that is a credential disclosure, not a
+    cosmetic permission drift. Widening is what this prevents; a mode the
+    operator deliberately set is preserved as-is.
+    """
+    tmp_path = ENV_FILE.with_name(ENV_FILE.name + ".tmp")
+    mode = _target_env_mode()
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_FILE_MODE)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        os.chmod(tmp_path, mode)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    tmp_path.replace(ENV_FILE)
+
+
+def update_env_vars(pairs: Dict[str, str]) -> None:
+    """Insert or update multiple keys in one read-modify-write pass.
+
+    Callers that need to change several related keys together (for example
+    AI_PROVIDER + LLM_MODEL + EMBEDDING_PROVIDER + EMBEDDING_MODEL +
+    EMBEDDING_DIMENSIONS, as `cli.py configure-provider` does) must apply all
+    of them in the same pass: calling `update_env_var` once per key opens,
+    reads, and rewrites the whole file N separate times, so an IO failure (or
+    a crash) between calls leaves `.env` with only some of the keys updated --
+    a torn write across an otherwise-atomic-looking selection. Batching into
+    one in-memory edit plus one atomic write removes that window entirely.
+    """
     if not ENV_FILE.exists():
         return
 
     lines = ENV_FILE.read_text().splitlines()
-    updated = False
+    seen: set[str] = set()
     for idx, line in enumerate(lines):
-        if line.startswith(f"{key}="):
-            lines[idx] = f"{key}={value}"
-            updated = True
-            break
-    if not updated:
-        lines.append(f"{key}={value}")
+        for key, value in pairs.items():
+            if line.startswith(f"{key}="):
+                # EVERY assignment of the key is rewritten, not just the first.
+                # A .env may legally carry a key twice, and every consumer
+                # (docker compose, python-dotenv, `source`) takes the LAST one
+                # -- so stopping at the first match let `configure-provider`
+                # report that it had written a new provider while the stack
+                # kept booting on the stale duplicate below it.
+                lines[idx] = f"{key}={value}"
+                seen.add(key)
+                break
+    for key, value in pairs.items():
+        if key not in seen:
+            lines.append(f"{key}={value}")
 
-    ENV_FILE.write_text("\n".join(lines) + "\n")
+    _write_env_file_atomically("\n".join(lines) + "\n")
+
+
+def update_env_var(key: str, value: str) -> None:
+    """Insert or update a single key in the environment file."""
+    update_env_vars({key: value})
 
 
 def update_embedding_model_env(embedding_model: str) -> None:
     """Set embedding model and clear stale dimension overrides."""
-    update_env_var("EMBEDDING_MODEL", embedding_model)
-    update_env_var("EMBEDDING_DIMENSIONS", "")
+    update_env_vars({"EMBEDDING_MODEL": embedding_model, "EMBEDDING_DIMENSIONS": ""})
 
 
 def ensure_env_file() -> None:
@@ -68,7 +153,13 @@ def ensure_env_file() -> None:
         return
     if not ENV_TEMPLATE.exists():
         raise SystemExit("Missing .env template; cannot initialize environment.")
-    ENV_FILE.write_text(ENV_TEMPLATE.read_text())
+    # Created owner-only from the start: the very next thing a stock install
+    # does is write API keys and four bearer tokens into this file, and a
+    # 0644 .env would have handed them to every local account.
+    fd = os.open(ENV_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_FILE_MODE)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(ENV_TEMPLATE.read_text())
+    os.chmod(ENV_FILE, SECRET_FILE_MODE)
     print("Created .env from .env.example. Update sensitive values after this setup.")
 
 
@@ -172,8 +263,8 @@ def configure_ollama(args: argparse.Namespace) -> Dict[str, str]:
     ollama_embed_models = ai_config.get_provider_models("ollama", "embedding")
     
     # Convert to choice format for prompt
-    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in ollama_llm_models]
-    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in ollama_embed_models]
+    llm_options = [(model, ai_config.format_model_description(model)) for model in ollama_llm_models]
+    embed_options = [(model, ai_config.format_model_description(model)) for model in ollama_embed_models]
     
     llm_model = args.ollama_llm or prompt_choice("Choose an Ollama LLM model:", llm_options, default_index=0)
     embedding_model = args.ollama_embedding or prompt_choice(
@@ -235,7 +326,7 @@ def configure_claude(args: argparse.Namespace) -> Dict[str, str]:
     claude_llm_models = ai_config.get_provider_models("anthropic", "llm")
     
     # Convert to choice format for prompt
-    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in claude_llm_models]
+    llm_options = [(model, ai_config.format_model_description(model)) for model in claude_llm_models]
     
     llm_model = args.claude_llm or prompt_choice(
         "Choose a Claude LLM model:", llm_options, default_index=0
@@ -263,7 +354,7 @@ def configure_claude(args: argparse.Namespace) -> Dict[str, str]:
     embed_models = ai_config.get_provider_models(embed_provider, "embedding")
     if not embed_models:
         raise SystemExit(f"Provider '{embed_provider}' has no embedding models configured.")
-    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
+    embed_options = [(model, ai_config.format_model_description(model)) for model in embed_models]
     embedding_model = args.claude_embedding or prompt_choice(
         f"Choose a {embed_provider} embedding model:", embed_options, default_index=0
     )
@@ -308,7 +399,7 @@ def _select_embedding_model(ai_config, provider: str, requested_model: str | Non
         raise SystemExit(f"Provider '{provider}' has no embedding models configured.")
     if requested_model:
         return requested_model
-    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
+    embed_options = [(model, ai_config.format_model_description(model)) for model in embed_models]
     return prompt_choice(f"Choose a {provider} embedding model:", embed_options, default_index=0)
 
 
@@ -329,8 +420,8 @@ def configure_openrouter(args: argparse.Namespace) -> Dict[str, str]:
     ai_config = get_ai_config()
     llm_models = ai_config.get_provider_models("openrouter", "llm")
     embed_models = ai_config.get_provider_models("openrouter", "embedding")
-    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in llm_models]
-    embed_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in embed_models]
+    llm_options = [(model, ai_config.format_model_description(model)) for model in llm_models]
+    embed_options = [(model, ai_config.format_model_description(model)) for model in embed_models]
 
     llm_model = args.openrouter_llm or prompt_choice("Choose an OpenRouter LLM model:", llm_options, default_index=0)
     embedding_model = args.openrouter_embedding or prompt_choice(
@@ -375,7 +466,7 @@ def configure_subscription_cli(args: argparse.Namespace, provider: str) -> Dict[
 
     ai_config = get_ai_config()
     llm_models = ai_config.get_provider_models(provider, "llm")
-    llm_options = [(model, ai_config.get_model_config(model).get("description", "")) for model in llm_models]
+    llm_options = [(model, ai_config.format_model_description(model)) for model in llm_models]
     llm_model = args.subscription_llm or prompt_choice(
         f"Choose a {provider} LLM model:", llm_options, default_index=0
     )
@@ -466,10 +557,22 @@ def main(argv: List[str] | None = None) -> int:
 
     provider = args.provider
     if provider is None:
-        provider = "ollama" if sys.stdin.isatty() else "ollama"
-        if sys.stdin.isatty():
-            response = prompt_text("Use Ollama for local models? (yes/no)", default="yes")
-            provider = "ollama" if response.lower() in {"y", "yes", ""} else "claude"
+        if not sys.stdin.isatty():
+            # SPEC-provider-routing.md R3: AI_PROVIDER/EMBEDDING_PROVIDER in
+            # .env is read elsewhere as proof a human deliberately chose a
+            # provider. A non-interactive run with no --provider has no such
+            # proof, so it must refuse rather than silently write "ollama" --
+            # that would forge the exact consent record R3 requires.
+            raise SystemExit(
+                "init.py will not choose a provider on your behalf: this "
+                "session is not interactive and --provider was not given. "
+                "Pass --provider explicitly (ollama, claude, openrouter, "
+                "claude_code, codex_cli, codex_acp) -- that flag IS the "
+                "deliberate choice (SPEC-provider-routing.md R3). Nothing "
+                "was written to .env."
+            )
+        response = prompt_text("Use Ollama for local models? (yes/no)", default="yes")
+        provider = "ollama" if response.lower() in {"y", "yes", ""} else "claude"
 
     if provider == "ollama":
         provider_info = configure_ollama(args)

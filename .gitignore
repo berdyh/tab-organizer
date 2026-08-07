@@ -37,12 +37,23 @@ env/
 .env
 .env.local
 .env.*.local
+# The temp file `scripts/init.py` writes .env through. It holds the complete
+# .env (API keys + all four bearer tokens); the writer unlinks it on failure,
+# but a kill between write and rename leaves it behind, untracked and -- until
+# this line -- stageable by `git add .`.
+.env.tmp
+# Same, for `scripts/cli.py`'s service-token store.
+data/service-tokens.json.tmp
 
 # Docker
 docker-compose.override.yml
 
 # Testing
 .pytest_cache/
+# Not covered before. `.mypy_cache/` was invisible in `git status` only because
+# mypy writes a self-ignoring `.gitignore` inside each cache dir -- delete that
+# inner file and hundreds of KB of .db files become stageable.
+.mypy_cache/
 .coverage
 htmlcov/
 .tox/

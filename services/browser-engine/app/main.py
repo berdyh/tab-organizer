@@ -1,6 +1,5 @@
 """Browser Engine Service - Main Application."""
 
-import asyncio
 import hmac
 import logging
 import os

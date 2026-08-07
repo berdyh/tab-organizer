@@ -1,0 +1,33 @@
+{
+  "_comment": "Frozen contract (SEC-10; tests/security/test_url_safety_scrape.py; SECSUITE frozen suite). SCRAPE_ALLOW_PRIVATE_NETWORKS is the ONLY escape hatch out of the outbound URL-safety policy (services/url_safety.py) and it must default OFF. SEC-10 is `sec_managed` because proving a default requires DELETING the variable from the service's environment, which only a harness that owns that environment can do -- so it AUTO-SKIPS in attached mode, and a language port can go green having never checked that its own private-network guard is on by default. Plan decision 44 extracts the case here so `SEC_BOOT_*_CMD` boot mode (planned, ~wk8) can drive it against any language. The second step is the non-vacuity half: with the flag, and only with the flag, the loopback fetch must actually happen -- a service that refused unconditionally (or could not reach the canary at all) would pass step one for the wrong reason. `{canary_port}` is a loopback TCP listener the harness opens that counts accepted connections; `canary_connections` is that count, and it is what makes 'refused' mean 'never dialled' rather than 'dialled and then reported an error'. Its siblings SEC-1..9 (scheme allowlist, userinfo, private IP literals, internal hostnames, no-connect guarantee, DNS/redirect cases) are NOT `sec_managed` -- they need no controlled env and already run in attached mode against any implementation, so they stay inline. Changing this file is a security decision: it requires a docs/MODULE_INDEX.md ledger row and a SECSUITE_VERSION bump (see tests/security/README.md).",
+  "probes": {
+    "SEC-10": {
+      "_note": "Default off, then on. Both halves are required: the first is the invariant, the second proves the first is not vacuous.",
+      "staging": {
+        "service": "browser",
+        "method": "POST",
+        "path": "/scrape/single",
+        "escape_hatch_env": "SCRAPE_ALLOW_PRIVATE_NETWORKS"
+      },
+      "input": {"url_template": "http://127.0.0.1:{canary_port}/"},
+      "steps": [
+        {
+          "step": "hatch_absent",
+          "unset_env": ["SCRAPE_ALLOW_PRIVATE_NETWORKS"],
+          "expect": {
+            "response": {"status": 400},
+            "canary_connections": 0
+          }
+        },
+        {
+          "step": "hatch_set",
+          "set_env": {"SCRAPE_ALLOW_PRIVATE_NETWORKS": "true"},
+          "expect": {
+            "response": {"status_not": 400},
+            "canary_connections_min": 1
+          }
+        }
+      ]
+    }
+  }
+}

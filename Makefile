@@ -73,7 +73,9 @@ test-ai: ## Run focused AI Engine unit tests
 		tests/unit/test_ai_provider_switch.py \
 		tests/unit/test_subscription_cli_providers.py \
 		tests/unit/test_rag_lancedb_persistence.py \
+		tests/unit/test_dependency_pins.py \
 		tests/unit/test_clustering.py \
+		tests/unit/test_provider_routing.py \
 		tests/unit/test_startup_config_validation.py -q
 
 test-browser: ## Run focused Browser Engine unit tests
@@ -83,6 +85,9 @@ test-browser: ## Run focused Browser Engine unit tests
 		tests/unit/test_cdp_second_hop.py \
 		tests/unit/test_browser_engine_callbacks.py \
 		tests/unit/test_auth_detector.py \
+		tests/unit/test_credential_store.py \
+		tests/unit/test_credential_domain_scope.py \
+		tests/unit/test_scraper_redirect_credentials.py \
 		tests/unit/test_startup_config_validation.py -q
 
 test-web: ## Run focused Web UI unit tests
@@ -95,6 +100,8 @@ test-ops: ## Run focused CLI/config/runtime unit tests
 	@echo "$(BLUE)Running Ops Tooling focused tests...$(NC)"
 	@docker compose --profile test-unit run --rm test-unit pytest \
 		tests/unit/test_cli_host_ai.py \
+		tests/unit/test_cli_configure_provider.py \
+		tests/unit/test_cli_check_provider.py \
 		tests/unit/test_init_script.py \
 		tests/unit/test_runtime_auth_config.py -q
 
@@ -217,11 +224,16 @@ security: ## Run security checks
 		safety check"
 	@echo "$(GREEN)Security checks complete$(NC)"
 
-type-check: ## Run type checking with mypy
+# One mypy pass over `services/` can never work: three services each ship a
+# top-level package named `app`, so mypy aborts with `Duplicate module named
+# "app"` before analysing anything. scripts/type-check.sh runs it per service
+# instead, and CI runs that same script -- see the comment block at its top for
+# the full reasoning and for what this gate does and does not cover.
+type-check: ## Run type checking with mypy (per service; see scripts/type-check.sh)
 	@echo "$(BLUE)Running type checks...$(NC)"
-	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim sh -c "\
-		pip install mypy > /dev/null 2>&1 && \
-		mypy services/ --ignore-missing-imports"
+	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim \
+		sh /app/scripts/type-check.sh
+	@echo "$(GREEN)Type checks passed$(NC)"
 
 quality: lint format-check type-check security ## Run all code quality checks
 

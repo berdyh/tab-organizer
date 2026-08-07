@@ -1,4 +1,10 @@
-FROM python:3.12-slim
+# Pinned to the SAME base as services/ai-engine/Dockerfile, deliberately.
+# Bare `python:3.12-slim` now resolves to trixie/GCC 14, where
+# -Wincompatible-pointer-types is an error rather than a warning, so hdbscan
+# 0.8.33's Cython-generated C does not compile. The test image must be able to
+# install what production installs; otherwise the clustering suite falls back
+# to SVD + k-means and characterises an algorithm the product never runs.
+FROM python:3.12-slim-bookworm
 
 WORKDIR /app
 
@@ -7,10 +13,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tests/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# `uv`, matching services/ai-engine/Dockerfile. Plain `pip install` cannot build
+# hdbscan 0.8.33 (no cp312 wheel; its legacy setup.py build fails under pip's
+# build isolation even with build-essential present), while uv builds it the
+# same way the ai-engine image already does. Using the same installer here
+# keeps the test image on the SAME pinned versions as production instead of
+# drifting to whatever ships a wheel -- a test environment that differs from
+# the product certifies the environment, not the product.
+RUN pip install uv
+RUN uv pip install --system --no-cache-dir -r requirements.txt
 
 COPY services/ ./services/
 COPY config/ ./config/
+# Needed by tests/unit/test_export_html_template.py. The export template was
+# absent from the backend-core image for its whole life and nobody noticed,
+# because there were no export tests; a test image that also lacks it would
+# reproduce the blind spot rather than close it.
+COPY templates/ ./templates/
 COPY scripts/ ./scripts/
 COPY docs/ ./docs/
 COPY .github/ ./.github/

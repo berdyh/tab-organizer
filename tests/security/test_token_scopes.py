@@ -16,15 +16,25 @@ only its own scope (fail-closed 401 when unset). The `browser_auth_pending`
 door below is therefore now load-bearing in the deployed configuration, not
 just under this harness's synthetic per-scope tokens. Do not reintroduce a
 cross-scope accept fallback.
+
+SEC-21 and SEC-22 are the two ``sec_managed`` probes here: proving a
+fail-closed DEFAULT means deleting configuration from the service's
+environment, which only a harness that owns that environment can do, so they
+auto-skip in attached mode. Their cases and expected statuses therefore live in
+``fixtures/token_scope_failclosed.json`` (plan decision 44) so the planned
+``SEC_BOOT_*_CMD`` runner can drive them against any language.
 """
 
 import os
 
 import pytest
 
+from tests.security import contracts
 from tests.security.conftest import TOKEN_ENVS, WRONG_TOKEN
 
 pytestmark = [pytest.mark.security]
+
+FAILCLOSED_FIXTURE = "token_scope_failclosed"
 
 
 def _principals() -> dict:
@@ -106,14 +116,28 @@ def test_token_scope_matrix(request, door, principal):
         )
 
 
-AI_PROTECTED = ["/embed", "/index", "/search", "/chat", "/cluster", "/providers/switch"]
+# (method, path). GET /providers was added after a review found it answering
+# 200 with no token while every sibling 401'd: it discloses `api_key_configured`
+# per provider, the whole model catalog, and the structured selection errors.
+# CLAUDE.md already claimed "ai-engine endpoints (except /health) require
+# AI_ENGINE_API_TOKEN", so this probe freezes an invariant the docs asserted and
+# the code did not honour, rather than adding a new one.
+AI_PROTECTED = [
+    ("POST", "/embed"),
+    ("POST", "/index"),
+    ("POST", "/search"),
+    ("POST", "/chat"),
+    ("POST", "/cluster"),
+    ("POST", "/providers/switch"),
+    ("GET", "/providers"),
+]
 
 
-@pytest.mark.parametrize("path", AI_PROTECTED)
+@pytest.mark.parametrize("method, path", AI_PROTECTED)
 @pytest.mark.parametrize("token", [None, WRONG_TOKEN])
-def test_sec16_ai_endpoints_require_token(ai, path, token):
+def test_sec16_ai_endpoints_require_token(ai, method, path, token):
     body = {"texts": ["x"]} if path == "/embed" else {"session_id": "s", "query": "q"}
-    response = ai.post(path, token=token, json=body)
+    response = ai.request(method, path, token=token, json=body if method != "GET" else None)
     assert response.status_code == 401
 
 
@@ -199,60 +223,69 @@ def test_sec20_cross_scope_must_nots(request):
     ).status_code == 401
 
 
+_SEC21 = contracts.probe_spec(FAILCLOSED_FIXTURE, "SEC-21")
+_SEC22 = contracts.probe_spec(FAILCLOSED_FIXTURE, "SEC-22")
+
+
 @pytest.mark.sec_managed
 @pytest.mark.parametrize(
-    "service,method,path,body,unset",
-    [
-        ("ai", "POST", "/embed", {"texts": ["x"]}, ["ai"]),
-        (
-            "browser",
-            "GET",
-            "/auth/pending",
-            None,
-            ["browser", "callback", "ai"],
-        ),
-        (
-            "backend",
-            "POST",
-            "/api/v1/tabs/open",
-            {"urls": ["http://example.com/"]},
-            ["agent"],
-        ),
-        (
-            "backend",
-            "POST",
-            "/api/v1/callback/scrape-complete",
-            {"session_id": "x", "url": "http://example.com/", "status": "failed",
-             "content": None, "metadata": {}},
-            ["callback", "ai"],
-        ),
-    ],
+    "case", _SEC21["cases"], ids=[c["case"] for c in _SEC21["cases"]]
 )
-def test_sec21_fail_closed_on_unset_config(
-    request, service, method, path, body, unset, monkeypatch
-):
-    """Removing the token config must fail closed (401), never open (200)."""
-    monkeypatch.delenv("AI_ENGINE_ALLOW_UNAUTHENTICATED", raising=False)
-    for scope in unset:
+def test_sec21_fail_closed_on_unset_config(request, case, monkeypatch):
+    """Removing the token config must fail closed (401), never open (200).
+
+    Cases come from ``fixtures/token_scope_failclosed.json``; this body only
+    stages them.
+    """
+    expect = case["expect"]
+    label = f"SEC-21[{case['case']}]"
+    contracts.assert_expect_keys_consumed(expect, ["response"], label=label)
+
+    for name in _SEC21["staging"]["always_unset_env"]:
+        monkeypatch.delenv(name, raising=False)
+    for scope in case["unset_scopes"]:
         monkeypatch.delenv(TOKEN_ENVS[scope], raising=False)
-    client = request.getfixturevalue(service)
-    response = client.request(method, path, token=None, json=body)
-    assert response.status_code == 401
+    client = request.getfixturevalue(case["service"])
+    response = client.request(
+        case["method"], case["path"], token=case["token"], json=case["body"]
+    )
+    contracts.assert_response(response, expect["response"], label=label)
 
 
 @pytest.mark.sec_managed
 def test_sec22_ai_allow_unauthenticated_default_off(ai, monkeypatch):
-    monkeypatch.delenv(TOKEN_ENVS["ai"], raising=False)
+    """AI_ENGINE_ALLOW_UNAUTHENTICATED is off unless set, and really opens when set.
 
-    monkeypatch.delenv("AI_ENGINE_ALLOW_UNAUTHENTICATED", raising=False)
-    denied = ai.post("/embed", token=None, json={"texts": ["x"]})
-    assert denied.status_code == 401
+    Both halves are frozen in the fixture; the step names are asserted so the
+    non-vacuity half cannot be dropped by editing the data alone. "Opened" is
+    observable only as a non-401 because the hermetic env has no embedding
+    backend.
+    """
+    staging = _SEC22["staging"]
+    assert staging["service"] == "ai"
+    for scope in staging["unset_scopes"]:
+        monkeypatch.delenv(TOKEN_ENVS[scope], raising=False)
 
-    monkeypatch.setenv("AI_ENGINE_ALLOW_UNAUTHENTICATED", "true")
-    allowed = ai.post("/embed", token=None, json={"texts": ["x"]})
-    # Escape hatch opens the auth gate; the hermetic env has no embedding
-    # backend, so "opened" is observable as any non-401 status.
-    assert allowed.status_code != 401
+    steps = _SEC22["steps"]
+    assert [step["step"] for step in steps] == ["hatch_absent", "hatch_set"], (
+        "SEC-22 must run both halves: absent means closed, set means open"
+    )
+    request_spec = _SEC22["input"]
+    for step in steps:
+        label = f"SEC-22[{step['step']}]"
+        expect = step["expect"]
+        contracts.assert_expect_keys_consumed(expect, ["response"], label=label)
+        for name in step.get("unset_env", []):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in (step.get("set_env") or {}).items():
+            monkeypatch.setenv(name, value)
+        response = ai.request(
+            request_spec["method"],
+            request_spec["path"],
+            token=request_spec["token"],
+            json=request_spec["body"],
+        )
+        contracts.assert_response(response, expect["response"], label=label)
 
 
 @pytest.mark.parametrize("service", ["backend", "ai", "browser"])

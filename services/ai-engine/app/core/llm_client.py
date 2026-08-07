@@ -1,14 +1,128 @@
 """Multi-provider LLM client with unified interface."""
 
+import asyncio
 import os
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Union, cast
 
 import httpx
 
 # Import configuration loader
 from config.config_loader import get_ai_config
+
+# `scheme://user:pass@host` anywhere inside a string. Matched on the whole
+# message rather than on the URL alone because the credential can also arrive
+# second-hand: httpx puts the request URL into its own exception text, so
+# f"...: {exc}" re-imports the userinfo the caller just stripped.
+_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)[^/\s@]+@")
+
+
+def redact_url_userinfo(text: Optional[str]) -> Optional[str]:
+    """Strip `user:pass@` from every URL in ``text``.
+
+    `GET /health` is unauthenticated and every `reason` string on it is built
+    from a base URL. `OLLAMA_HOST=http://admin:s3cret@host:11434` is a
+    perfectly ordinary way to reach a proxied Ollama, and it turned the
+    unauthenticated health endpoint into a credential disclosure. The invariant
+    in `MODULE.md` is that *nothing* in the announce or runtime surface carries
+    a key or a token -- URL userinfo is a credential like any other.
+    """
+    if not text:
+        return text
+    return _URL_USERINFO_RE.sub(r"\g<scheme>***@", text)
+
+
+# `?key=...`, `&api_key=...`, `&access_token=...` inside a URL. Userinfo is not
+# the only place a credential rides in a URL: the Gemini adapter authenticates
+# with `params={"key": self.api_key}`, and httpx puts the full request URL --
+# query string included -- into the text of every `HTTPStatusError` it raises.
+_URL_QUERY_SECRET_RE = re.compile(
+    r"([?&](?:key|api[-_]?key|access[-_]?token|token|auth)=)[^&\s\"'>]+",
+    re.IGNORECASE,
+)
+
+
+def _configured_secret_values() -> list[str]:
+    """Every credential-looking value currently in the process environment.
+
+    Deliberately shape-based rather than a list of known key names. The named
+    list is what `redact_url_userinfo`'s first version was -- it enumerated the
+    keys somebody remembered and shipped while a credentialed `OLLAMA_HOST`
+    walked straight through it. Matching on the *variable name* suffix catches
+    the next `..._API_KEY` nobody has added to this file yet.
+    """
+    values: list[str] = []
+    for name, value in os.environ.items():
+        if not name.upper().endswith(("_API_KEY", "_TOKEN", "_KEY", "_SECRET")):
+            continue
+        stripped = (value or "").strip()
+        # Short values are not credentials and would shred unrelated text (see
+        # the one-character-token bug in `scripts/`: a token of "x" turned every
+        # message into asterisks).
+        if len(stripped) >= 8:
+            values.append(stripped)
+    return values
+
+
+def redact_secrets(text: Optional[str]) -> Optional[str]:
+    """Strip every credential shape a provider error can carry.
+
+    Strictly stronger than `redact_url_userinfo`, and used on the live-probe
+    path, where the text being redacted is a *provider's* exception rather than
+    a string this file built: the URL, the query string and sometimes the key
+    itself arrive from httpx, not from us.
+    """
+    if not text:
+        return text
+    redacted = redact_url_userinfo(text) or ""
+    redacted = _URL_QUERY_SECRET_RE.sub(r"\g<1>***", redacted)
+    for secret in _configured_secret_values():
+        redacted = redacted.replace(secret, "***")
+    return redacted
+
+
+class ProviderSelectionError(RuntimeError):
+    """Raised when no provider was chosen, or the chosen one cannot serve.
+
+    Fail-closed: this service never substitutes a provider for the user. The
+    error carries a structured ``{code, cause, fix}`` so the reason survives
+    into ``GET /health`` and the logs instead of being flattened into a
+    string, matching ``CDPConnectionError``
+    (``services/browser-engine/app/tabs/cdp.py``) and ``CredentialStoreError``
+    (``services/browser-engine/app/auth/queue.py``).
+    """
+
+    def __init__(self, code: str, cause: str, fix: str):
+        self.code = code
+        self.cause = cause
+        self.fix = fix
+        super().__init__(f"{code}: {cause} Fix: {fix}")
+
+    def to_dict(self) -> dict:
+        return {"code": self.code, "cause": self.cause, "fix": self.fix}
+
+
+class ProviderUnavailableError(ProviderSelectionError):
+    """The provider *was* chosen, but it cannot serve right now.
+
+    A subclass rather than a sibling on purpose: "nobody chose a provider" and
+    "the provider you chose has no `claude` binary / no API key / no pulled
+    model" are the same thing to every caller that must not paper over it. Any
+    best-effort ``except Exception`` that would swallow one must swallow
+    neither, so they share a base and a single ``except ProviderSelectionError:
+    raise`` guard covers both.
+
+    This is the condition `MODULE.md` used to carry as a stub -- "unavailable
+    local subscription CLI providers should report unhealthy rather than
+    silently falling back". The plain ``ValueError`` it used to raise was
+    indistinguishable from a transient provider error and got absorbed by
+    exactly such a handler in the clustering pipeline.
+    """
+
+    def __init__(self, code: str = "provider_unavailable", *, cause: str, fix: str):
+        super().__init__(code=code, cause=cause, fix=fix)
 
 
 @dataclass
@@ -32,6 +146,19 @@ class EmbeddingConfig:
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     dimensions: int = 1536
+    # True when the catalog marks the model `dimensions_configurable` -- i.e.
+    # the model accepts a `dimensions` request parameter and will emit exactly
+    # that width (Matryoshka truncation, as on OpenAI's text-embedding-3-*).
+    #
+    # This is what makes `dimensions` an INSTRUCTION to the provider rather
+    # than only a declaration about it. Without it, an adapter that silently
+    # dropped the parameter would return the model's native width while
+    # `/health` announced the configured one, and ai-engine would refuse every
+    # write to a table built at the announced width -- the exact silent-drift
+    # class `_resolve_embedding_dimensions` exists to prevent. Adapters must
+    # send the parameter when this is True; a model without it is a fixed-width
+    # model and `EMBEDDING_DIMENSIONS` may only restate its catalog width.
+    dimensions_configurable: bool = False
 
 
 class BaseLLMProvider(ABC):
@@ -42,12 +169,18 @@ class BaseLLMProvider(ABC):
         """Generate text from prompt."""
         pass
 
+    # Declared WITHOUT `async` on purpose. Every implementation is an async
+    # generator (`async def` + `yield`), whose type is `AsyncIterator[str]`,
+    # not `Coroutine[..., AsyncIterator[str]]` -- an `async def` here would
+    # describe a coroutine that *returns* an iterator, which is a different
+    # protocol and makes every adapter an incompatible override. Callers use
+    # `async for ... in provider.generate_stream(...)`, never `await`.
     @abstractmethod
-    async def generate_stream(
+    def generate_stream(
         self, prompt: str, system: Optional[str] = None
     ) -> AsyncIterator[str]:
         """Stream generated text."""
-        pass
+        ...
 
 
 class BaseEmbeddingProvider(ABC):
@@ -90,38 +223,359 @@ class LLMClient:
             "subscription": True,
             "acp": True,
         },
+        # Gemini CLI headless mode. `embeddings: False` is not an assumption:
+        # `gemini --help` was run on 2026-08-06 and its command list is
+        # mcp / extensions / skills / hooks / gemma / [query] -- the binary
+        # exposes no way to ask for a vector, so there is nothing an embedding
+        # adapter could call. (The bundle carries a
+        # DEFAULT_GEMINI_EMBEDDING_MODEL constant for its own internal memory
+        # features; that is not a CLI surface.)
+        "gemini_cli": {
+            "llm": True,
+            "embeddings": False,
+            "local": True,
+            "subscription": True,
+        },
         "deepseek": {"llm": True, "embeddings": False, "local": False},
         "gemini": {"llm": True, "embeddings": True, "local": False},
+        # embeddings was set False here on 2026-08-04 to mirror a catalog entry
+        # that was itself wrong (inferred from openrouter's /v1/models chat
+        # listing instead of from a call to /v1/embeddings -- see the
+        # correction note in config/ai_models.yaml). Restored 2026-08-05 after
+        # the endpoint was called directly and answered 200.
+        #
+        # This dict is a MIRROR, never a second source of truth: it exists so
+        # `GET /providers` can answer without a catalog round-trip, and
+        # `test_provider_capability_mirror_agrees_with_the_catalog` fails the
+        # build on any divergence. It did exactly that when the catalog was
+        # corrected and this line was not -- which is the only reason the
+        # falsehood could not survive here quietly.
         "openrouter": {"llm": True, "embeddings": True, "local": False},
     }
     CLI_PROVIDER_COMMANDS = {
         "claude_code": ("CLAUDE_CODE_COMMAND", "claude"),
         "codex_cli": ("CODEX_CLI_COMMAND", "codex"),
         "codex_acp": ("CODEX_ACP_COMMAND", "acpx"),
+        "gemini_cli": ("GEMINI_CLI_COMMAND", "gemini"),
     }
+
+    # Three states, not two. "Not proven working" and "proven broken" are
+    # different facts and must not collapse: the first is what an offline
+    # laptop produces and may still be chosen deliberately, the second is a
+    # 401 and may not be chosen at all.
+    VERIFICATION_UNVERIFIED = "unverified"
+    VERIFICATION_VERIFIED = "verified"
+    VERIFICATION_REFUTED = "refuted"
+
+    # The cheapest real call that still exercises the same endpoint, auth and
+    # model id the service will use. Deliberately not a listing endpoint
+    # (`GET /v1/models`), which is what produced the false
+    # `openrouter.supports.embeddings: false` claim: a listing answers a
+    # different question from the one being asked.
+    LIVE_PROBE_PROMPT = "ping"
+    LIVE_PROBE_TEXT = "ping"
+    LIVE_PROBE_MAX_TOKENS = 16
+    LIVE_PROBE_TIMEOUT_SECONDS = 20.0
+    # HTTP statuses that are positive proof the route does not work. A 401/403
+    # is not "we could not tell" -- the provider looked at the credential and
+    # rejected it. 402 is the same shape for credit, and 400/404/422 mean the
+    # provider looked at this model id and refused to serve it.
+    REFUTING_STATUS_CODES = frozenset({400, 401, 402, 403, 404, 422})
 
     def __init__(
         self,
         llm_config: Optional[LLMConfig] = None,
         embedding_config: Optional[EmbeddingConfig] = None,
     ):
+        """Resolve the selected providers, or record why none is selected.
+
+        R3 invariant (`routing.explicit_opt_in_required` in
+        `config/ai_models.yaml`): the *only* ways a provider becomes active are
+        an explicit env var (`AI_PROVIDER` / `EMBEDDING_PROVIDER`), a config
+        object passed in by a caller, or an explicit `switch_provider()` call.
+        Each of those is a record of a deliberate user decision. There is no
+        fourth way, and there must never be one: any future "try the next
+        provider" router has to re-open this constructor and confront the fact
+        that `ollama`, `openrouter`, `openai`, `gemini`, `anthropic` and
+        `deepseek` all require a deliberate choice, even when one of them is
+        the only thing that would work.
+
+        A selection failure is *stored*, not raised. Raising here would kill
+        the process at import (`app/main.py` builds this client at module
+        scope) and the service would go dark; the contract is that it starts,
+        reports `degraded`, names the fix, and refuses to answer requests.
+
+        That contract is about the *class* of misconfiguration, not about the
+        two fields someone remembered. Any exception raised while resolving a
+        role -- a typo'd model name, a non-numeric `EMBEDDING_DIMENSIONS`, a
+        catalog entry missing a field -- is caught here and converted into a
+        structured `{code, cause, fix}`. A bare `except ProviderSelectionError`
+        would only cover the paths already taught to raise one, and the next
+        env var nobody thought about would blackhole the service at import
+        again.
+        """
         self._ai_config = get_ai_config()
-        self.llm_config = llm_config or self._default_llm_config()
-        self.embedding_config = embedding_config or self._default_embedding_config()
+        self.llm_config: Optional[LLMConfig] = llm_config
+        self.llm_config_error: Optional[ProviderSelectionError] = None
+        self.embedding_config: Optional[EmbeddingConfig] = embedding_config
+        self.embedding_config_error: Optional[ProviderSelectionError] = None
+
+        if self.llm_config is None:
+            self.llm_config, self.llm_config_error = self._resolve_role(
+                self._default_llm_config, "llm"
+            )
+        if self.embedding_config is None:
+            self.embedding_config, self.embedding_config_error = self._resolve_role(
+                self._default_embedding_config, "embeddings"
+            )
+
         self._llm_provider: Optional[BaseLLMProvider] = None
         self._embedding_provider: Optional[BaseEmbeddingProvider] = None
 
+    def _resolve_role(self, resolve, capability: str):
+        """Run a role resolver, degrading on *any* failure instead of dying."""
+        try:
+            return resolve(), None
+        except ProviderSelectionError as exc:
+            return None, exc
+        except Exception as exc:  # noqa: BLE001 -- deliberate: see __init__
+            env_vars = (
+                "AI_PROVIDER / LLM_MODEL"
+                if capability == "llm"
+                else "EMBEDDING_PROVIDER / EMBEDDING_MODEL / EMBEDDING_DIMENSIONS"
+            )
+            return None, ProviderSelectionError(
+                code="provider_config_invalid",
+                cause=(
+                    f"The {capability} configuration could not be resolved: "
+                    f"{type(exc).__name__}: {redact_secrets(str(exc))}"
+                ),
+                fix=(
+                    f"Check {env_vars} against config/ai_models.yaml, or run "
+                    "./scripts/cli.py configure-provider to rewrite them."
+                ),
+            )
+
+    def _routing_config(self) -> dict:
+        return self._ai_config.config.get("routing") or {}
+
+    def _providers_supporting(self, capability: str) -> list[str]:
+        """Catalog-derived list of providers that can serve ``capability``.
+
+        Never hardcode this. Demonstrated twice, in both directions: when the
+        catalog wrongly dropped openrouter's embedding support (2026-08-04) and
+        again when that was corrected (2026-08-05), `scripts/init.py` tracked
+        the change with no edit, purely because it asks the catalog instead of
+        carrying its own copy of the answer. Every hardcoded copy of the same
+        fact -- the `PROVIDERS` mirror, the embedding adapter map, the prose in
+        half a dozen docs -- had to be repaired by hand both times.
+        """
+        return [
+            provider
+            for provider in self._ai_config.get_all_providers()
+            if self._ai_config.is_provider_supported(provider, capability)
+        ]
+
+    def _provider_choices_by_cost(self, capability: str) -> dict[str, list[str]]:
+        """Group the capable providers into preferred / metered / local."""
+        preference_order = self._routing_config().get("llm_preference_order") or []
+        capable = self._providers_supporting(capability)
+        preferred = [p for p in preference_order if p in capable]
+        metered: list[str] = []
+        local: list[str] = []
+        for provider in capable:
+            if provider in preferred:
+                continue
+            cost_model = self._ai_config.get_provider_config(provider).get("cost_model")
+            if cost_model == "free_local":
+                local.append(provider)
+            else:
+                metered.append(provider)
+        return {"preferred": preferred, "metered": metered, "local": local}
+
+    def _not_selected_error(
+        self, env_var: str, capability: str
+    ) -> ProviderSelectionError:
+        choices = self._provider_choices_by_cost(capability)
+        lines = [
+            f"Run ./scripts/cli.py configure-provider, or set {env_var} explicitly."
+        ]
+        if choices["preferred"]:
+            lines.append(
+                f"Preferred: {', '.join(choices['preferred'])} "
+                "(uses your subscription)."
+            )
+        if choices["metered"]:
+            lines.append(
+                f"Metered: {', '.join(choices['metered'])} "
+                "(requires an API key and consent)."
+            )
+        if choices["local"]:
+            lines.append(
+                f"Local: {', '.join(choices['local'])} "
+                "(free, requires models pulled first)."
+            )
+        return ProviderSelectionError(
+            code="provider_not_selected",
+            cause=(
+                f"{env_var} is not set. This service does not pick a provider "
+                "for you."
+            ),
+            fix=" ".join(lines),
+        )
+
+    def _known_provider_config(
+        self, provider: str, env_var: str, capability: str
+    ) -> dict:
+        """Look the provider up, turning a typo into a structured failure.
+
+        Without this a misspelled `AI_PROVIDER` raises a bare `ValueError` out
+        of the constructor, which kills the process at import instead of
+        reporting `degraded`.
+        """
+        try:
+            return self._ai_config.get_provider_config(provider)
+        except ValueError:
+            known = ", ".join(self._providers_supporting(capability))
+            raise ProviderSelectionError(
+                code="provider_unknown",
+                cause=f"{env_var}={provider!r} is not a provider in the catalog.",
+                fix=f"Set {env_var} to one of: {known}.",
+            ) from None
+
+    def _known_model_config(self, model: Optional[str], env_var: str) -> dict:
+        """Look the model up, turning a typo into a structured failure.
+
+        Same reasoning as `_known_provider_config`, applied to the field the
+        provider fix missed: `get_model_config()` raises a bare `ValueError`,
+        and this is reached from `__init__`.
+        """
+        if not model:
+            raise ProviderSelectionError(
+                code="model_not_selected",
+                cause=(
+                    "No model is selected and the provider declares no default "
+                    "for this role."
+                ),
+                fix=f"Set {env_var} to a model listed in config/ai_models.yaml.",
+            )
+        try:
+            return self._ai_config.get_model_config(model)
+        except ValueError:
+            raise ProviderSelectionError(
+                code="model_unknown",
+                cause=f"{env_var}={model!r} is not a model in the catalog.",
+                fix=(
+                    f"Set {env_var} to a model listed in config/ai_models.yaml, "
+                    "or leave it blank to use the provider's default."
+                ),
+            ) from None
+
+    def _resolve_embedding_dimensions(self, model: str, model_config: dict) -> int:
+        """Resolve the vector width from the catalog, never by inference.
+
+        The catalog is the only source of truth for dimensions (`R1`/`R2`: no
+        silent substitution). Two ways this used to drift, both silent:
+
+        * a catalog entry with no `dimensions` key fell back to a hardcoded
+          1536, so an embedding model of any width announced 1536 and the
+          LanceDB table was created at a width nothing would ever produce;
+        * `EMBEDDING_DIMENSIONS` overrode the catalog with no comparison, so
+          `/health` and the `provider.active` line announced a number that
+          contradicted the model actually being called.
+
+        Both now fail closed: the role degrades and `/health` names the fix.
+        """
+        catalog_dimensions = model_config.get("dimensions")
+        if catalog_dimensions is None:
+            raise ProviderSelectionError(
+                code="embedding_dimensions_unknown",
+                cause=(
+                    f"The catalog entry for embedding model {model!r} declares no "
+                    "'dimensions', and this service does not guess a vector width."
+                ),
+                fix=(
+                    f"Add 'dimensions' to the {model!r} entry in "
+                    "config/ai_models.yaml (it must match what the model emits)."
+                ),
+            )
+
+        override = (os.getenv("EMBEDDING_DIMENSIONS") or "").strip()
+        if not override:
+            return int(catalog_dimensions)
+
+        try:
+            requested = int(override)
+        except ValueError:
+            raise ProviderSelectionError(
+                code="embedding_dimensions_invalid",
+                cause=f"EMBEDDING_DIMENSIONS={override!r} is not an integer.",
+                fix=(
+                    "Leave EMBEDDING_DIMENSIONS blank so it resolves from the "
+                    f"catalog ({model} is {catalog_dimensions}), or set it to that "
+                    "number."
+                ),
+            ) from None
+
+        if requested == int(catalog_dimensions):
+            return requested
+
+        # A `dimensions_configurable` model is told what width to emit, so an
+        # override is not drift -- it is the request. The invariant is
+        # unchanged and still enforced: the announced width must equal what the
+        # model will actually produce. Truncation only goes down from the
+        # native width, so an over-ask is still refused.
+        if model_config.get("dimensions_configurable"):
+            if 0 < requested < int(catalog_dimensions):
+                return requested
+            raise ProviderSelectionError(
+                code="embedding_dimensions_out_of_range",
+                cause=(
+                    f"EMBEDDING_DIMENSIONS={requested} is not a width {model} can "
+                    f"emit: it is configurable but cannot exceed its native "
+                    f"{catalog_dimensions} (and must be positive)."
+                ),
+                fix=(
+                    f"Choose a value between 1 and {catalog_dimensions}, or leave "
+                    "EMBEDDING_DIMENSIONS blank to use the native width. 768 "
+                    "matches a table built by a 768-d model (e.g. "
+                    "nomic-embed-text) and needs no reindex."
+                ),
+            )
+
+        raise ProviderSelectionError(
+            code="embedding_dimensions_mismatch",
+            cause=(
+                f"EMBEDDING_DIMENSIONS={requested} contradicts the catalog: "
+                f"{model} emits {catalog_dimensions}-dimensional vectors."
+            ),
+            fix=(
+                "Leave EMBEDDING_DIMENSIONS blank so it resolves from the "
+                f"catalog, or set it to {catalog_dimensions}. A mismatch makes "
+                "ai-engine refuse every write to the LanceDB table."
+            ),
+        )
+
     def _default_llm_config(self) -> LLMConfig:
-        """Get default LLM config from environment."""
-        provider = os.getenv("AI_PROVIDER") or "openrouter"
+        """Resolve the LLM config from the environment, or fail closed.
+
+        There is deliberately no default provider here. An unset `AI_PROVIDER`
+        used to mean "openrouter", which silently spent metered credit nobody
+        had agreed to spend.
+        """
+        provider = (os.getenv("AI_PROVIDER") or "").strip()
+        if not provider:
+            raise self._not_selected_error("AI_PROVIDER", "llm")
         ai_config = get_ai_config()
 
-        # Get provider config
-        provider_config = ai_config.get_provider_config(provider)
+        provider_config = self._known_provider_config(provider, "AI_PROVIDER", "llm")
 
-        # Get default model for provider
+        # Get default model for provider. A typo here used to survive selection
+        # and only surface as a runtime-health `reason`; it is a misconfigured
+        # field like any other, so it degrades with a structured code.
         default_model = ai_config.get_default_model(provider, "llm")
         model = os.getenv("LLM_MODEL") or default_model
+        self._known_model_config(model, "LLM_MODEL")
 
         # Get API key from environment if cloud provider
         api_key = None
@@ -138,26 +592,49 @@ class LLMClient:
         )
 
     def _default_embedding_config(self) -> EmbeddingConfig:
-        """Get default embedding config from environment."""
-        provider = os.getenv("EMBEDDING_PROVIDER") or "openrouter"
+        """Resolve the embedding config from the environment, or fail closed.
+
+        This method used to silently rewrite `provider` to the catalog default
+        when the chosen one could not embed. That fallback is deleted on
+        purpose (`routing.silent_fallback: false`): it substituted a provider
+        the user never chose, logged nothing, and surfaced nothing, which is
+        the same defect class as WI0-B1 — a broken path reporting success.
+        """
+        provider = (os.getenv("EMBEDDING_PROVIDER") or "").strip()
+        if not provider:
+            raise self._not_selected_error("EMBEDDING_PROVIDER", "embeddings")
         ai_config = get_ai_config()
 
-        # Get provider config
-        provider_config = ai_config.get_provider_config(provider)
+        provider_config = self._known_provider_config(
+            provider, "EMBEDDING_PROVIDER", "embeddings"
+        )
 
-        # Check if provider supports embeddings
         if not ai_config.is_provider_supported(provider, "embeddings"):
-            # Fallback to default provider
-            provider = ai_config.get_defaults().get("provider", "ollama")
-            provider_config = ai_config.get_provider_config(provider)
+            capable = self._providers_supporting("embeddings")
+            raise ProviderSelectionError(
+                code="embedding_provider_cannot_embed",
+                # The `fix` names no provider of its own, by design. It used to
+                # append a hand-written note asserting that one specific
+                # provider served no embeddings; that note was false, and
+                # because it was a string literal rather than a catalog lookup,
+                # correcting the catalog did not correct it. Everything this
+                # message says about capability now comes from `capable`, which
+                # is derived from config/ai_models.yaml on every call.
+                cause=f"EMBEDDING_PROVIDER={provider!r} serves no embedding models.",
+                fix=(
+                    f"Choose one of: {', '.join(capable) or '(none in the catalog)'}. "
+                    "That list comes from config/ai_models.yaml, so it is current "
+                    "by construction."
+                ),
+            )
 
         # Get default model for provider
         default_model = ai_config.get_default_model(provider, "embedding")
         model = os.getenv("EMBEDDING_MODEL") or default_model
+        model_config = self._known_model_config(model, "EMBEDDING_MODEL")
 
-        # Get model dimensions from config
-        model_config = ai_config.get_model_config(model)
-        dimensions = model_config.get("dimensions", 1536)
+        # Vector width comes from the catalog and must agree with any override.
+        dimensions = self._resolve_embedding_dimensions(model, model_config)
 
         # Get API key from environment if cloud provider
         api_key = None
@@ -166,14 +643,13 @@ class LLMClient:
             if api_key_env:
                 api_key = os.getenv(api_key_env)
 
-        dimensions_override = os.getenv("EMBEDDING_DIMENSIONS")
-
         return EmbeddingConfig(
             provider=provider,
             model=model,
             api_key=api_key,
             base_url=self._base_url_for(provider, "EMBEDDING_BASE_URL"),
-            dimensions=int(dimensions_override or dimensions),
+            dimensions=dimensions,
+            dimensions_configurable=bool(model_config.get("dimensions_configurable")),
         )
 
     @property
@@ -190,12 +666,26 @@ class LLMClient:
             self._embedding_provider = self._create_embedding_provider()
         return self._embedding_provider
 
-    def _create_llm_provider(self) -> BaseLLMProvider:
-        """Create LLM provider based on config."""
-        if not self._ai_config.is_provider_supported(self.llm_config.provider, "llm"):
-            raise ValueError(
-                f"Provider {self.llm_config.provider} does not support LLMs"
+    def _create_llm_provider(
+        self, config: Optional[LLMConfig] = None
+    ) -> BaseLLMProvider:
+        """Create LLM provider based on config.
+
+        `config` overrides the selected one so the live probe
+        (`verify_provider_live`) goes through the SAME adapter map as
+        production traffic instead of hand-rolling HTTP per provider -- a probe
+        with its own transport only ever verifies its own transport. The map
+        stays inside this function on purpose: `test_provider_routing.py` reads
+        it out of this source to check it against the catalog, and a map lifted
+        into a helper would silently stop being checked.
+        """
+        config = self.llm_config if config is None else config
+        if config is None:
+            raise self.llm_config_error or self._not_selected_error(
+                "AI_PROVIDER", "llm"
             )
+        if not self._ai_config.is_provider_supported(config.provider, "llm"):
+            raise ValueError(f"Provider {config.provider} does not support LLMs")
 
         from ..providers import (
             AnthropicLLMProvider,
@@ -203,6 +693,7 @@ class LLMClient:
             CodexAcpLLMProvider,
             CodexCliLLMProvider,
             DeepSeekLLMProvider,
+            GeminiCliLLMProvider,
             GeminiLLMProvider,
             OllamaLLMProvider,
             OpenAILLMProvider,
@@ -215,25 +706,41 @@ class LLMClient:
             "claude_code": ClaudeCodeLLMProvider,
             "codex_cli": CodexCliLLMProvider,
             "codex_acp": CodexAcpLLMProvider,
+            "gemini_cli": GeminiCliLLMProvider,
             "deepseek": DeepSeekLLMProvider,
             "gemini": GeminiLLMProvider,
             "openrouter": OpenAILLMProvider,
         }
 
-        provider_class = providers.get(self.llm_config.provider)
+        # Typed as a factory, not `type[BaseLLMProvider]`: every value in the
+        # map is a concrete adapter, but the inferred join is the abstract base,
+        # and an abstract *type object* is not instantiable as far as a type
+        # checker is concerned. The annotation goes on the lookup rather than on
+        # the map literal so `providers = {` keeps the exact shape
+        # test_provider_routing.py reads out of this source.
+        provider_class: Optional[Callable[[LLMConfig], BaseLLMProvider]] = (
+            providers.get(config.provider)
+        )
         if not provider_class:
-            raise ValueError(f"Unknown LLM provider: {self.llm_config.provider}")
+            raise ValueError(f"Unknown LLM provider: {config.provider}")
 
-        return provider_class(self.llm_config)
+        return provider_class(config)
 
-    def _create_embedding_provider(self) -> BaseEmbeddingProvider:
-        """Create embedding provider based on config."""
-        if not self._ai_config.is_provider_supported(
-            self.embedding_config.provider, "embeddings"
-        ):
-            raise ValueError(
-                f"Provider {self.embedding_config.provider} does not support embeddings"
+    def _create_embedding_provider(
+        self, config: Optional[EmbeddingConfig] = None
+    ) -> BaseEmbeddingProvider:
+        """Create embedding provider based on config.
+
+        `config` overrides the selected one for the live probe -- see
+        `_create_llm_provider`, including why the map below must stay here.
+        """
+        config = self.embedding_config if config is None else config
+        if config is None:
+            raise self.embedding_config_error or self._not_selected_error(
+                "EMBEDDING_PROVIDER", "embeddings"
             )
+        if not self._ai_config.is_provider_supported(config.provider, "embeddings"):
+            raise ValueError(f"Provider {config.provider} does not support embeddings")
 
         from ..providers import (
             DeepSeekEmbeddingProvider,
@@ -247,16 +754,25 @@ class LLMClient:
             "openai": OpenAIEmbeddingProvider,
             "deepseek": DeepSeekEmbeddingProvider,
             "gemini": GeminiEmbeddingProvider,
+            # openrouter reuses the OpenAI adapter: /v1/embeddings is
+            # OpenAI-compatible, and OpenAIEmbeddingProvider already keys off
+            # `openrouter.ai` in the base_url for OPENROUTER_API_KEY and the
+            # HTTP-Referer/X-Title headers. This entry was deleted on
+            # 2026-08-04 as "unreachable, and would issue requests against
+            # endpoints that do not exist" -- both halves wrong: it was
+            # unreachable only because the capability check above was reading a
+            # wrong catalog flag, and the endpoint exists and answers 200.
             "openrouter": OpenAIEmbeddingProvider,
         }
 
-        provider_class = providers.get(self.embedding_config.provider)
+        # Factory-typed for the same reason as `_create_llm_provider`.
+        provider_class: Optional[Callable[[EmbeddingConfig], BaseEmbeddingProvider]] = (
+            providers.get(config.provider)
+        )
         if not provider_class:
-            raise ValueError(
-                f"Unknown embedding provider: {self.embedding_config.provider}"
-            )
+            raise ValueError(f"Unknown embedding provider: {config.provider}")
 
-        return provider_class(self.embedding_config)
+        return provider_class(config)
 
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text using configured LLM."""
@@ -288,9 +804,22 @@ class LLMClient:
         embedding_provider: Optional[str] = None,
         embedding_model: Optional[str] = None,
     ) -> None:
-        """Switch providers without restart."""
+        """Switch providers without restart.
+
+        This is the second lawful way a provider becomes active (see
+        ``__init__``): an authenticated caller naming one is a deliberate
+        choice, exactly like setting the env var. It still cannot *infer* one —
+        asking to change only the model while no provider is selected fails
+        closed rather than guessing which provider the model belongs to.
+        """
         if llm_provider or llm_model:
-            target_provider = llm_provider or self.llm_config.provider
+            target_provider = llm_provider or (
+                self.llm_config.provider if self.llm_config else None
+            )
+            if not target_provider:
+                raise self.llm_config_error or self._not_selected_error(
+                    "AI_PROVIDER", "llm"
+                )
             if not self._ai_config.is_provider_supported(target_provider, "llm"):
                 raise ValueError(f"Provider {target_provider} does not support LLMs")
             state = self.get_provider_runtime_state(target_provider, "llm")
@@ -305,19 +834,58 @@ class LLMClient:
                 target_model = self._ai_config.get_default_model(target_provider, "llm")
             if target_model:
                 self._validate_model(target_provider, target_model, "llm")
-            else:
+            elif self.llm_config is not None:
                 target_model = self.llm_config.model
 
+            # Found by the first real run of `make type-check` (2026-08-07):
+            # `target_model` is Optional here. With no provider selected yet, a
+            # `llm_provider` whose catalog entry declares no default llm model,
+            # and no explicit `llm_model`, it stays None -- the `elif
+            # self.llm_config is not None` branch above cannot supply one -- and
+            # it was then written straight onto `LLMConfig.model: str`,
+            # defeating the `or ""` on the constructor one line up. The switch
+            # half-succeeded: provider updated, model None, and the failure
+            # surfaced later as an unrelated error at request time.
+            #
+            # The embeddings branch below already refuses this exact case. That
+            # asymmetry was the whole bug, so the fix is to stop being
+            # asymmetric: fail closed here too, with the same {code, cause, fix}
+            # shape. This is R1/R2's rule applied to the switch path -- never
+            # proceed with a selection that was not actually made.
+            if not target_model:
+                raise ProviderSelectionError(
+                    code="llm_model_not_selected",
+                    cause=(
+                        f"Provider {target_provider!r} declares no default llm "
+                        "model and none was given."
+                    ),
+                    fix=(
+                        "Pass llm_model explicitly, or set LLM_MODEL to a model "
+                        f"belonging to {target_provider!r}."
+                    ),
+                )
+
+            if self.llm_config is None:
+                self.llm_config = LLMConfig(
+                    provider=target_provider, model=target_model
+                )
             self.llm_config.provider = target_provider
             self.llm_config.model = target_model
             self.llm_config.api_key = self._api_key_for(target_provider)
             self.llm_config.base_url = self._base_url_for(
                 target_provider, "LLM_BASE_URL"
             )
+            self.llm_config_error = None
             self._llm_provider = None  # Force recreation
 
         if embedding_provider or embedding_model:
-            target_provider = embedding_provider or self.embedding_config.provider
+            target_provider = embedding_provider or (
+                self.embedding_config.provider if self.embedding_config else None
+            )
+            if not target_provider:
+                raise self.embedding_config_error or self._not_selected_error(
+                    "EMBEDDING_PROVIDER", "embeddings"
+                )
             if not self._ai_config.is_provider_supported(target_provider, "embeddings"):
                 raise ValueError(
                     f"Provider {target_provider} does not support embeddings"
@@ -334,31 +902,74 @@ class LLMClient:
                 target_model = self._ai_config.get_default_model(
                     target_provider, "embedding"
                 )
+            current = self.embedding_config
+            current_dimensions = (
+                current.dimensions if current else EmbeddingConfig.dimensions
+            )
             if target_model:
                 self._validate_model(target_provider, target_model, "embedding")
                 model_config = self._ai_config.get_model_config(target_model)
-                dimensions = int(
-                    model_config.get("dimensions", self.embedding_config.dimensions)
-                )
+                # Same rule as `_resolve_embedding_dimensions`: no inference.
+                # Carrying the *previous* model's width forward would index the
+                # new model's vectors under the old model's dimension.
+                if model_config.get("dimensions") is None:
+                    raise ProviderSelectionError(
+                        code="embedding_dimensions_unknown",
+                        cause=(
+                            f"The catalog entry for embedding model "
+                            f"{target_model!r} declares no 'dimensions'."
+                        ),
+                        fix=(
+                            f"Add 'dimensions' to the {target_model!r} entry in "
+                            "config/ai_models.yaml before switching to it."
+                        ),
+                    )
+                dimensions = int(model_config["dimensions"])
+                configurable = bool(model_config.get("dimensions_configurable"))
+            elif current is not None:
+                target_model = current.model
+                dimensions = current_dimensions
+                configurable = current.dimensions_configurable
             else:
-                target_model = self.embedding_config.model
-                dimensions = self.embedding_config.dimensions
+                raise ProviderSelectionError(
+                    code="embedding_model_not_selected",
+                    cause=(
+                        f"Provider {target_provider!r} declares no default embedding "
+                        "model and none was given."
+                    ),
+                    fix=(
+                        "Pass embedding_model explicitly, or set EMBEDDING_MODEL to a "
+                        f"model belonging to {target_provider!r}."
+                    ),
+                )
 
-            self.embedding_config.provider = target_provider
-            self.embedding_config.model = target_model
-            self.embedding_config.dimensions = dimensions
-            self.embedding_config.api_key = self._api_key_for(target_provider)
-            self.embedding_config.base_url = self._base_url_for(
-                target_provider, "EMBEDDING_BASE_URL"
-            )
+            if current is None:
+                current = EmbeddingConfig(provider=target_provider, model=target_model)
+                self.embedding_config = current
+            current.provider = target_provider
+            current.model = target_model
+            current.dimensions = dimensions
+            # Must move with `model`: a stale flag would either drop the
+            # `dimensions` parameter for a model that needs it or send it to
+            # one that rejects it.
+            current.dimensions_configurable = configurable
+            current.api_key = self._api_key_for(target_provider)
+            current.base_url = self._base_url_for(target_provider, "EMBEDDING_BASE_URL")
+            self.embedding_config_error = None
             self._embedding_provider = None  # Force recreation
 
     def refresh_runtime_credentials(self) -> None:
-        """Reload credentials from the current process environment."""
-        self.llm_config.api_key = self._api_key_for(self.llm_config.provider)
-        self.embedding_config.api_key = self._api_key_for(
-            self.embedding_config.provider
-        )
+        """Reload credentials from the current process environment.
+
+        A role with no selected provider stays unselected — a new API key is
+        not a provider choice.
+        """
+        if self.llm_config is not None:
+            self.llm_config.api_key = self._api_key_for(self.llm_config.provider)
+        if self.embedding_config is not None:
+            self.embedding_config.api_key = self._api_key_for(
+                self.embedding_config.provider
+            )
         self._llm_provider = None
         self._embedding_provider = None
 
@@ -368,10 +979,42 @@ class LLMClient:
         """Check runtime availability in addition to static config support."""
         return self.get_provider_runtime_state(provider, capability)["available"]
 
+    @staticmethod
+    def _redacted_state(state: dict) -> dict:
+        """Last line of defence before a runtime state reaches a body or a log.
+
+        Applied to the whole dict rather than at each construction site so a
+        newly added `reason` string cannot reintroduce the leak by being
+        written somewhere this file does not yet think about.
+        """
+        for key in ("reason", "server_url", "command", "verification_reason"):
+            if isinstance(state.get(key), str):
+                state[key] = redact_secrets(state[key])
+        return state
+
     def get_provider_runtime_state(
         self, provider: str, capability: str = "llm"
     ) -> dict:
-        """Return runtime availability details for a configured provider."""
+        """Return runtime availability details, safe to serve and to log."""
+        return self._redacted_state(
+            self._raw_provider_runtime_state(provider, capability)
+        )
+
+    def _raw_provider_runtime_state(
+        self, provider: str, capability: str = "llm"
+    ) -> dict:
+        """Return runtime availability details for a configured provider.
+
+        `available` here means CONFIGURED -- the binary is on PATH, the key
+        variable is non-empty, the local server answers. It has never meant
+        VERIFIED, and the `verification` field exists so nothing downstream can
+        keep reading it as though it did. Only `verify_provider_live()` moves
+        `verification` off `"unverified"`, because only a real call to the
+        endpoint can: `OPENAI_API_KEY=sk-revoked-yesterday` is indistinguishable
+        from a working key at this layer, exactly as
+        `openrouter.supports.embeddings` was indistinguishable from the truth
+        while it was being read off a chat-model listing.
+        """
         state = {
             "capabilities": self.PROVIDERS.get(provider, {}),
             "available": False,
@@ -379,6 +1022,15 @@ class LLMClient:
             "api_key_env": None,
             "api_key_configured": None,
             "reason": None,
+            # One of VERIFICATION_UNVERIFIED / _VERIFIED / _REFUTED. Never
+            # anything else, and never absent: a missing key would read as
+            # falsey and quietly become "not verified" in some places and
+            # "unknown, assume fine" in others.
+            "verification": self.VERIFICATION_UNVERIFIED,
+            "verification_reason": (
+                "No call has been made to this provider; availability here "
+                "means configured, not proven."
+            ),
         }
 
         try:
@@ -405,6 +1057,14 @@ class LLMClient:
                     "reason": (
                         None if configured else f"{api_key_env} is not configured"
                     ),
+                    "verification_reason": (
+                        f"{api_key_env} is set, but a set variable is not a "
+                        "working credential: a stale, revoked, typo'd or "
+                        "wrong-account key looks identical here. Only a call to "
+                        "the provider settles it."
+                        if configured
+                        else f"{api_key_env} is not configured"
+                    ),
                 }
             )
             return state
@@ -430,17 +1090,162 @@ class LLMClient:
         state["available"] = True
         return state
 
+    def _live_probe_llm_config(self, provider: str, model: str) -> LLMConfig:
+        return LLMConfig(
+            provider=provider,
+            model=model,
+            api_key=self._api_key_for(provider),
+            base_url=self._base_url_for(provider, "LLM_BASE_URL"),
+            temperature=0.0,
+            max_tokens=self.LIVE_PROBE_MAX_TOKENS,
+        )
+
+    def _live_probe_embedding_config(
+        self, provider: str, model: str
+    ) -> EmbeddingConfig:
+        model_config = self._ai_config.get_model_config(model)
+        dimensions = model_config.get("dimensions")
+        return EmbeddingConfig(
+            provider=provider,
+            model=model,
+            api_key=self._api_key_for(provider),
+            base_url=self._base_url_for(provider, "EMBEDDING_BASE_URL"),
+            # The catalog width, not `EMBEDDING_DIMENSIONS`: this probe asks
+            # "does this route answer?", and a width the user has not committed
+            # to yet must not be able to turn a working route into a 400.
+            dimensions=int(dimensions) if dimensions is not None else 1536,
+            dimensions_configurable=bool(model_config.get("dimensions_configurable")),
+        )
+
+    @classmethod
+    def _live_probe_result(
+        cls, verification: str, reason: str, status_code: Optional[int] = None
+    ) -> dict:
+        return {
+            "verification": verification,
+            "verification_reason": redact_secrets(reason),
+            "status_code": status_code,
+        }
+
+    @classmethod
+    def classify_live_probe_error(cls, exc: BaseException) -> dict:
+        """Turn a provider exception into a verification verdict.
+
+        Split from the call so the classification is testable without a
+        network, and so the default is visible: anything not positively
+        identified is UNVERIFIED, never REFUTED. Refuting a provider hides it
+        from the operator, so it takes proof -- a status code the provider
+        itself chose -- not an inference from a timeout.
+
+        Nothing here interpolates `str(exc)` unredacted. httpx puts the full
+        request URL into its exception text and the Gemini adapter
+        authenticates with `params={"key": ...}`, so the raw message can
+        literally be the API key.
+        """
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            if status in cls.REFUTING_STATUS_CODES:
+                return cls._live_probe_result(
+                    cls.VERIFICATION_REFUTED,
+                    f"the provider rejected the call with HTTP {status}",
+                    status,
+                )
+            return cls._live_probe_result(
+                cls.VERIFICATION_UNVERIFIED,
+                f"the provider answered HTTP {status}, which proves neither "
+                "way (transient or provider-side)",
+                status,
+            )
+        if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+            return cls._live_probe_result(
+                cls.VERIFICATION_UNVERIFIED, "the call timed out"
+            )
+        if isinstance(exc, httpx.TransportError):
+            return cls._live_probe_result(
+                cls.VERIFICATION_UNVERIFIED,
+                f"the provider could not be reached ({type(exc).__name__})",
+            )
+        return cls._live_probe_result(
+            cls.VERIFICATION_UNVERIFIED,
+            f"the call failed with {type(exc).__name__}: {exc}",
+        )
+
+    async def verify_provider_live(
+        self,
+        provider: str,
+        capability: str = "llm",
+        model: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> dict:
+        """Prove or refute a (provider, model) route by CALLING it.
+
+        This is the only function in this module entitled to return
+        `VERIFICATION_VERIFIED`, and it earns it the one way a capability claim
+        may be earned (CLAUDE.md): the cheapest real generation call for an LLM
+        route, the cheapest real embed call for an embedding route. If it
+        cannot run -- offline, timeout, provider-side 5xx -- it returns
+        UNVERIFIED and says so. It never upgrades a guess.
+
+        Returns `{"verification", "verification_reason", "status_code"}`; every
+        string in it has been through `redact_secrets`.
+        """
+        timeout = self.LIVE_PROBE_TIMEOUT_SECONDS if timeout is None else timeout
+        model = model or self._ai_config.get_default_model(
+            provider, "llm" if capability == "llm" else "embedding"
+        )
+        if not model:
+            return self._live_probe_result(
+                self.VERIFICATION_UNVERIFIED,
+                f"no {capability} model is known for provider {provider!r}, so "
+                "there is no route to call",
+            )
+
+        try:
+            call: Awaitable[Any]
+            if capability == "llm":
+                llm_adapter = self._create_llm_provider(
+                    self._live_probe_llm_config(provider, model)
+                )
+                call = llm_adapter.generate(self.LIVE_PROBE_PROMPT)
+            else:
+                embedding_adapter = self._create_embedding_provider(
+                    self._live_probe_embedding_config(provider, model)
+                )
+                call = embedding_adapter.embed_single(self.LIVE_PROBE_TEXT)
+            result = await asyncio.wait_for(call, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 -- classified, never swallowed
+            return self.classify_live_probe_error(exc)
+
+        # An adapter that returns nothing answered, but did not serve. Treating
+        # that as verified is how a broken path reports success (WI0-B1).
+        if capability == "llm":
+            served = isinstance(result, str) and result.strip() != ""
+        else:
+            served = isinstance(result, (list, tuple)) and len(result) > 0
+        if not served:
+            return self._live_probe_result(
+                self.VERIFICATION_REFUTED,
+                f"the call to {provider}/{model} succeeded but returned an "
+                "empty result",
+            )
+        return self._live_probe_result(
+            self.VERIFICATION_VERIFIED,
+            f"a real {capability} call to {provider}/{model} succeeded",
+        )
+
     def _cli_provider_available(self, provider: str) -> bool:
         from ..providers import (
             ClaudeCodeLLMProvider,
             CodexAcpLLMProvider,
             CodexCliLLMProvider,
+            GeminiCliLLMProvider,
         )
 
         providers = {
             "claude_code": ClaudeCodeLLMProvider,
             "codex_cli": CodexCliLLMProvider,
             "codex_acp": CodexAcpLLMProvider,
+            "gemini_cli": GeminiCliLLMProvider,
         }
         provider_class = providers.get(provider)
         return bool(provider_class and provider_class.is_available())
@@ -456,14 +1261,72 @@ class LLMClient:
         if model_config.get("type") != model_type:
             raise ValueError(f"Model {model} is not a {model_type} model")
 
-    def _current_runtime_state(self, capability: str) -> dict:
+    def _role_not_selected_error(self, capability: str) -> ProviderSelectionError:
+        """The `{code, cause, fix}` for a role that has no provider.
+
+        Always returns an error object and says nothing about whether one IS
+        selected -- `_selection_error` is the predicate form. Split out so a
+        caller that has already established "not selected" (by testing the
+        config itself) can get the error without an Optional it must re-check.
+        """
         if capability == "llm":
-            provider = self.llm_config.provider
-            model = self.llm_config.model
+            return self.llm_config_error or self._not_selected_error(
+                "AI_PROVIDER", "llm"
+            )
+        return self.embedding_config_error or self._not_selected_error(
+            "EMBEDDING_PROVIDER", "embeddings"
+        )
+
+    def _selection_error(self, capability: str) -> Optional[ProviderSelectionError]:
+        if capability == "llm":
+            if self.llm_config is not None:
+                return None
+        elif self.embedding_config is not None:
+            return None
+        return self._role_not_selected_error(capability)
+
+    def _selected_llm_config(self) -> LLMConfig:
+        """`self.llm_config` for a caller that has established it is set.
+
+        `_selection_error("llm") is None` is true exactly when `llm_config` is
+        not None, but that link runs through two attributes and a string, so a
+        type checker cannot follow it. The cast records it; it is a no-op at
+        runtime, so an unselected role still fails exactly as it does today.
+        """
+        return cast(LLMConfig, self.llm_config)
+
+    def _selected_embedding_config(self) -> EmbeddingConfig:
+        """`self.embedding_config`; see `_selected_llm_config` for the rule."""
+        return cast(EmbeddingConfig, self.embedding_config)
+
+    def _unselected_runtime_state(self, error: ProviderSelectionError) -> dict:
+        """Runtime state for a role nobody chose: unavailable, and says why."""
+        return {
+            "capabilities": {},
+            "available": False,
+            "requires_api_key": False,
+            "api_key_env": None,
+            "api_key_configured": None,
+            "provider": None,
+            "model": None,
+            "reason": str(error),
+            "error": error.to_dict(),
+        }
+
+    def _current_runtime_state(self, capability: str) -> dict:
+        error = self._selection_error(capability)
+        if error is not None:
+            return self._unselected_runtime_state(error)
+
+        if capability == "llm":
+            llm_config = self._selected_llm_config()
+            provider = llm_config.provider
+            model = llm_config.model
             model_type = "llm"
         else:
-            provider = self.embedding_config.provider
-            model = self.embedding_config.model
+            embedding_config = self._selected_embedding_config()
+            provider = embedding_config.provider
+            model = embedding_config.model
             model_type = "embedding"
 
         state = self.get_provider_runtime_state(provider, capability)
@@ -482,12 +1345,37 @@ class LLMClient:
                         model,
                     )
                     state.update(ollama_state)
-        return state
+        return self._redacted_state(state)
 
     def _ensure_current_provider_ready(self, capability: str) -> None:
+        """Gate every request path on a chosen *and* usable provider.
+
+        The unavailable case raises `ProviderUnavailableError` rather than a
+        bare `ValueError` so callers cannot confuse "the provider you chose is
+        not there" with a transient provider-side error and fall back to a
+        best-effort placeholder. `switch_provider` keeps raising `ValueError`
+        for the same condition: that is a caller error on a mutation request,
+        not the service answering with nothing.
+        """
+        error = self._selection_error(capability)
+        if error is not None:
+            raise error
         state = self._current_runtime_state(capability)
         if not state["available"]:
-            raise ValueError(state.get("reason") or "AI provider is not configured")
+            config = self.llm_config if capability == "llm" else self.embedding_config
+            provider = getattr(config, "provider", None)
+            raise ProviderUnavailableError(
+                cause=(
+                    f"The selected {capability} provider {provider!r} is not usable: "
+                    f"{redact_secrets(state.get('reason')) or 'unknown reason'}"
+                ),
+                fix=(
+                    "Make that provider usable (install/authenticate its CLI, set "
+                    "its API key, or pull the model), or choose another one with "
+                    "./scripts/cli.py configure-provider. This service does not "
+                    "substitute a provider for you."
+                ),
+            )
 
     def _api_key_for(self, provider: str) -> Optional[str]:
         """Resolve an API key for cloud providers; local providers return None."""
@@ -511,14 +1399,18 @@ class LLMClient:
     def _ollama_current_model_state(self, capability: str, model: str) -> dict:
         """Check the selected Ollama server and model for health reporting."""
         if capability == "llm":
-            base_url = self.llm_config.base_url or self._base_url_for(
+            base_url = self._selected_llm_config().base_url or self._base_url_for(
                 "ollama", "LLM_BASE_URL"
             )
         else:
-            base_url = self.embedding_config.base_url or self._base_url_for(
+            base_url = self._selected_embedding_config().base_url or self._base_url_for(
                 "ollama", "EMBEDDING_BASE_URL"
             )
         base_url = base_url.rstrip("/")
+        # Everything below this line is destined for `GET /health` (which is
+        # unauthenticated) and for log lines, so it carries the redacted form.
+        # `base_url` itself stays intact for the request.
+        safe_url = redact_secrets(base_url)
 
         try:
             response = httpx.get(
@@ -530,22 +1422,26 @@ class LLMClient:
         except Exception as exc:
             return {
                 "available": False,
-                "server_url": base_url,
-                "reason": f"Ollama is not reachable at {base_url}: {exc}",
+                "server_url": safe_url,
+                # httpx embeds the request URL in several of its exception
+                # messages, so redact the composed string, not just the prefix.
+                "reason": redact_secrets(
+                    f"Ollama is not reachable at {base_url}: {exc}"
+                ),
             }
 
         installed_models = self._ollama_installed_models(payload)
         if model not in installed_models:
             return {
                 "available": False,
-                "server_url": base_url,
+                "server_url": safe_url,
                 "installed_models": sorted(installed_models),
-                "reason": f"Ollama model {model} is not installed at {base_url}",
+                "reason": f"Ollama model {model} is not installed at {safe_url}",
             }
 
         return {
             "available": True,
-            "server_url": base_url,
+            "server_url": safe_url,
             "installed_models": sorted(installed_models),
             "reason": None,
         }
@@ -585,18 +1481,84 @@ class LLMClient:
             result[provider] = self.get_provider_runtime_state(provider, capability)
         return result
 
+    def active_provider_summary(self, capability: str) -> dict:
+        """Announce-shaped description of the provider serving ``capability``.
+
+        This is the R4 attribution contract: what is answering, and what it
+        costs the user. Deliberately small and stable — it is what the startup
+        log line, `GET /health`, and (later) the UI badge all read. Never put a
+        credential in here; `/health` is the one unauthenticated endpoint.
+        """
+        error = self._selection_error(capability)
+        if error is not None:
+            return {
+                "provider": None,
+                "model": None,
+                "cost_model": None,
+                "error": error.to_dict(),
+            }
+
+        config: Union[LLMConfig, EmbeddingConfig] = (
+            self._selected_llm_config()
+            if capability == "llm"
+            else self._selected_embedding_config()
+        )
+        provider = config.provider
+        model = config.model
+        try:
+            cost_model = self._ai_config.get_provider_config(provider).get("cost_model")
+        except ValueError:
+            cost_model = None
+        summary = {
+            "provider": provider,
+            "model": model,
+            "cost_model": cost_model,
+        }
+        try:
+            model_config = self._ai_config.get_model_config(model)
+        except ValueError:
+            model_config = {}
+        if capability == "llm":
+            summary["tier"] = model_config.get("tier")
+        else:
+            summary["dimensions"] = self._selected_embedding_config().dimensions
+        return summary
+
+    def get_active_providers(self) -> dict:
+        """Active provider per role, keyed as the spec's `/health` block."""
+        return {
+            "llm": self.active_provider_summary("llm"),
+            "embedding": self.active_provider_summary("embeddings"),
+        }
+
     def get_provider_info(self) -> dict:
         """Get current provider information."""
+        llm_provider = self.llm_config.provider if self.llm_config else None
+        embedding_config = self.embedding_config
         return {
             "llm": {
-                "provider": self.llm_config.provider,
-                "model": self.llm_config.model,
-                "capabilities": self.PROVIDERS.get(self.llm_config.provider, {}),
+                "provider": llm_provider,
+                "model": self.llm_config.model if self.llm_config else None,
+                "capabilities": (
+                    self.PROVIDERS.get(llm_provider, {}) if llm_provider else {}
+                ),
+                "error": (
+                    self._role_not_selected_error("llm").to_dict()
+                    if self.llm_config is None
+                    else None
+                ),
             },
             "embeddings": {
-                "provider": self.embedding_config.provider,
-                "model": self.embedding_config.model,
-                "dimensions": self.embedding_config.dimensions,
+                "provider": embedding_config.provider if embedding_config else None,
+                "model": embedding_config.model if embedding_config else None,
+                "dimensions": (
+                    embedding_config.dimensions if embedding_config else None
+                ),
+                "error": (
+                    self._role_not_selected_error("embeddings").to_dict()
+                    if embedding_config is None
+                    else None
+                ),
             },
             "available": {
                 "llm": self._provider_catalog("llm"),

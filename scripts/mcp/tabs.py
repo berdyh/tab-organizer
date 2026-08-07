@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -18,7 +19,19 @@ from typing import Any, Callable, TextIO
 
 AGENT_TOKEN_ENV = "BACKEND_AGENT_API_TOKEN"
 DEFAULT_BACKEND_URL = "http://localhost:8080"
-DEFAULT_CDP_URL = "http://localhost:9222"
+# No DEFAULT_CDP_URL here on purpose: the correct default depends on where the
+# process making the CDP connection actually runs (Browser Engine, inside the
+# container network, needs `http://host.docker.internal:9222`; a bare host
+# process would need `http://localhost:9222`). That default already lives in
+# exactly one place -- `DEFAULT_CDP_URL` in
+# `services/browser-engine/app/tabs/cdp.py`, mirrored by `TabImportRequest`/
+# `TabOpenRequest` in `services/backend-core/app/main.py` -- so this module and
+# `scripts/cli.py` never restate it; they omit `cdp_url` from the payload when
+# the caller doesn't supply one and let Backend Core/Browser Engine apply
+# their own default. A previous copy of this constant here was
+# "http://localhost:9222", which is wrong when evaluated inside the
+# Browser Engine container and made `tabs import`/`tabs open` fail whenever
+# `--cdp-url` was omitted.
 
 
 class BackendCoreError(RuntimeError):
@@ -55,6 +68,16 @@ def _require_non_empty(value: str, name: str) -> str:
     return cleaned
 
 
+def _optional_non_empty(value: str | None, name: str) -> str | None:
+    """Validate an optional field: `None` passes through, everything else
+    still has to be non-blank. Lets a caller omit `cdp_url` (so the
+    downstream service's own default applies) while still rejecting an
+    explicitly-passed empty string."""
+    if value is None:
+        return None
+    return _require_non_empty(value, name)
+
+
 def _require_urls(urls: list[str]) -> list[str]:
     cleaned = [url.strip() for url in urls if url and url.strip()]
     if not cleaned:
@@ -62,8 +85,47 @@ def _require_urls(urls: list[str]) -> list[str]:
     return cleaned
 
 
+MIN_SAFE_TOKEN_LEN = 12
+
+# What may NOT sit next to a token for it to count as a whole token. Tokens are
+# minted by `secrets.token_urlsafe`, whose alphabet is exactly this class, so a
+# real token is delimited by quotes, spaces, `:`, `/`, `=`, `&` or end-of-string
+# in every place it can appear (a Bearer header, a URL, a JSON body).
+_TOKEN_CHARS = r"A-Za-z0-9_\-"
+
+_warned_short_tokens: set[str] = set()
+
+
+def _token_pattern(token: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?<![{_TOKEN_CHARS}]){re.escape(token)}(?![{_TOKEN_CHARS}])"
+    )
+
+
 def redact_configured_secrets(message: str) -> str:
-    """Redact configured service tokens from user-visible text."""
+    """Redact configured service tokens from user-visible text.
+
+    Redaction is BOUNDARY-AWARE, and both properties it buys are load-bearing:
+
+    * every configured token is redacted, however short. A short token is not
+      "not secret enough to bother with" -- every service's bearer check
+      accepts it verbatim, so it is a working credential, and printing it in a
+      backend payload or an error hands it over.
+    * a short token does not shred unrelated text. ``str.replace`` has no
+      notion of a token boundary, so a misconfigured
+      ``BACKEND_CALLBACK_TOKEN=":"`` rewrote every URL and timestamp in this
+      CLI's output to ``"http<redacted>//host<redacted>9222"``. Matching the
+      token only where it is delimited leaves those alone, because each of
+      those colons is flanked by token characters.
+
+    The previous fix for the shredding traded the first property away to buy
+    the second. It does not have to be a trade.
+
+    `scripts/cli.py` mints these with `secrets.token_urlsafe`, so any real
+    token is far longer than ``MIN_SAFE_TOKEN_LEN``. A value below it is
+    misconfiguration -- a service token nobody has to guess -- so it still
+    warns once per variable, while being redacted like any other.
+    """
     redacted = message
     for key in (
         AGENT_TOKEN_ENV,
@@ -72,8 +134,19 @@ def redact_configured_secrets(message: str) -> str:
         "BROWSER_ENGINE_API_TOKEN",
     ):
         token = os.getenv(key, "").strip()
-        if token:
-            redacted = redacted.replace(token, "<redacted>")
+        if not token:
+            continue
+        if len(token) < MIN_SAFE_TOKEN_LEN and key not in _warned_short_tokens:
+            _warned_short_tokens.add(key)
+            print(
+                f"warning: {key} is {len(token)} characters, below the "
+                f"{MIN_SAFE_TOKEN_LEN}-character floor for a service token. It "
+                "is still redacted from output, but a value that short is "
+                "guessable and every service accepts it as a valid bearer "
+                "credential. Regenerate it with ./scripts/cli.py start.",
+                file=sys.stderr,
+            )
+        redacted = _token_pattern(token).sub("<redacted>", redacted)
     return redacted
 
 
@@ -164,14 +237,19 @@ class BackendCoreClient:
 
 
 def tab_import_from_browser(
-    cdp_url: str = DEFAULT_CDP_URL,
+    cdp_url: str | None = None,
     session_id: str | None = None,
     session_name: str | None = None,
 ) -> dict[str, Any]:
-    """Start importing currently open browser tabs through Backend Core."""
+    """Start importing currently open browser tabs through Backend Core.
+
+    `cdp_url` is optional: when omitted, no `cdp_url` field is sent at all,
+    so Backend Core (and, downstream, Browser Engine) apply their own
+    correct default instead of a value guessed on this side of the network.
+    """
     payload = _clean_payload(
         {
-            "cdp_url": _require_non_empty(cdp_url, "cdp_url"),
+            "cdp_url": _optional_non_empty(cdp_url, "cdp_url"),
             "session_id": session_id,
             "session_name": session_name,
         }
@@ -217,9 +295,13 @@ def tab_cluster(session_id: str) -> dict[str, Any]:
 def tab_open(
     urls: list[str] | None = None,
     session_id: str | None = None,
-    cdp_url: str = DEFAULT_CDP_URL,
+    cdp_url: str | None = None,
 ) -> dict[str, Any]:
-    """Open URLs in the attached local browser through Backend Core."""
+    """Open URLs in the attached local browser through Backend Core.
+
+    `cdp_url` is optional; see `tab_import_from_browser` for why omitting it
+    (rather than restating a default here) is the correct behavior.
+    """
     if urls:
         cleaned_urls = _require_urls(urls)
     elif session_id:
@@ -230,7 +312,7 @@ def tab_open(
         {
             "urls": cleaned_urls,
             "session_id": session_id,
-            "cdp_url": _require_non_empty(cdp_url, "cdp_url"),
+            "cdp_url": _optional_non_empty(cdp_url, "cdp_url"),
         }
     )
     return BackendCoreClient().request("POST", "/tabs/open", payload)

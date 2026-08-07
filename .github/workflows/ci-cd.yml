@@ -289,18 +289,26 @@ jobs:
           docker compose up -d --build backend-core ai-engine browser-engine
           sleep 20
 
-      - name: Install load testing tools
+      # NOT a load test, and it no longer claims to be one. This step used to
+      # `pip install locust httpx` and then never invoke locust: the "load
+      # test" was 100 backgrounded curls against /health, and it printed "Load
+      # test completed" regardless of what any of them returned. A green tick
+      # that measures nothing is worse than no tick, because it answers the
+      # question "is this covered?" with a yes.
+      #
+      # `tests/load/locustfile.py` is the real suite and is MANUAL by design
+      # (CLAUDE.md: "Load tests are manual -- there is no --type performance").
+      # Run it with `locust -f tests/load/locustfile.py` against a started
+      # stack. Wiring it into CI needs a decision about thresholds and runtime
+      # that nobody has made; until then this step is an honest smoke check.
+      - name: Smoke-check the started stack responds
         run: |
-          pip install locust httpx
-
-      - name: Run load tests
-        run: |
-          # Basic load test with curl
-          for i in {1..100}; do
-            curl -s http://localhost:8080/health > /dev/null &
+          set -euo pipefail
+          for svc_port in 8080 8083 8090; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${svc_port}/health")
+            echo "port ${svc_port}: HTTP ${code}"
+            [ "$code" = "200" ] || { echo "::error::health check failed on ${svc_port}"; exit 1; }
           done
-          wait
-          echo "Load test completed"
 
       - name: Cleanup
         if: always()
@@ -322,7 +330,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install flake8 pylint black==26.3.1 isort==6.1.0 mypy bandit safety
+          pip install flake8 pylint black==26.3.1 isort==6.1.0 bandit safety
 
       - name: Run flake8
         run: |
@@ -341,9 +349,13 @@ jobs:
         run: |
           isort --check-only services/
 
+      # `mypy services/` cannot work here (three services own a package named
+      # `app`); scripts/type-check.sh is the same gate `make type-check` runs,
+      # and it pins its own mypy + stub versions. No `|| true`: this used to
+      # swallow the result of a command that had never analysed a single line,
+      # so the step was green for two independent reasons at once.
       - name: Run mypy type checking
-        run: |
-          mypy services/ --ignore-missing-imports || true
+        run: ./scripts/type-check.sh
 
       - name: Run bandit security checks
         run: |

@@ -544,44 +544,12 @@ class SessionManager:
             return self._sessions.get(self._current_session_id)
         return None
 
-    def set_current_session(self, session_id: str) -> bool:
-        """Set the current active session."""
-        with self._lock:
-            if session_id in self._sessions:
-                self._current_session_id = session_id
-                if self._db_path:
-                    with self._connect() as conn:
-                        self._save_state(conn)
-                return True
-            return False
-
     def list_sessions(self, include_archived: bool = False) -> list[Session]:
         """List all sessions."""
         sessions = list(self._sessions.values())
         if not include_archived:
             sessions = [s for s in sessions if s.status != "archived"]
         return sorted(sessions, key=lambda s: s.updated_at, reverse=True)
-
-    def update_session(
-        self,
-        session_id: str,
-        name: Optional[str] = None,
-        metadata: Optional[dict] = None,
-    ) -> Optional[Session]:
-        """Update session properties."""
-        with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                return None
-
-            if name:
-                session.name = name
-            if metadata:
-                session.metadata.update(metadata)
-            session.updated_at = datetime.utcnow()
-            self._save_session(session)
-
-            return session
 
     def archive_session(self, session_id: str) -> bool:
         """Archive a session."""
@@ -1323,7 +1291,7 @@ class SessionManager:
         else:
             sessions = list(self._sessions.values())
         terms = [term.lower() for term in re.findall(r"\w+", query or "")]
-        results = []
+        results: list[dict] = []
         for session in sessions:
             for record in session.url_store.get_all():
                 # Match the SQLite FTS insertion condition EXACTLY so keyword
