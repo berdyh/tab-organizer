@@ -43,6 +43,10 @@ docker-compose.override.yml
 
 # Testing
 .pytest_cache/
+# Not covered before. `.mypy_cache/` was invisible in `git status` only because
+# mypy writes a self-ignoring `.gitignore` inside each cache dir -- delete that
+# inner file and hundreds of KB of .db files become stageable.
+.mypy_cache/
 .coverage
 htmlcov/
 .tox/
