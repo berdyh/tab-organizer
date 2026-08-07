@@ -321,7 +321,14 @@ class AIModelConfig:
     
     def get_ui_config(self) -> Dict[str, Any]:
         """Get UI configuration for model selection.
-        
+
+        No caller today. KEPT rather than removed with its dead siblings
+        because `docs/SPEC-provider-routing.md` names
+        `ui_options.show_active_provider_badge` as the contract for R4's
+        active-provider badge, which is deliberately deferred to the
+        TypeScript facade. Deleting the accessor and its `ui_options:` data
+        would quietly drop a decision that was made and recorded.
+
         Returns:
             UI configuration dictionary
         """
@@ -334,34 +341,6 @@ class AIModelConfig:
             Defaults dictionary
         """
         return self.config.get('defaults', {})
-    
-    def search_models(self, query: str, provider: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Search for models by name or description.
-        
-        Args:
-            query: Search query
-            provider: Optional provider filter
-            
-        Returns:
-            List of matching model configurations
-        """
-        models = self.config.get('models', {})
-        results = []
-        query_lower = query.lower()
-        
-        for model_name, model_config in models.items():
-            if provider and model_config.get('provider') != provider:
-                continue
-            
-            # Search in name and description
-            if (query_lower in model_name.lower() or 
-                query_lower in model_config.get('description', '').lower()):
-                results.append({
-                    'name': model_name,
-                    **model_config
-                })
-        
-        return results
     
     def _validate_capability_evidence(
         self, provider_name: str, provider_config: Dict[str, Any]
@@ -473,15 +452,6 @@ def get_ai_config() -> AIModelConfig:
     if _ai_config is None:
         _ai_config = AIModelConfig()
     return _ai_config
-
-
-def reload_config() -> None:
-    """Reload the global configuration."""
-    global _ai_config
-    if _ai_config is not None:
-        _ai_config.reload()
-    else:
-        _ai_config = AIModelConfig()
 
 
 # Convenience functions for common operations

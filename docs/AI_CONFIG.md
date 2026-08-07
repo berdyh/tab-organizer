@@ -344,16 +344,6 @@ if errors:
         print(f"Config error: {error}")
 ```
 
-## Reloading Configuration
-
-To reload configuration without restarting:
-
-```python
-from config.config_loader import reload_config
-
-reload_config()
-```
-
 ## Best Practices
 
 1. **Keep descriptions informative**: Include model size, capabilities, and use cases
@@ -368,7 +358,7 @@ reload_config()
 ### Model not found
 - Check if model is in `config/ai_models.yaml`
 - Verify provider is correct
-- Reload configuration with `reload_config()`
+- Restart the service; the catalog is read once at startup
 
 ### Provider not supported
 - Ensure provider is in `providers` section
