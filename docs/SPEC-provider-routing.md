@@ -10,7 +10,7 @@ Config side landed in `6493974`. Service side (ai-engine):
 | R3 honour `requires_explicit_opt_in` | **Invariant only, as specified.** Stated in `LLMClient.__init__`'s docstring and frozen by a test; the general mechanism stays TS. |
 | R4 startup log + `/health` | **Implemented.** `provider.active` per role; `providers` block on `/health`. |
 | R4 UI badge | **Deferred to TS** (plan decision 16). |
-| R5 per-response attribution | **Deferred to the wk10 cutover.** No columns added to the Python store. |
+| R5 per-response attribution | **Implemented for cluster labels** (2026-08-07), as a per-cluster `generated_by` stamp inside the existing JSON column — still no columns added. Facets/summaries and the content-addressed rows remain TS-at-cutover. |
 | R6 `cli.py configure-provider` | **Implemented.** See `scripts/MODULE.md`. Provider selection refuses to proceed non-interactively without an explicit flag; `host-ai` and `check-provider` fail closed the same way. |
 
 R2 also covers dimensions: `EMBEDDING_DIMENSIONS` is catalog-derived, a missing
@@ -279,6 +279,39 @@ id, model, prompt version, run timestamp"), so R5 is that requirement extended
 to the provider dimension. Cheap to add while touching this code; expensive to
 retrofit once rows exist without it.
 
+**Resolved 2026-08-07 — stamp the JSON, add no columns. Done in Python now.**
+
+This section and the build table below contradicted each other: one says
+"cheap now, expensive to retrofit", the other defers R5 wholesale to the
+cutover. Both cannot be the operative reason, so the question was settled by
+checking whether rows actually accumulate rather than by weighing the two
+claims — the arguments were the thing in dispute, and the code was not.
+
+They do accumulate. `routes.py` persists ai-engine's `/cluster` payload
+verbatim into `sessions.clusters`, which is a **JSON TEXT column**
+(`manager.py`), and nothing recorded which provider or model produced those
+labels. But the build table's prohibition is specifically "do NOT add columns
+to the Python store" — and a JSON field is not a column. So the stamp goes on
+the cluster rows themselves: `generated_by: {provider, model, prompt_version,
+run_at}`, emitted by `TabClusterer.to_dict`, riding the existing persistence
+path with no migration and no part of the content-addressed schema built twice
+(plan decision 16).
+
+Two details that are the whole design:
+
+- **Per cluster, not per response.** Backend does
+  `clusters = response.json()["clusters"]` and persists only that array, so a
+  top-level attribution field would be dropped on the way to storage and the
+  rows would still be unattributable.
+- **Absent, not null, when nothing generated the name.** An "Uncategorized"
+  noise cluster and a failed label both carry no `generated_by` at all. A stamp
+  with null fields would read as "a provider produced this", which is exactly
+  the confusion `UNLABELED_CLUSTER_NAME` exists to prevent.
+
+What is still deferred to TypeScript: attribution on facets and summaries,
+which do not exist yet, and on the content-addressed rows, which are built once
+at the cutover.
+
 ### R6 — `cli.py configure-provider`
 
 The service cannot ask a question. The CLI can, and this is where the asking
@@ -342,7 +375,7 @@ the wk10 cutover; `scripts/cli.py` is tooling and survives.
 | R1, R2 (fail closed) | **Python, now** | ~15 lines. A live correctness and trust issue, and removing a fallback is subtractive — it cannot rot. |
 | R4 startup + `/health` | **Python, now** | ~20 lines against the existing `log_event` and health payload. |
 | R4 UI badge | **TS, at facade** | The Streamlit UI is replaced in wk1-6. Building it twice is exactly what plan decision 16 forbids. |
-| R5 per-response attribution | **TS, at cutover** | Needs the content-addressed schema, which is built once in TS. Do NOT add columns to the Python store for it. |
+| R5 per-response attribution | **Python now (JSON), TS at cutover (rows)** | Corrected 2026-08-07. Cluster labels already reach storage through a JSON column, so a per-cluster `generated_by` stamp adds no column and needs no migration — see the R5 section. Facets/summaries and the content-addressed rows still land in TS. |
 | R3 as a general mechanism | **TS** | Only matters once there is a router. The Python side gets the invariant for free from R1. |
 
 The guiding rule from the plan (decision 21): fix in Python only what the

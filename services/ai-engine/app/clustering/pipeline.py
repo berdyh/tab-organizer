@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -273,6 +274,43 @@ class TabClusterer:
 
         return result
 
+    # Bumped whenever the label prompt below changes in a way that could move
+    # the labels. Stamped alongside the provider so a stored label can be told
+    # apart from one the current prompt would produce -- the plan's
+    # replayability requirement ("every agent-produced row stamped with agent
+    # id, model, prompt version, run timestamp").
+    LABEL_PROMPT_VERSION = "cluster-label/1"
+
+    def _label_attribution(self) -> dict:
+        """Who produced this label, recorded on the row itself (spec R5).
+
+        R5 was deferred to the TypeScript cutover on the grounds that it
+        "needs the content-addressed schema", and the spec's own build table
+        says to add no columns to the Python store. But the spec ALSO argues
+        the opposite two sections earlier -- "cheap to add while touching this
+        code; expensive to retrofit once rows exist without it" -- so the
+        question was settled by checking whether rows actually accumulate
+        rather than by weighing the two claims.
+
+        They do: `routes.py` persists this payload verbatim into
+        `sessions.clusters`. That is a JSON TEXT column, and a JSON field is
+        not a column -- so the stamp satisfies R5's replayability intent
+        without adding a column, without a migration, and without building any
+        part of the content-addressed schema twice (plan decision 16).
+
+        Stamped per CLUSTER rather than per response, deliberately: backend
+        does `clusters = response.json()["clusters"]` and persists only that
+        array, so a top-level attribution field would be dropped on the way to
+        storage and the rows would still be unattributable.
+        """
+        config = getattr(self._llm_client, "llm_config", None)
+        return {
+            "provider": getattr(config, "provider", None),
+            "model": getattr(config, "model", None),
+            "prompt_version": self.LABEL_PROMPT_VERSION,
+            "run_at": datetime.now(timezone.utc).isoformat(),
+        }
+
     async def generate_cluster_label(self, cluster: Cluster) -> str:
         """Generate a descriptive label for a cluster using LLM."""
         if not self._llm_client:
@@ -307,6 +345,7 @@ Respond with ONLY the label, nothing else. Examples: "Python Async Programming",
                 prompt,
                 system=UNTRUSTED_TAB_LABEL_SYSTEM_PROMPT,
             )
+            cluster.metadata["generated_by"] = self._label_attribution()
             return label.strip().strip("\"'")[:50]
         except ProviderSelectionError:
             # No provider was chosen, or the chosen one is unusable. This is
@@ -476,6 +515,13 @@ Respond with ONLY the label, nothing else. Examples: "Python Async Programming",
             # which cluster's name is a placeholder rather than a label.
             if cluster.metadata.get("label_error"):
                 cluster_dict["label_error"] = cluster.metadata["label_error"]
+            # Spec R5: which provider and model produced this label, on the row
+            # that gets persisted. Absent when no label was generated (an
+            # "Uncategorized" noise cluster, or a run with no LLM client), which
+            # is the honest state -- an empty stamp would claim attribution for
+            # a name nothing generated.
+            if cluster.metadata.get("generated_by"):
+                cluster_dict["generated_by"] = cluster.metadata["generated_by"]
             if cluster.subclusters:
                 cluster_dict["subclusters"] = self.to_dict(cluster.subclusters)
             result.append(cluster_dict)
