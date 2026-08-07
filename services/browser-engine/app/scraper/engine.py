@@ -1285,21 +1285,23 @@ class ScraperEngine:
         # Convert exceptions to failed results
         final_results = []
         for url, result in zip(urls, results):
-            if isinstance(result, Exception):
+            # BaseException, not Exception. `gather(return_exceptions=True)`
+            # returns whatever the child raised, and CancelledError derives from
+            # BaseException -- so with the narrower check a cancelled task fell
+            # through to the else and was appended AS IF IT WERE a ScrapeResult.
+            # Every consumer then attribute-errors on `.status`/`.url`, far from
+            # the cancellation that caused it. A cancelled scrape is a failed
+            # scrape, and says so.
+            if isinstance(result, BaseException):
                 final_results.append(
                     ScrapeResult(
                         url=url,
                         status="failed",
-                        error=str(result),
+                        error=f"{type(result).__name__}: {result}",
                     )
                 )
             else:
-                # `gather(return_exceptions=True)` yields BaseException, not
-                # Exception, so a cancelled child task lands here rather than in
-                # the branch above and is appended as if it were a ScrapeResult.
-                # Reported as a latent bug (2026-08-07) rather than fixed here:
-                # widening the isinstance would change what a cancellation does.
-                final_results.append(cast(ScrapeResult, result))
+                final_results.append(result)
 
         return final_results
 

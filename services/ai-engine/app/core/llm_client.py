@@ -837,25 +837,40 @@ class LLMClient:
             elif self.llm_config is not None:
                 target_model = self.llm_config.model
 
+            # Found by the first real run of `make type-check` (2026-08-07):
+            # `target_model` is Optional here. With no provider selected yet, a
+            # `llm_provider` whose catalog entry declares no default llm model,
+            # and no explicit `llm_model`, it stays None -- the `elif
+            # self.llm_config is not None` branch above cannot supply one -- and
+            # it was then written straight onto `LLMConfig.model: str`,
+            # defeating the `or ""` on the constructor one line up. The switch
+            # half-succeeded: provider updated, model None, and the failure
+            # surfaced later as an unrelated error at request time.
+            #
+            # The embeddings branch below already refuses this exact case. That
+            # asymmetry was the whole bug, so the fix is to stop being
+            # asymmetric: fail closed here too, with the same {code, cause, fix}
+            # shape. This is R1/R2's rule applied to the switch path -- never
+            # proceed with a selection that was not actually made.
+            if not target_model:
+                raise ProviderSelectionError(
+                    code="llm_model_not_selected",
+                    cause=(
+                        f"Provider {target_provider!r} declares no default llm "
+                        "model and none was given."
+                    ),
+                    fix=(
+                        "Pass llm_model explicitly, or set LLM_MODEL to a model "
+                        f"belonging to {target_provider!r}."
+                    ),
+                )
+
             if self.llm_config is None:
                 self.llm_config = LLMConfig(
-                    provider=target_provider, model=target_model or ""
+                    provider=target_provider, model=target_model
                 )
             self.llm_config.provider = target_provider
-            # BUG, left as-is on purpose (found by the first real run of
-            # `make type-check`, 2026-08-07): `target_model` is Optional here.
-            # If no provider was selected yet, `llm_provider` names one whose
-            # catalog entry has no default llm model, and `llm_model` was not
-            # given, then `target_model` is None, the `elif self.llm_config is
-            # not None` branch above cannot supply one, and this line writes
-            # None into `LLMConfig.model: str` -- defeating the `or ""` on the
-            # constructor one line up. The embeddings branch below guards the
-            # same case with an explicit `embedding_model_not_selected` raise;
-            # the llm branch has no such guard. Fixing it is a behaviour change
-            # (a switch that silently half-succeeds today would start failing
-            # closed), so it is reported rather than smuggled in with a
-            # type-checker fix.
-            self.llm_config.model = target_model  # type: ignore[assignment]
+            self.llm_config.model = target_model
             self.llm_config.api_key = self._api_key_for(target_provider)
             self.llm_config.base_url = self._base_url_for(
                 target_provider, "LLM_BASE_URL"
