@@ -451,14 +451,23 @@ class TestGeometryBackendIsTheRealOne:
         assert clusterer.last_cluster_backend == "hdbscan"
 
     def test_a_missing_dependency_is_announced_rather_than_silently_swapped(
-        self, monkeypatch, caplog
+        self, monkeypatch
     ):
         """Force the fallback and assert it is loud.
 
         The fallback itself is legitimate -- a degraded pipeline beats a dead
         one. What was not legitimate was taking it without saying so.
+
+        Captures at the `taborganizer.<service>` logger rather than through
+        caplog. `services.observability.configure_logging` sets
+        `propagate = False` on that logger, so once any earlier test in the
+        session has configured logging, caplog (which listens at root) sees
+        nothing -- this test passed alone and failed in the full suite until
+        it stopped depending on that global state.
         """
         import builtins
+
+        from services import observability
 
         real_import = builtins.__import__
 
@@ -469,12 +478,24 @@ class TestGeometryBackendIsTheRealOne:
 
         monkeypatch.setattr(builtins, "__import__", refuse_hdbscan)
 
-        clusterer = TabClusterer(min_cluster_size=2, min_samples=1)
-        rng = np.random.default_rng(0)
-        embeddings = rng.normal(size=(12, 8))
+        records: list[logging.LogRecord] = []
 
-        with caplog.at_level(logging.WARNING):
-            clusterer.cluster_embeddings(embeddings)
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        logger = logging.getLogger(f"taborganizer.{observability._service_name}")
+        handler = _Capture(level=logging.WARNING)
+        logger.addHandler(handler)
+        previous_level = logger.level
+        logger.setLevel(logging.WARNING)
+        try:
+            clusterer = TabClusterer(min_cluster_size=2, min_samples=1)
+            rng = np.random.default_rng(0)
+            clusterer.cluster_embeddings(rng.normal(size=(12, 8)))
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
 
         assert clusterer.last_cluster_backend == "kmeans"
-        assert "clustering.hdbscan_unavailable" in caplog.text
+        assert any(r.getMessage() == "clustering.hdbscan_unavailable" for r in records)
