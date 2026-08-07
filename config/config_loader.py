@@ -9,6 +9,11 @@ import yaml
 PROJECT_ROOT = Path(__file__).parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 
+# How a `supports:` capability claim was established. Only 'called' means the
+# thing serving the capability was actually invoked; everything else is
+# unverified. See `supports_evidence:` in config/ai_models.yaml.
+CAPABILITY_EVIDENCE_CLASSES = frozenset({"called", "listing", "none"})
+
 
 class AIModelConfig:
     """Configuration manager for AI models and providers."""
@@ -261,7 +266,35 @@ class AIModelConfig:
         provider_config = self.get_provider_config(provider)
         supports = provider_config.get('supports', {})
         return supports.get(capability, False)
-    
+
+    def get_capability_evidence(
+        self, provider: str, capability: str
+    ) -> Optional[str]:
+        """Return how a `supports:` claim was established, or None if unrecorded.
+
+        See the `supports_evidence:` block on gemini_cli in ai_models.yaml for
+        the vocabulary. This is deliberately separate from
+        `is_provider_supported`: the flag says what the catalog claims, this
+        says what the claim is worth.
+        """
+        provider_config = self.get_provider_config(provider)
+        evidence = provider_config.get('supports_evidence', {})
+        if not isinstance(evidence, dict):
+            return None
+        value = evidence.get(capability)
+        return value if isinstance(value, str) else None
+
+    def is_capability_verified(self, provider: str, capability: str) -> bool:
+        """True only when the capability was established by CALLING it.
+
+        Absence is not proof, so an unrecorded claim answers False. That is the
+        whole point: `openrouter.supports.embeddings: false` rotted into
+        "verified" precisely because nothing distinguished a claim nobody had
+        tested from one somebody had.
+        """
+        return self.get_capability_evidence(provider, capability) == 'called'
+
+
     def get_api_key_env(self, provider: str) -> Optional[str]:
         """Get the environment variable name for API key.
         
@@ -330,6 +363,42 @@ class AIModelConfig:
         
         return results
     
+    def _validate_capability_evidence(
+        self, provider_name: str, provider_config: Dict[str, Any]
+    ) -> List[str]:
+        """Keep `supports_evidence:` honest: real capabilities, known vocabulary.
+
+        It cannot check that somebody actually made the call -- nothing in a
+        file can. What it can do is stop the record from drifting away from the
+        claim it annotates (an evidence key for a capability that no longer
+        exists), and stop the vocabulary from being widened by hand into
+        something that reads as proof ("assumed-verified", "probably").
+        """
+        errors: List[str] = []
+        evidence = provider_config.get('supports_evidence')
+        if evidence is None:
+            return errors
+        if not isinstance(evidence, dict):
+            return [
+                f"Provider {provider_name} has a non-mapping "
+                "'supports_evidence' field"
+            ]
+
+        supports = provider_config.get('supports') or {}
+        for capability, value in evidence.items():
+            if capability not in supports:
+                errors.append(
+                    f"Provider {provider_name} records supports_evidence for "
+                    f"'{capability}', which is not a declared capability"
+                )
+            if value not in CAPABILITY_EVIDENCE_CLASSES:
+                errors.append(
+                    f"Provider {provider_name} supports_evidence.{capability} "
+                    f"is {value!r}; expected one of "
+                    f"{sorted(CAPABILITY_EVIDENCE_CLASSES)}"
+                )
+        return errors
+
     def validate_config(self) -> List[str]:
         """Validate configuration for common issues.
         
@@ -345,7 +414,11 @@ class AIModelConfig:
                 errors.append(f"Provider {provider_name} missing 'supports' field")
             if 'default_models' not in provider_config:
                 errors.append(f"Provider {provider_name} missing 'default_models' field")
-        
+            errors.extend(
+                self._validate_capability_evidence(provider_name, provider_config)
+            )
+
+
         # Check models
         models = self.config.get('models', {})
         for model_name, model_config in models.items():

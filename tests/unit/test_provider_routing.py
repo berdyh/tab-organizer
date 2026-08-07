@@ -570,8 +570,24 @@ async def test_cluster_endpoint_refuses_instead_of_returning_placeholder_names(
     client = LLMClient()
 
     async def _embed(texts):
-        """Embeddings succeed -- that is what made the failure invisible."""
-        return [[float(i), 0.0, 0.0, 0.0] for i, _ in enumerate(texts)]
+        """Embeddings succeed -- that is what made the failure invisible.
+
+        Two tight, well-separated groups rather than a line of points. This
+        test reaches the LABEL path, and `cluster()` only labels clusters that
+        are not "Uncategorized" -- so a corpus real HDBSCAN classifies entirely
+        as noise generates no label call at all and the refusal never fires.
+        Collinear points did exactly that. The suite did not notice because the
+        test image shipped no hdbscan and silently ran k-means, which never
+        emits a noise label (fixed 2026-08-07, plan decision 48).
+        """
+        vectors = []
+        for i, _ in enumerate(texts):
+            base = 0.0 if i % 2 else 8.0
+            jitter = (i % 6) * 0.07
+            vectors.append(
+                [base + jitter, base - jitter, base + 2 * jitter, base + 0.5 - jitter]
+            )
+        return vectors
 
     monkeypatch.setattr(client, "embed", _embed)
     clusterer = TabClusterer(min_cluster_corpus=2)
@@ -583,7 +599,7 @@ async def test_cluster_endpoint_refuses_instead_of_returning_placeholder_names(
         session_id="s",
         urls=[
             {"url": f"https://example{i}.test/p", "title": f"t{i}", "content": "c"}
-            for i in range(6)
+            for i in range(12)
         ],
     )
 
@@ -1593,3 +1609,97 @@ def test_two_routes_to_one_family_keep_their_own_vector_widths(tmp_path):
         "two routes to one family collapsed onto a single vector width; "
         "every write to the other route's table would be refused"
     )
+
+
+# --------------------------------------------------------------------------- #
+# F7 -- a capability claim must carry its EVIDENCE CLASS as data
+#
+# `openrouter.supports.embeddings: false` survived a day and eleven downstream
+# artifacts because a prose annotation said "verified" and nothing in the data
+# distinguished a claim somebody had tested from one nobody had. `supports:`
+# says what the catalog claims; `supports_evidence:` says what the claim is
+# worth, and `is_capability_verified()` answers False for anything that is not
+# `called` -- including silence, so an unannotated provider never reads as
+# proven.
+# --------------------------------------------------------------------------- #
+def test_gemini_cli_capabilities_are_recorded_as_unverified():
+    """gemini_cli's honest state, frozen so it cannot quietly become "verified".
+
+    MODULE_INDEX.md states plainly that no generation through this adapter has
+    ever been observed (the dev-host CLI is unauthenticated, so
+    `test_gemini_cli_generates_against_the_real_subscription` has only ever
+    skipped), and `embeddings: false` came from reading `gemini --help`'s
+    command list -- a listing, which is the exact method that produced the
+    wrong openrouter flag.
+
+    Flipping either of these to `called` in the catalog fails here. That is the
+    point: the upgrade then costs a visible edit to this file, in the same
+    diff, where a reviewer can ask who made the call.
+    """
+    ai_config = get_ai_config()
+
+    assert ai_config.get_capability_evidence("gemini_cli", "llm") == "none"
+    assert ai_config.get_capability_evidence("gemini_cli", "embeddings") == "listing"
+    assert ai_config.is_capability_verified("gemini_cli", "llm") is False
+    assert ai_config.is_capability_verified("gemini_cli", "embeddings") is False
+
+
+def test_a_called_capability_is_the_only_one_that_reads_as_verified():
+    """Non-vacuity: `is_capability_verified` must be able to answer True.
+
+    Without this, a stub that returned False unconditionally would satisfy
+    every assertion above.
+    """
+    ai_config = get_ai_config()
+
+    assert ai_config.get_capability_evidence("openrouter", "embeddings") == "called"
+    assert ai_config.is_capability_verified("openrouter", "embeddings") is True
+    # An unannotated provider is unverified, never verified-by-default.
+    assert ai_config.get_capability_evidence("ollama", "embeddings") is None
+    assert ai_config.is_capability_verified("ollama", "embeddings") is False
+
+
+@pytest.mark.parametrize(
+    "evidence,expected_fragment",
+    [
+        ({"embeddings": "probably"}, "expected one of"),
+        ({"vision": "called"}, "not a declared capability"),
+        ("called", "non-mapping"),
+    ],
+)
+def test_validate_config_rejects_a_malformed_evidence_record(
+    tmp_path, evidence, expected_fragment
+):
+    """The vocabulary cannot be widened by hand into something reading as proof.
+
+    `validate_config()` cannot check that somebody made the call -- nothing in
+    a file can. It can stop the record from drifting off the claim it annotates
+    and stop "assumed-verified" from being invented.
+    """
+    from config.config_loader import AIModelConfig
+
+    catalog = tmp_path / "ai_models.yaml"
+    catalog.write_text(
+        yaml.safe_dump(
+            {
+                "providers": {
+                    "acme": {
+                        "supports": {"llm": True, "embeddings": False},
+                        "supports_evidence": evidence,
+                        "default_models": {"llm": "acme-1", "embedding": None},
+                    }
+                },
+                "models": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    errors = AIModelConfig(config_file=str(catalog)).validate_config()
+
+    assert any(expected_fragment in error for error in errors), errors
+
+
+def test_the_shipped_catalog_has_no_evidence_errors():
+    """Non-vacuity for the validator: the real file must pass it."""
+    assert get_ai_config().validate_config() == []

@@ -127,10 +127,33 @@ providers:
     cost_model: subscription
     supports:
       llm: true
-      # Verified by RUNNING `gemini --help` on 2026-08-06: the command list is
-      # mcp / extensions / skills / hooks / gemma / [query] and the option list
-      # has no embedding flag. The binary exposes no way to ask for a vector.
       embeddings: false
+    # EVIDENCE CLASS for each `supports:` claim above -- as DATA, not prose in
+    # a doc, so a consumer can tell a proven capability from an assumed one.
+    #   called  : the endpoint/binary serving the capability was INVOKED and
+    #             the result observed. Authoritative. This is the only value
+    #             that means "verified".
+    #   listing : read off a catalog, a `--help`, or a command list. Adjacent
+    #             evidence. This is exactly how `openrouter.supports.embeddings`
+    #             became durably wrong on 2026-08-04 -- and the prose
+    #             annotation saying "verified" is what made it survive review.
+    #   none    : assumed. No evidence at all.
+    # Anything other than `called` means UNVERIFIED. `validate_config()`
+    # enforces the vocabulary and that each key names a real capability;
+    # `config_loader.is_capability_verified()` is the read side, and it
+    # answers False when the key is absent, so silence never reads as proof.
+    supports_evidence:
+      # No generation through this adapter has EVER been observed: the CLI on
+      # the dev host is unauthenticated, so the one test that would prove it
+      # (test_gemini_cli_generates_against_the_real_subscription) has only ever
+      # skipped. `llm: true` is the reason this route exists, not something
+      # anyone has watched work.
+      llm: none
+      # Inferred on 2026-08-06 from `gemini --help`: its command list is
+      # mcp / extensions / skills / hooks / gemma / [query] and no option asks
+      # for a vector. That is a listing, not a call -- the same method that
+      # produced the wrong openrouter flag -- so it is recorded as such.
+      embeddings: listing
     default_models:
       llm: "gemini-2.5-flash"
       embedding: null
@@ -205,6 +228,14 @@ providers:
       # Before flipping this back, CALL the endpoint. Do not infer it from a
       # listing again.
       embeddings: true
+    # The machine-readable half of the note above. `called` is the only value
+    # that means verified, and this is the one provider here that has earned
+    # it: POST /v1/embeddings and POST /v1/chat/completions were both invoked
+    # with a real key on 2026-08-05 and answered 200. See gemini_cli for the
+    # vocabulary.
+    supports_evidence:
+      llm: called
+      embeddings: called
     default_models:
       # Was `openai/gpt-5.6-luna` until 2026-08-06. That is the METERED copy of
       # a model the user already pays for through the Codex subscription
