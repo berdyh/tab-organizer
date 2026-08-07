@@ -359,3 +359,43 @@ def test_updating_a_missing_key_still_appends_exactly_once(tmp_path, monkeypatch
 
     lines = env_file.read_text().splitlines()
     assert lines.count("EMBEDDING_PROVIDER=ollama") == 1
+
+
+def test_an_already_widened_env_file_is_narrowed_not_preserved(
+    tmp_path, monkeypatch, capsys, permissive_umask
+):
+    """The first version of this fix remediated nobody.
+
+    It preserved the existing mode, reasoning that an operator may have set it
+    deliberately. But the bug being fixed is exactly what PRODUCED today's 0644
+    files, so "deliberate" and "our own bug's leftovers" are indistinguishable
+    from the mode alone -- and every install created before the fix would have
+    kept group/world-readable API keys and bearer tokens forever.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("AI_PROVIDER=ollama\n")
+    env_file.chmod(0o644)
+    monkeypatch.setattr(init, "ENV_FILE", env_file)
+
+    init.update_env_var("AI_PROVIDER", "codex_cli")
+
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    # Narrowed out loud: a silent permission change is its own surprise.
+    assert "Narrowing" in capsys.readouterr().out
+
+
+def test_a_mode_already_tighter_than_owner_only_is_left_alone(
+    tmp_path, monkeypatch, permissive_umask
+):
+    """Non-vacuity guard: narrowing must not become "always 0600".
+
+    An operator running 0400 keeps 0400; only wider-than-owner is touched.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("AI_PROVIDER=ollama\n")
+    env_file.chmod(0o400)
+    monkeypatch.setattr(init, "ENV_FILE", env_file)
+
+    init.update_env_var("AI_PROVIDER", "codex_cli")
+
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o400

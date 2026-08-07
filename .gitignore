@@ -37,6 +37,13 @@ env/
 .env
 .env.local
 .env.*.local
+# The temp file `scripts/init.py` writes .env through. It holds the complete
+# .env (API keys + all four bearer tokens); the writer unlinks it on failure,
+# but a kill between write and rename leaves it behind, untracked and -- until
+# this line -- stageable by `git add .`.
+.env.tmp
+# Same, for `scripts/cli.py`'s service-token store.
+data/service-tokens.json.tmp
 
 # Docker
 docker-compose.override.yml

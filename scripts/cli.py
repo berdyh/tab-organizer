@@ -117,10 +117,29 @@ def _read_service_token_store() -> dict[str, str]:
 
 
 def _write_service_token_store(store: dict[str, str]) -> None:
-    """Persist the per-scope token map with owner-only permissions."""
+    """Persist the per-scope token map with owner-only permissions.
+
+    Created 0600 by `os.open`, not by `write_text` followed by `chmod`. That
+    pair is two syscalls: the file exists world-readable in between, and if the
+    process dies in the gap -- `./scripts/cli.py start` is a long interactive
+    command, so a Ctrl-C there is ordinary -- it stays 0644 permanently,
+    because `chmod` only runs on a later successful write. This file holds all
+    four service bearer tokens, and CLAUDE.md documents it as 0600, so the
+    invariant was stated and not enforced at creation. Same fix, same reason,
+    as `scripts/init.py`'s `.env` writer.
+    """
     SERVICE_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SERVICE_TOKEN_FILE.write_text(json.dumps(store, indent=2, sort_keys=True) + "\n")
-    SERVICE_TOKEN_FILE.chmod(0o600)
+    payload = json.dumps(store, indent=2, sort_keys=True) + "\n"
+    tmp_path = SERVICE_TOKEN_FILE.with_name(SERVICE_TOKEN_FILE.name + ".tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
+        os.chmod(tmp_path, 0o600)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    tmp_path.replace(SERVICE_TOKEN_FILE)
 
 
 def _legacy_single_token() -> str:

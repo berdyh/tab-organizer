@@ -44,6 +44,33 @@ def run_command(command: List[str], *, check: bool = True, capture_output: bool 
     )
 
 
+def _target_env_mode() -> int:
+    """The mode .env should end up with: never wider than owner-only.
+
+    Preserving the existing mode was the first version of this fix, and it
+    remediated nobody. The bug being fixed IS what produced today's 0644 files
+    (`Path.write_text` under the stock 022 umask, whose mode `replace` then
+    carried onto .env), so "a mode the operator deliberately set" is
+    indistinguishable from "the mode our own bug left behind" -- and every
+    existing install would have kept its group/world-readable secrets forever.
+    A `cp .env.example .env` produces the same 0644.
+
+    So a wider-than-0600 mode is narrowed, once, out loud. Anything already at
+    or below 0600 is left exactly as it is (an operator running 0400 keeps it).
+    """
+    if not ENV_FILE.exists():
+        return SECRET_FILE_MODE
+    current = ENV_FILE.stat().st_mode & 0o777
+    if current & 0o077:
+        print(
+            f"Narrowing {ENV_FILE.name} from {current:04o} to {SECRET_FILE_MODE:04o}: "
+            "it holds provider API keys and all four service bearer tokens, and was "
+            "readable by other local accounts."
+        )
+        return SECRET_FILE_MODE
+    return current
+
+
 def _write_env_file_atomically(text: str) -> None:
     """Replace .env's contents in one atomic operation (temp file + rename).
 
@@ -62,7 +89,7 @@ def _write_env_file_atomically(text: str) -> None:
     operator deliberately set is preserved as-is.
     """
     tmp_path = ENV_FILE.with_name(ENV_FILE.name + ".tmp")
-    mode = ENV_FILE.stat().st_mode & 0o777 if ENV_FILE.exists() else SECRET_FILE_MODE
+    mode = _target_env_mode()
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_FILE_MODE)
     try:
         with os.fdopen(fd, "w") as handle:
