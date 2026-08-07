@@ -246,14 +246,6 @@ class AuthDetector:
             return self._challenge_result(reason, url)
 
         # Check for login form
-        form_indicators = [
-            "<form",
-            'type="password"',
-            "type='password'",
-            'name="password"',
-            "name='password'",
-        ]
-
         has_form = "<form" in html_lower
         has_password = (
             'type="password"' in html_lower or "type='password'" in html_lower

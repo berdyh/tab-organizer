@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 
 from services.observability import log_event, request_id_headers
 
@@ -24,11 +24,9 @@ from ..platform.store import (
     PlatformValidationError,
 )
 from ..sessions.manager import (
-    SCRAPE_STATUS_TO_URL_STATUS,
     IngestCapture,
     SessionManager,
 )
-from ..url_input.store import URLStore
 from . import ingest
 
 # Global instances

@@ -1,7 +1,6 @@
 """URL Store with set-like deduplication."""
 
 import hashlib
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional

@@ -139,61 +139,6 @@ class Exporter:
 
         return "\n".join(lines)
 
-    def export_notion(self, session: Session) -> dict:
-        """Export session to Notion-compatible format (blocks)."""
-        blocks = [
-            {
-                "object": "block",
-                "type": "heading_1",
-                "heading_1": {
-                    "rich_text": [{"type": "text", "text": {"content": session.name}}]
-                },
-            }
-        ]
-
-        if session.clusters:
-            for cluster in session.clusters:
-                cluster_name = cluster.get("name", "Unnamed Cluster")
-
-                # Add cluster heading
-                blocks.append(
-                    {
-                        "object": "block",
-                        "type": "heading_2",
-                        "heading_2": {
-                            "rich_text": [
-                                {"type": "text", "text": {"content": cluster_name}}
-                            ]
-                        },
-                    }
-                )
-
-                # Add URLs as bookmarks
-                for url_data in cluster.get("urls", []):
-                    url = (
-                        url_data
-                        if isinstance(url_data, str)
-                        else url_data.get("url", "")
-                    )
-                    blocks.append(
-                        {
-                            "object": "block",
-                            "type": "bookmark",
-                            "bookmark": {"url": url},
-                        }
-                    )
-        else:
-            for record in session.url_store.get_all():
-                blocks.append(
-                    {
-                        "object": "block",
-                        "type": "bookmark",
-                        "bookmark": {"url": record.original},
-                    }
-                )
-
-        return {"blocks": blocks}
-
     def export_html(self, session: Session) -> str:
         """Export session to HTML format."""
         try:

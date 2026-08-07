@@ -9,7 +9,7 @@ from typing import Awaitable, Callable, Optional
 from urllib.parse import urljoin, urlparse
 
 import httpx
-from playwright.async_api import Browser, Page
+from playwright.async_api import Browser
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 

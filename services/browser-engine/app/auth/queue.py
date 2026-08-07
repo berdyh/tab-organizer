@@ -6,7 +6,7 @@ import ipaddress
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable, Optional
+from typing import Optional
 from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
@@ -374,7 +374,6 @@ class AuthQueue:
     def __init__(self, encryption_key: Optional[str] = None):
         self._pending: dict[str, AuthRequest] = {}  # domain → request
         self._credential_store = CredentialStore(encryption_key)
-        self._callbacks: dict[str, list[Callable[[dict], Awaitable[None]]]] = {}
         self._lock = asyncio.Lock()
 
     def _extract_domain(self, url: str) -> str:
@@ -479,15 +478,6 @@ class AuthQueue:
             # Remove from pending
             del self._pending[domain]
 
-        # Trigger callbacks
-        if domain in self._callbacks:
-            for callback in self._callbacks[domain]:
-                try:
-                    await callback(credentials)
-                except Exception:
-                    pass
-            del self._callbacks[domain]
-
         return True
 
     def get_credentials(self, url: str) -> Optional[dict]:
@@ -510,10 +500,6 @@ class AuthQueue:
         domain = self._extract_domain(url)
         return self._credential_store.has_credentials(domain)
 
-    def get_pending(self) -> list[AuthRequest]:
-        """Get all pending auth requests."""
-        return list(self._pending.values())
-
     def get_pending_count(self) -> int:
         """Get count of pending auth requests."""
         return len(self._pending)
@@ -521,16 +507,6 @@ class AuthQueue:
     def get_pending_for_session(self, session_id: str) -> list[AuthRequest]:
         """Get pending auth requests for a specific session."""
         return [r for r in self._pending.values() if r.session_id == session_id]
-
-    async def register_callback(
-        self,
-        domain: str,
-        callback: Callable[[dict], Awaitable[None]],
-    ) -> None:
-        """Register a callback for when credentials are provided."""
-        if domain not in self._callbacks:
-            self._callbacks[domain] = []
-        self._callbacks[domain].append(callback)
 
     async def cancel_request(self, domain: str) -> bool:
         """Cancel a pending auth request."""
