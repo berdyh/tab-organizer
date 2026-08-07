@@ -383,6 +383,21 @@ class AgentCLILLMProvider(BaseLLMProvider):
             raise AgentCLIError(
                 f"{self.provider_label} timed out after {self.timeout:.0f}s"
             ) from exc
+        except BaseException:
+            # Cancellation from OUTSIDE this coroutine, not our own timeout.
+            # `verify_provider_live` wraps the adapter call in its own
+            # `asyncio.wait_for(..., 20)`, and the resulting CancelledError
+            # propagates through `communicate()` without reaching the branch
+            # above -- while the child was spawned `start_new_session=True`, so
+            # it does not receive the parent's signals either. Result: one
+            # detached CLI per attempt. The documented `gemini -p` hazard makes
+            # that concrete: logged out, it blocks forever on a browser-login
+            # prompt, so every probe of an unauthenticated gemini_cli left a
+            # process holding the user's subscription session.
+            #
+            # `BaseException` deliberately: CancelledError is not an Exception.
+            await self._terminate_process(process)
+            raise
 
         stdout_text = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
@@ -841,11 +856,31 @@ class CodexAcpLLMProvider(AgentCLILLMProvider):
             if close_after_turn:
                 await self._close_session(session_name)
 
+    # The shape `_session_name` generates for itself. An operator-supplied name
+    # must match it too: the value is emitted as the VALUE of `--name`/`--session`
+    # and as a bare positional on `sessions close`, so one starting with `-`
+    # (`CODEX_ACP_SESSION_NAME='--approve-all'`) is parsed by acpx as a flag
+    # rather than as the option's argument -- the same env-into-argv class as
+    # `*_COMMAND`, with a smaller reach.
+    # The FIRST character may not be `-`, which is the whole point: a character
+    # class of `[A-Za-z0-9._-]` alone happily matches `--approve-all`, so the
+    # first version of this rule permitted exactly the value it exists to
+    # reject. Caught by writing the hostile cases before the rule.
+    SESSION_NAME_RE = re.compile(r"\A[A-Za-z0-9._][A-Za-z0-9._-]{0,127}\Z")
+
     def _session_name(self) -> str:
         configured = os.getenv(self.session_name_env, "").strip()
-        if configured:
-            return configured
-        return f"tab-organizer-llm-{uuid.uuid4().hex}"
+        if not configured:
+            return f"tab-organizer-llm-{uuid.uuid4().hex}"
+        if not self.SESSION_NAME_RE.match(configured):
+            # Not echoed: an operator could paste anything in here.
+            raise AgentCLIError(
+                f"agent_cli_session_name_rejected: {self.session_name_env} must "
+                "match [A-Za-z0-9._-] and be at most 128 characters. A value "
+                "beginning with '-' is read by the CLI as a flag rather than as "
+                "the session name."
+            )
+        return configured
 
     def _base_args(self) -> list[str]:
         return [
