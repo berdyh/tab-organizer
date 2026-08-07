@@ -169,6 +169,7 @@ services:
       - ./config:/app/config
       - ./scripts:/app/scripts:ro
       - ./docs:/app/docs:ro
+      - ./templates:/app/templates:ro
       - ./.github:/app/.github:ro
       - ./Makefile:/app/Makefile:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro

@@ -25,6 +25,11 @@ RUN uv pip install --system --no-cache-dir -r requirements.txt
 
 COPY services/ ./services/
 COPY config/ ./config/
+# Needed by tests/unit/test_export_html_template.py. The export template was
+# absent from the backend-core image for its whole life and nobody noticed,
+# because there were no export tests; a test image that also lacks it would
+# reproduce the blind spot rather than close it.
+COPY templates/ ./templates/
 COPY scripts/ ./scripts/
 COPY docs/ ./docs/
 COPY .github/ ./.github/
