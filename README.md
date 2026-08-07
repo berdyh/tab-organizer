@@ -348,7 +348,9 @@ The tab-management endpoints require bearer auth with `BACKEND_AGENT_API_TOKEN`.
 | `/api/v1/export` | POST | Export session |
 | `/api/v1/auth/pending` | GET | List domains awaiting credentials |
 | `/api/v1/auth/credentials` | POST | Submit credentials for a pending domain |
-| `/api/v1/callback/scrape-complete` | POST | Internal callback used by browser-engine |
+| `/api/v1/chat` | POST | Chat over the indexed corpus; proxies AI Engine `/chat` (agent token) |
+| `/api/v1/ingest/v1` | POST | **The** content-write path: browser-engine delivers every capture here (capture_id + attempt give replay protection and newest-wins ordering). Backend Core is the only ai-engine `/index` writer |
+| `/api/v1/callback/scrape-complete` | POST | **Deprecated** shim over `/ingest/v1`, kept for compatibility; new callers use `/ingest/v1` |
 | `/api/v1/platform/auth/signup` | POST | Create local platform account |
 | `/api/v1/platform/auth/login` | POST | Create platform session |
 | `/api/v1/platform/me` | GET | Current platform user profile |
@@ -399,7 +401,7 @@ targets are limited to public `http`/`https` URLs unless
 | `/auth/pending/{session_id}` | GET | Pending auth requests for one session |
 | `/auth/pending/{domain}` | DELETE | Drop a pending auth request |
 | `/auth/credentials` | POST | Submit credentials |
-| `/auth/expire` | POST | Force-expire a stored credential |
+| `/auth/expire` | POST | Expire old *pending auth requests* (`max_age_seconds`, default 3600). It does not touch stored credentials |
 
 ## Contributing
 

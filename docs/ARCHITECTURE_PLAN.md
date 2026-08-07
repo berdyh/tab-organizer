@@ -648,7 +648,10 @@ folded into the phase-1 task list.
 | 44 | `sec_managed` probe inputs and expected refusals get extracted to language-neutral JSON fixtures while Python behaviour is verified | Mechanical (hedge) |
 
 **Why 42 revises the earlier date-box.** The wk0 triage set T6 "before TS facade
-work begins" without checking what the 19 `sec_managed` probes actually cover.
+work begins" without checking what the `sec_managed` probes actually cover.
+(That count was recorded as 19 here and in `tests/security/README.md`; collection
+reports **21** as of SECSUITE 1.5.0 — SEC-46/47 updated the prose and not the
+arithmetic. Corrected 2026-08-07.)
 They break down as: agent subprocess hardening (SEC-28..33, whole file) →
 ai-engine providers; credential isolation and URL-safety-under-config →
 browser-engine; prompt envelope → ai-engine RAG/clustering; plus token scopes
@@ -659,7 +662,7 @@ a Python stack scheduled for deletion as the proving ground.
 
 **Why 43 covers the wk1 gap.** Only CORS and token scopes bite from the first
 facade commit, and neither needs harness-controlled env — they are plain HTTP
-assertions. Attached mode already runs 173 of 192 probes against any
+assertions. Attached mode already runs 192 of 213 probes against any
 implementation. Point `SEC_BACKEND_URL` at the TS facade and they run.
 
 **Why 44 exists.** The argument for deferring T6 is sound; the risk in deferring
