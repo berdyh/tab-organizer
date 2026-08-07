@@ -10,6 +10,8 @@ import os
 
 import pytest
 
+from tests.security import contracts
+
 pytestmark = [pytest.mark.security]
 
 ENTRIES = ["browser", "backend"]
@@ -161,16 +163,55 @@ def test_sec9_dns_rebinding_pin(browser, canary_listener):
 
 @pytest.mark.sec_managed
 def test_sec10_escape_hatch_default_off(browser, canary_listener, monkeypatch):
-    url = f"http://127.0.0.1:{canary_listener.port}/"
+    """SCRAPE_ALLOW_PRIVATE_NETWORKS is off by default and really opens when set.
 
-    # Default (flag absent): refused, no connection.
-    monkeypatch.delenv("SCRAPE_ALLOW_PRIVATE_NETWORKS", raising=False)
-    refused = browser.post("/scrape/single", token=browser.token, json={"url": url})
-    assert refused.status_code == 400
-    assert canary_listener.count == 0
+    ``sec_managed``: proving the DEFAULT means deleting the variable from the
+    service's environment, which attached mode cannot do — so the case lives in
+    ``fixtures/url_safety_escape_hatch.json`` (plan decision 44) for the planned
+    ``SEC_BOOT_*_CMD`` runner to drive against any language. Its siblings
+    SEC-1..9 need no controlled env and stay inline.
+    """
+    spec = contracts.probe_spec("url_safety_escape_hatch", "SEC-10")
+    staging = spec["staging"]
+    assert staging["service"] == "browser"
+    url = spec["input"]["url_template"].format(canary_port=canary_listener.port)
 
-    # With the flag, and only the flag, the door opens.
-    monkeypatch.setenv("SCRAPE_ALLOW_PRIVATE_NETWORKS", "true")
-    allowed = browser.post("/scrape/single", token=browser.token, json={"url": url})
-    assert allowed.status_code != 400
-    assert canary_listener.count >= 1, "flag did not permit the loopback fetch"
+    steps = spec["steps"]
+    assert [step["step"] for step in steps] == ["hatch_absent", "hatch_set"], (
+        "SEC-10 must run both halves: default refused, flag-set permitted"
+    )
+    required_canary_key = {
+        "hatch_absent": "canary_connections",
+        "hatch_set": "canary_connections_min",
+    }
+
+    for step in steps:
+        label = f"SEC-10[{step['step']}]"
+        expect = step["expect"]
+        contracts.assert_expect_keys_consumed(
+            expect,
+            ["response", "canary_connections", "canary_connections_min"],
+            label=label,
+        )
+        assert required_canary_key[step["step"]] in expect, (
+            f"{label}: the canary assertion is what makes 'refused' mean "
+            f"'never dialled'; it may not be dropped"
+        )
+
+        for name in step.get("unset_env", []):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in (step.get("set_env") or {}).items():
+            monkeypatch.setenv(name, value)
+
+        response = browser.request(
+            staging["method"], staging["path"], token=browser.token, json={"url": url}
+        )
+        contracts.assert_response(response, expect["response"], label=label)
+        if "canary_connections" in expect:
+            assert canary_listener.count == expect["canary_connections"], (
+                f"{label}: a connection was attempted to a refused target"
+            )
+        if "canary_connections_min" in expect:
+            assert canary_listener.count >= expect["canary_connections_min"], (
+                f"{label}: flag did not permit the loopback fetch"
+            )

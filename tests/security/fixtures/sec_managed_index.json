@@ -1,0 +1,21 @@
+{
+  "_comment": "Frozen registry (SEC-48; tests/security/test_fixture_completeness.py; SECSUITE frozen suite). Plan decision 44 extracted every `sec_managed` probe's inputs and expected refusals to language-neutral JSON so `SEC_BOOT_*_CMD` boot mode (planned, ~wk8) becomes a runner over data. This file is the guard on that hedge: SEC-48 enumerates the `sec_managed` probes by importing the suite's own test modules and reading their markers, then requires every one of them to appear here AND to resolve to a real probe entry in a real fixture file -- and requires every entry here to still name a live probe, so the registry cannot rot in the other direction either. Without it, probe N+1 gets added inline next year and the hedge silently stops covering the suite. Adding a `sec_managed` probe therefore means: write the fixture entry, register it here, add the ledger row, bump SECSUITE_VERSION. Changing this file is a security decision (see tests/security/README.md).",
+  "entries": [
+    {"module": "test_agent_subprocess_hardening", "test": "test_sec28_claude_tools_disabled_by_default", "fixture": "agent_subprocess_hardening", "probe": "SEC-28"},
+    {"module": "test_agent_subprocess_hardening", "test": "test_sec29_codex_sandboxed_and_ephemeral", "fixture": "agent_subprocess_hardening", "probe": "SEC-29"},
+    {"module": "test_agent_subprocess_hardening", "test": "test_sec30_codex_refuses_untrusted_context_by_default", "fixture": "agent_subprocess_hardening", "probe": "SEC-30"},
+    {"module": "test_agent_subprocess_hardening", "test": "test_sec31_guardrail_preamble_precedes_untrusted_content", "fixture": "agent_subprocess_hardening", "probe": "SEC-31"},
+    {"module": "test_agent_subprocess_hardening", "test": "test_sec32_runaway_agent_bounded", "fixture": "agent_subprocess_hardening", "probe": "SEC-32"},
+    {"module": "test_agent_subprocess_hardening", "test": "test_sec33_agent_cwd_confined_to_workdir", "fixture": "agent_subprocess_hardening", "probe": "SEC-33"},
+    {"module": "test_agent_subprocess_hardening", "test": "test_sec46_gemini_headless_read_only_and_never_interactive", "fixture": "agent_subprocess_hardening", "probe": "SEC-46"},
+    {"module": "test_agent_subprocess_hardening", "test": "test_sec47_gemini_refuses_untrusted_context_by_default", "fixture": "agent_subprocess_hardening", "probe": "SEC-47"},
+    {"module": "test_cors_policy", "test": "test_sec43_configured_ui_origin_is_still_allowed", "fixture": "cors_policy", "probe": "SEC-43"},
+    {"module": "test_credential_isolation", "test": "test_agent_subprocess_env_contains_no_secrets", "fixture": "credential_isolation", "probe": "SEC-25"},
+    {"module": "test_credential_isolation", "test": "test_agent_diagnostics_redact_planted_secret", "fixture": "credential_isolation", "probe": "SEC-27"},
+    {"module": "test_prompt_envelope", "test": "test_sec34_rag_chat_wraps_retrieved_text", "fixture": "prompt_envelope", "probe": "SEC-34"},
+    {"module": "test_prompt_envelope", "test": "test_sec35_cluster_label_prompts_carry_envelope", "fixture": "prompt_envelope", "probe": "SEC-35"},
+    {"module": "test_token_scopes", "test": "test_sec21_fail_closed_on_unset_config", "fixture": "token_scope_failclosed", "probe": "SEC-21"},
+    {"module": "test_token_scopes", "test": "test_sec22_ai_allow_unauthenticated_default_off", "fixture": "token_scope_failclosed", "probe": "SEC-22"},
+    {"module": "test_url_safety_scrape", "test": "test_sec10_escape_hatch_default_off", "fixture": "url_safety_escape_hatch", "probe": "SEC-10"}
+  ]
+}

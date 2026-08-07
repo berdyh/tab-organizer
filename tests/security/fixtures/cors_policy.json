@@ -1,0 +1,60 @@
+{
+  "_comment": "Frozen contract (SEC-43; tests/security/test_cors_policy.py; SECSUITE frozen suite). Browser origins are an allowlist, never `*`, and credentials are never allowed. All three services once ran allow_origins=[\"*\"] with allow_credentials=True, which -- combined with unauthenticated read endpoints on backend-core -- was a full cross-site corpus-exfiltration primitive. Two of the three probes here are plain HTTP and run in attached mode against any language; the THIRD (`configured_ui_origin_allowed`) is `sec_managed` because only a harness that owns the service's environment knows which origin was configured, so it AUTO-SKIPS in attached mode -- and it is the non-vacuity half: without it, deleting the CORS middleware entirely would pass the foreign-origin probes. Plan decision 44 extracts the inputs and expectations here so `SEC_BOOT_*_CMD` boot mode (planned, ~wk8) can drive the non-vacuity half against any language. Changing this file is a security decision: it requires a docs/MODULE_INDEX.md ledger row and a SECSUITE_VERSION bump (see tests/security/README.md).",
+  "shared": {
+    "services": ["backend", "ai", "browser"],
+    "probe_path": "/health",
+    "foreign_origin": "https://evil.example",
+    "origins_env": "CORS_ALLOWED_ORIGINS",
+    "default_ui_origin": "http://localhost:8089",
+    "forbidden_allow_credentials": "true"
+  },
+  "probes": {
+    "SEC-43": {
+      "_note": "One invariant, three checks. The first two are attached-mode-capable; the third is the `sec_managed` non-vacuity check.",
+      "checks": {
+        "foreign_origin_preflight_refused": {
+          "_note": "An OPTIONS preflight claiming an arbitrary site must not be granted.",
+          "managed_only": false,
+          "method": "OPTIONS",
+          "request_headers": {
+            "Origin": "{foreign_origin}",
+            "Access-Control-Request-Method": "GET"
+          },
+          "expect": {
+            "access_control_allow_origin_not_in": ["{foreign_origin}", "*"],
+            "access_control_allow_credentials_not": "true"
+          }
+        },
+        "foreign_origin_simple_request_not_echoed": {
+          "_note": "The actual (non-preflight) response must not be readable cross-site either.",
+          "managed_only": false,
+          "method": "GET",
+          "request_headers": {"Origin": "{foreign_origin}"},
+          "expect": {
+            "access_control_allow_origin_not_in": ["{foreign_origin}", "*"],
+            "access_control_allow_credentials_not": "true"
+          }
+        },
+        "configured_ui_origin_allowed": {
+          "_note": "NON-VACUITY (`sec_managed`): the policy must be an allowlist that still GRANTS the configured UI origin, not a removed middleware. Managed-only because attached mode cannot know the running server's configured origin.",
+          "managed_only": true,
+          "method": "OPTIONS",
+          "origin_source": {
+            "env": "{origins_env}",
+            "take": "first_non_empty_comma_separated_entry",
+            "strip_trailing_slash": true,
+            "default": "{default_ui_origin}"
+          },
+          "request_headers": {
+            "Origin": "{configured_origin}",
+            "Access-Control-Request-Method": "GET"
+          },
+          "expect": {
+            "access_control_allow_origin_equals": "{configured_origin}",
+            "access_control_allow_credentials_not": "true"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # Security-Invariant Suite (FROZEN)
 
-This suite is **FROZEN** at `SECSUITE_VERSION = "1.4.0"` (see `__init__.py`). It
+This suite is **FROZEN** at `SECSUITE_VERSION = "1.6.0"` (see `__init__.py`). It
 is the black-box security contract for the Tab Organizer backend. The
 TypeScript reimplementation **must pass the same probes** by pointing the
 harness env vars at its own servers/boot commands — the test IDs and fixture
@@ -19,7 +19,58 @@ in `docs/MODULE_INDEX.md`'s ledger and a bump of `SECSUITE_VERSION`. See
 `MODULE.md` for the full invariant list and the TS-porting rules for the
 `sec_seam` exceptions (SEC-26 MCP tool surface, SEC-39 auth classifier, SEC-40
 RAG chat prompt-assembly seam, SEC-41 cluster-label prompt-assembly seam,
-SEC-42 agent env-allowlist drift check).
+SEC-42 agent env-allowlist drift check, SEC-48 fixture-completeness guard).
+
+## New in 1.6.0 (plan decision 44 — the boot-mode hedge, executed)
+
+`SEC_BOOT_*_CMD` is still not implemented and its deferral to ~wk8 still
+stands (decision 42). Decision 44 is the hedge against that deferral, and it
+is now done: **every `sec_managed` probe's inputs and expected refusals live
+in `fixtures/*.json`, not inline in Python.**
+
+| Fixture | Probes |
+| --- | --- |
+| `agent_subprocess_hardening.json` | SEC-28..33, SEC-46, SEC-47 |
+| `credential_isolation.json` | SEC-25, SEC-27 |
+| `prompt_envelope.json` | SEC-34, SEC-35 (+ the shared envelope contract SEC-40/41/36 also read) |
+| `token_scope_failclosed.json` | SEC-21, SEC-22 |
+| `cors_policy.json` | SEC-43 (all three checks; the third is the `sec_managed` one) |
+| `url_safety_escape_hatch.json` | SEC-10 |
+| `sec_managed_index.json` | the registry SEC-48 reconciles |
+| `agent_env_allowlist.json` | unchanged — SEC-25/42, the pattern this generalises |
+
+Grouping is one file per probe FAMILY (the unit that shares staging, shared
+constants and a rationale), not one per probe and not one for the whole suite:
+a boot-mode runner loads the file for the subsystem it is exercising, and a
+reviewer sees a family's contract whole.
+
+- `contracts.py` holds the loader and the assertion runners. They are
+  deliberately **strict**: an unrecognised key inside a contract block raises
+  instead of being ignored, an empty contract block raises, and
+  `assert_expect_keys_consumed` fails if a probe stops reading one of its
+  fixture's `expect` keys. A generic runner that silently skips what it does
+  not understand is how a frozen contract gets weakened by a typo. Only
+  underscore-prefixed keys (`_comment`, `_note`) are ignorable.
+- **SEC-48** (`test_fixture_completeness.py`, `sec_seam`) is the guard on the
+  hedge. It enumerates the `sec_managed` probes from the suite's own modules'
+  markers and reconciles them three ways against `sec_managed_index.json`:
+  every probe registered, every entry resolving to a real non-empty contract
+  block, and no entry naming a probe that no longer exists. Without it, probe
+  N+1 gets added inline next year and boot mode's data set silently stops
+  covering the suite.
+- No assertion was weakened. Every probe asserts exactly what it asserted at
+  1.5.0; this changed **where** the contract lives, not what it says. Verified
+  by mutation in both directions for each family (fixture mutated → probe
+  fails; service code mutated → probe fails); the outputs are in the ledger
+  row.
+
+**Corrected counts.** The 1.5.0 edit added SEC-46/47 without updating the
+arithmetic in this file, which still said "175 of 194" and "the 19
+`sec_managed` probes" — both were the pre-1.5.0 numbers. At 1.5.0 the real
+figures were 196 probes / 21 `sec_managed`; at 1.6.0 they are **213 probes, 21
+`sec_managed`, 192 that run in attached mode**. `docs/ARCHITECTURE_PLAN.md`'s
+Addendum 2026-08-05 carries the same stale pair ("173 of 192", "19") and is
+outside this suite's ownership; it needs the same correction.
 
 ## New in 1.5.0 (gemini_cli adapter)
 
@@ -104,8 +155,8 @@ pytest tests/security -q
 - **Attached mode**: set any `SEC_*_URL`; the harness issues real HTTP to the
   running services and `sec_managed` probes auto-skip (their env can't be
   controlled remotely). Attached mode is language-agnostic — it is how the
-  TypeScript port runs this suite today, and 175 of 194 probes work there
-  (SEC-46/47 are `sec_managed` and join the 19 that auto-skip).
+  TypeScript port runs this suite today, and **192 of 213** probes work there;
+  the **21** `sec_managed` ones auto-skip.
 
 ### `SEC_BOOT_*_CMD` — PLANNED, NOT IMPLEMENTED
 
@@ -115,9 +166,10 @@ regains per-test env control against any language. **It does not exist.** The
 name appears only in prose here, in `MODULE.md`, and in `conftest.py`'s
 docstring; there is no implementation behind it.
 
-What that costs today: the 19 `sec_managed` probes auto-skip in attached mode,
+What that costs today: the 21 `sec_managed` probes auto-skip in attached mode,
 so a TypeScript port can go green having never exercised agent subprocess
-hardening (SEC-28..33), credential isolation, prompt-envelope containment, or
+hardening (SEC-28..33, SEC-46..47), credential isolation, prompt-envelope
+containment, token fail-closed defaults, the CORS non-vacuity check, or
 URL-safety refusals under controlled config. Those are premise 4 in executable
 form.
 
@@ -132,12 +184,15 @@ The two invariants that DO apply from the first facade commit — CORS policy an
 token scopes — need no boot mode. They are plain HTTP assertions: point
 `SEC_BACKEND_URL` at the TS facade and they run in attached mode.
 
-**Hedge against deferring** (do this while the Python behaviour is verified and
-nobody is under cutover pressure): extract each `sec_managed` probe's inputs and
-expected refusals into language-neutral JSON fixtures, the pattern SEC-25/42
-already use for the agent env allowlist. Boot mode then becomes a runner over
-data, and the contract cannot be quietly softened to fit whatever got built —
-changing it means editing a fixture in a reviewable diff.
+**Hedge against deferring — DONE at 1.6.0** (decision 44). Each `sec_managed`
+probe's inputs and expected refusals now live in language-neutral JSON
+fixtures, the pattern SEC-25/42 already used for the agent env allowlist; see
+"New in 1.6.0" above for the file-to-probe map. Boot mode is therefore a runner
+over data when it lands, and the contract cannot be quietly softened to fit
+whatever got built — changing it means editing a fixture in a reviewable diff,
+and SEC-48 fails if a new `sec_managed` probe skips the fixture entirely.
+What boot mode still owes: the mechanism to *launch* a service with that data's
+environment. The data itself is no longer blocked on it.
 - `@pytest.mark.security` — all tests. `integration` — needs internet/live LLM
   (module-gated on `SEC_ALLOW_NETWORK=1`). `sec_managed` — needs
   harness-controlled env. `sec_seam` — Python-seam exception with a TS-porting
@@ -146,7 +201,7 @@ changing it means editing a fixture in a reviewable diff.
 ## Seam exceptions
 
 Every probe here is meant to be black-box (HTTP status codes, response bodies,
-recorded subprocess argv/env/stdin/cwd). Five probes touch importable Python
+recorded subprocess argv/env/stdin/cwd). Six probes touch importable Python
 instead, for the reasons below — listed here so a reader doesn't mistake an
 accepted, reasoned exception for an oversight:
 
@@ -178,6 +233,12 @@ accepted, reasoned exception for an oversight:
   against the frozen `fixtures/agent_env_allowlist.json` contract, as a drift
   check. TS-porting rule: once the TS Agent SDK adapter lands, pin its
   equivalent allowlist constant/config against the same fixture file.
+- **SEC-48** (`test_fixture_completeness.py`, `sec_seam`) — imports the suite's
+  own test modules to read their pytest markers, which is the only way to ask
+  "which `sec_managed` probes exist" without hardcoding the answer it is
+  checking. TS-porting rule: enumerate the TS suite's equivalent
+  managed-only-tagged cases and apply the same three-way reconciliation against
+  the same `fixtures/sec_managed_index.json`.
 
 **SEC-25 is no longer a seam exception.** It used to import
 `AgentCLILLMProvider.ENV_ALLOWLIST` directly; it now asserts the observed

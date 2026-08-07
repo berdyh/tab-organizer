@@ -1,0 +1,81 @@
+{
+  "_comment": "Frozen contract (SEC-21, SEC-22; tests/security/test_token_scopes.py; SECSUITE frozen suite). Auth must FAIL CLOSED: removing a service's token configuration turns the door into a 401, never into an open door, and the one documented escape hatch (AI_ENGINE_ALLOW_UNAUTHENTICATED) is OFF unless explicitly set. Both probes are `sec_managed` -- proving a fail-closed default requires DELETING configuration from the service's environment, which only a harness that owns that environment can do, so they AUTO-SKIP in attached mode. That is precisely the hole plan decision 44 hedges: extracting the cases here means `SEC_BOOT_*_CMD` boot mode (planned, ~wk8) can drive them against any language by unsetting the same variables and expecting the same statuses. `unset_scopes` names logical token scopes; the harness maps them to env var names (ai=AI_ENGINE_API_TOKEN, callback=BACKEND_CALLBACK_TOKEN, agent=BACKEND_AGENT_API_TOKEN, browser=BROWSER_ENGINE_API_TOKEN). Changing this file is a security decision: it requires a docs/MODULE_INDEX.md ledger row and a SECSUITE_VERSION bump (see tests/security/README.md).",
+  "probes": {
+    "SEC-21": {
+      "_note": "Each case removes the token config a door depends on, sends NO credential, and requires 401. A door that answers 200 with its token config missing is the failure mode this freezes: unconfigured must mean closed, not unguarded. The escape hatch is deleted in every case so it cannot mask the result.",
+      "staging": {
+        "always_unset_env": ["AI_ENGINE_ALLOW_UNAUTHENTICATED"]
+      },
+      "cases": [
+        {
+          "case": "ai_embed",
+          "service": "ai",
+          "method": "POST",
+          "path": "/embed",
+          "body": {"texts": ["x"]},
+          "unset_scopes": ["ai"],
+          "token": null,
+          "expect": {"response": {"status": 401}}
+        },
+        {
+          "case": "browser_auth_pending",
+          "_note": "callback and ai are unset alongside browser because browser-engine used to ACCEPT them as a cross-scope fallback; that fallback was removed in SECSUITE 1.3.0 and unsetting all three keeps the probe honest if it is ever reintroduced.",
+          "service": "browser",
+          "method": "GET",
+          "path": "/auth/pending",
+          "body": null,
+          "unset_scopes": ["browser", "callback", "ai"],
+          "token": null,
+          "expect": {"response": {"status": 401}}
+        },
+        {
+          "case": "backend_tabs_open",
+          "service": "backend",
+          "method": "POST",
+          "path": "/api/v1/tabs/open",
+          "body": {"urls": ["http://example.com/"]},
+          "unset_scopes": ["agent"],
+          "token": null,
+          "expect": {"response": {"status": 401}}
+        },
+        {
+          "case": "backend_callback",
+          "service": "backend",
+          "method": "POST",
+          "path": "/api/v1/callback/scrape-complete",
+          "body": {
+            "session_id": "x",
+            "url": "http://example.com/",
+            "status": "failed",
+            "content": null,
+            "metadata": {}
+          },
+          "unset_scopes": ["callback", "ai"],
+          "token": null,
+          "expect": {"response": {"status": 401}}
+        }
+      ]
+    },
+
+    "SEC-22": {
+      "_note": "AI_ENGINE_ALLOW_UNAUTHENTICATED is a real escape hatch, and the probe proves BOTH halves: absent means closed (401) and present means open. The second half is the non-vacuity check -- without it, a service that 401'd unconditionally (or had no embedding route at all) would pass the first half for the wrong reason. 'Open' is observable only as a non-401 because the hermetic env has no embedding backend.",
+      "staging": {
+        "service": "ai",
+        "unset_scopes": ["ai"]
+      },
+      "input": {"method": "POST", "path": "/embed", "body": {"texts": ["x"]}, "token": null},
+      "steps": [
+        {
+          "step": "hatch_absent",
+          "unset_env": ["AI_ENGINE_ALLOW_UNAUTHENTICATED"],
+          "expect": {"response": {"status": 401}}
+        },
+        {
+          "step": "hatch_set",
+          "set_env": {"AI_ENGINE_ALLOW_UNAUTHENTICATED": "true"},
+          "expect": {"response": {"status_not": 401}}
+        }
+      ]
+    }
+  }
+}

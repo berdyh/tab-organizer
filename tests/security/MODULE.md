@@ -13,19 +13,34 @@
 - allowed change types: only with a `docs/MODULE_INDEX.md` ledger row and a
   `SECSUITE_VERSION` bump (`__init__.py`). The suite is FROZEN.
 - special operating rules:
-  - Black-box only; five flagged `sec_seam` exceptions touch importable code
-    (SEC-26, SEC-39, SEC-40, SEC-41, SEC-42).
+  - Black-box only; six flagged `sec_seam` exceptions touch importable code
+    (SEC-26, SEC-39, SEC-40, SEC-41, SEC-42, SEC-48).
   - Managed mode boots services in-process via ASGI with a controlled env. It
     imports the Python module to do that, so it works only against this stack.
     `SEC_BOOT_*_CMD` (harness-launched servers, any language) is **PLANNED, NOT
     IMPLEMENTED** — the name appears in prose only. Until it exists a TS port
-    runs 173/192 probes in attached mode and auto-skips the 19 `sec_managed`
+    runs 192/213 probes in attached mode and auto-skips the 21 `sec_managed`
     ones, which are exactly the process-boundary guarantees (agent subprocess
-    hardening, credential isolation, prompt envelope, URL safety under
-    controlled config). Trigger revised 2026-08-05: land it before the first TS
-    commit touching credentials, tokens, or agent subprocesses (~wk8), not
-    before facade work. CORS and token scopes apply from wk1 but need no boot
-    mode — they run in attached mode. See `README.md` for the fixture hedge.
+    hardening, credential isolation, prompt envelope, token fail-closed
+    defaults, the CORS non-vacuity check, URL safety under controlled config).
+    Trigger revised 2026-08-05: land it before the first TS commit touching
+    credentials, tokens, or agent subprocesses (~wk8), not before facade work.
+    CORS and token scopes apply from wk1 but need no boot mode — they run in
+    attached mode. (The counts here and in `README.md` were stale at 1.5.0 —
+    "173/192" and "19" are pre-SEC-46/47 figures and are still uncorrected in
+    `docs/ARCHITECTURE_PLAN.md`'s Addendum 2026-08-05.)
+  - **Every `sec_managed` probe's inputs and expected refusals are DATA**
+    (`fixtures/*.json`), not inline Python — plan decision 44, the hedge
+    against deferring boot mode. A probe body stages and observes; what must
+    hold is in the fixture, so boot mode is a runner over data and softening a
+    contract is a reviewable fixture diff. `contracts.py`'s runners raise on
+    unknown or empty contract blocks and on `expect` keys a probe stops
+    reading, so a mistyped assertion cannot become a silent no-op. SEC-48
+    (`sec_seam`) reconciles the marker-derived probe list against
+    `fixtures/sec_managed_index.json` in both directions, so a probe added
+    inline later fails the build instead of quietly falling outside the hedge.
+    Adding a `sec_managed` probe means: fixture entry, registry entry, ledger
+    row, `SECSUITE_VERSION` bump.
   - Every agent-subprocess probe names its provider, so the suite does NOT
     cover a newly added CLI adapter by construction. SEC-28/31/32/33 are
     claude-only and SEC-29/30 codex-only; SEC-46/47 were added for
@@ -65,7 +80,8 @@
   SEC-28..33, SEC-46..47 (`test_agent_subprocess_hardening.py`), SEC-34..36, SEC-40..41
   (`test_prompt_envelope.py`), SEC-37..38 (`test_repo_hygiene.py` +
   `.gitleaks.toml` + `secret-scan` CI job), SEC-39 (`test_auth_wall_fixtures.py`
-  + `fixtures/authwalls/*.json`).
+  + `fixtures/authwalls/*.json`), SEC-48 (`test_fixture_completeness.py` +
+  `fixtures/sec_managed_index.json`).
 - TS-porting rules for the seam exceptions:
   - SEC-26: run the TS MCP server over stdio, issue `tools/list`, apply the same
     name-allowlist and forbidden-verb regex to the returned tool names.
@@ -77,6 +93,9 @@
     SEC-34/35) and apply the same envelope assertions to the output string.
   - SEC-42: once the TS Agent SDK adapter lands, pin its equivalent allowlist
     constant/config against `fixtures/agent_env_allowlist.json`.
+  - SEC-48: enumerate the TS suite's equivalent managed-only-tagged cases and
+    reconcile them against the same `fixtures/sec_managed_index.json`, in both
+    directions.
 - current stubs/placeholders: SEC-9 rebinding flip-flop is only probabilistically
   covered (needs an attacker resolver); host-header/SNI pinning on multi-A-record
   fetches stays covered by Python unit tests outside this frozen suite.
