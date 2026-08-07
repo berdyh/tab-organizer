@@ -682,3 +682,64 @@ rather than its *class*. Documentation states the class; only a probe tests it.
 exists — no `package.json`, no `tsconfig.json`, no `.ts` file. wk1-6 (facade,
 UI, agent layer) not started. The wk16 reverse kill-switch clock started when
 wk0 landed.
+
+### Addendum 2026-08-07 — G4 clustering evaluation: protocol and decision rule
+
+This section is written **before the evaluation runs**, deliberately. Decision 25 keeps
+the Python UMAP/HDBSCAN sidecar "pending a real clustering evaluation", and the failure
+mode of an un-preregistered eval is that mixed numbers get read through whichever prior
+the reader brought. The rule below is committed first; the numbers land under it.
+
+| # | Decision | Class |
+|---|---|---|
+| 45 | The G4 verdict is decided by a **pre-registered rule with `drop` as the null hypothesis**: a tie is a drop | Mechanical |
+| 46 | G4 measures **decision-39 group survival under increments**, not plain rerun-ARI | Mechanical |
+| 47 | The eval corpus is **tab-shaped**, not vanilla 20 Newsgroups | Mechanical |
+| 48 | Clustering tests that do not prove which algorithm ran are not evidence (see below) | Mechanical |
+
+**Decision rule (pre-registered).** Keep the Python geometry sidecar only if, on the
+tab-shaped corpus at BOTH 500 and 2000 docs, the production pipeline beats the best
+TypeScript-candidate arm by **≥ 0.10 ARI or ≥ 10 points purity**, AND is **no worse on
+decision-39 group survival**. Anything else — including a tie, including a win at 2000
+only — is a DROP.
+
+**Why the null hypothesis is `drop`.** The sidecar carries a standing cost the metrics
+do not see: a whole Python process inside what is otherwise an `npx`/Tauri-distributable
+TypeScript app, plus the decision-26 invariant that Python and TypeScript never write the
+same SQLite. The product's stated corpora are hundreds of tabs, so a sidecar that only
+earns its keep at 2000 does not earn its keep. The burden of proof is on keeping it.
+
+**Why group survival, not rerun-ARI.** `pipeline.py` pins `random_state=42`, so rerunning
+UMAP on identical input returns identical output and a plain "stability across reruns"
+number is vacuously 1.0 — it would pass while measuring nothing, the could-not-fail class
+this repo has now hit five times. The metric that decides the product question is
+decision 39's own rule applied across increments: add 10 tabs, re-run, match groups at
+Jaccard ≥ 0.5 greedy one-to-one, and report what fraction of groups keep their identity.
+If geometry re-partitions the corpus every time ten tabs arrive, user relabels and pins do
+not survive, and a quality edge is worth nothing.
+
+**Why not vanilla 20 Newsgroups.** Balanced, equal-sized, single-topic classes are exactly
+where k-means and agglomerative do well and where HDBSCAN's real advantages (unknown k,
+variable density, skewed sizes, genuine noise) never get exercised — a `drop` verdict from
+that corpus would be pre-baked, and a `keep` verdict could not arise. The corpus is
+therefore shaped like real tabs: power-law group sizes, injected near-duplicates from one
+domain, injected low-content navigational stubs, injected one-off outliers, and
+`remove=('headers','footers','quotes')` so purity cannot be scored on hostname matching.
+
+**Useful singleton rate, defined.** A singleton is not automatically a failure — a
+genuinely unrelated tab SHOULD be alone. Against the injected one-offs, report singleton
+**precision** (produced singletons that are real one-offs), singleton **recall** (one-offs
+that ended up isolated), and **orphan rate** (docs whose true group had ≥ min_cluster_size
+members present but which still landed in "Uncategorized"). These are computed from
+HDBSCAN's `-1` labels, not from the API payload: `pipeline.py:226-233` turns every noise
+point into its own cluster row, so the response cannot distinguish "12 groups" from
+"3 groups + 9 orphans".
+
+**Decision 48 — a clustering test that does not prove which algorithm ran is not evidence.**
+`tests/requirements.txt` installs neither `umap-learn` nor `hdbscan` (both are in
+`services/ai-engine/requirements.txt` only), and `pipeline.py:127`/`:154` catch `ImportError`
+and fall back to SVD + `_kmeans_cluster` **silently**. Every clustering test in CI has
+therefore been characterizing the fallback while appearing to test UMAP+HDBSCAN, and an
+eval run in that image would have filed k-means numbers under the sidecar's name. The
+degradation must be logged, and any run claiming to measure the geometry pipeline must
+assert the real imports succeeded.
