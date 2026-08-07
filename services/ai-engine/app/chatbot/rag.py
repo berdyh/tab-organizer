@@ -3,7 +3,7 @@
 import ast
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import lancedb
@@ -19,7 +19,9 @@ class Document:
     title: str
     content: str
     embedding: Optional[list[float]] = None
-    metadata: dict = None
+    # Never None: default_factory gives each instance its own dict, and
+    # __post_init__ still normalizes an explicit `metadata=None` from a caller.
+    metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.metadata is None:
@@ -355,7 +357,7 @@ class RAGChatbot:
             return [(0, 0)]
 
         step = self.CHUNK_SIZE - self.CHUNK_OVERLAP
-        ranges = []
+        ranges: list[tuple[int, int]] = []
         start = 0
         while start < len(content) and len(ranges) < self.MAX_CHUNKS_PER_DOCUMENT:
             end = min(start + self.CHUNK_SIZE, len(content))

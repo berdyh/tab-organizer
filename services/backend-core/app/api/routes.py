@@ -1314,12 +1314,19 @@ def scrape_complete_callback(
         level=logging.WARNING,
         session_id=data.get("session_id"),
     )
+    # The legacy body is an unvalidated `dict`; these three fields are forwarded
+    # exactly as they arrive (a missing one still reaches ingest as None and
+    # comes back session_not_found / url_not_registered, as it does today).
+    # Typed `Any` to say "unvalidated", not to assert they are `str`.
+    legacy_session_id: Any = data.get("session_id")
+    legacy_url: Any = data.get("url")
+    legacy_status: Any = data.get("status")
     capture = IngestCapture(
         capture_id=str(uuid.uuid4()),
         attempt=0,
-        session_id=data.get("session_id"),
-        url=data.get("url"),
-        status=data.get("status"),
+        session_id=legacy_session_id,
+        url=legacy_url,
+        status=legacy_status,
         content=data.get("content"),
         metadata=data.get("metadata", {}) or {},
         auth_used=False,

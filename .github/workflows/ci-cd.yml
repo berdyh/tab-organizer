@@ -322,7 +322,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install flake8 pylint black==26.3.1 isort==6.1.0 mypy bandit safety
+          pip install flake8 pylint black==26.3.1 isort==6.1.0 bandit safety
 
       - name: Run flake8
         run: |
@@ -341,9 +341,13 @@ jobs:
         run: |
           isort --check-only services/
 
+      # `mypy services/` cannot work here (three services own a package named
+      # `app`); scripts/type-check.sh is the same gate `make type-check` runs,
+      # and it pins its own mypy + stub versions. No `|| true`: this used to
+      # swallow the result of a command that had never analysed a single line,
+      # so the step was green for two independent reasons at once.
       - name: Run mypy type checking
-        run: |
-          mypy services/ --ignore-missing-imports || true
+        run: ./scripts/type-check.sh
 
       - name: Run bandit security checks
         run: |

@@ -5,13 +5,23 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional, cast
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from playwright.async_api import Browser
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
+
+if TYPE_CHECKING:
+    # Annotation-only. The unit-test image installs playwright STUBS, not the
+    # package, so `Playwright` is not importable there at runtime and a
+    # top-level import of it fails collection for six test modules with
+    # "cannot import name 'Playwright' ... (unknown location)". A name needed
+    # solely for a type annotation must not become a runtime import
+    # requirement -- the type checker is not allowed to change what the
+    # program needs in order to start.
+    from playwright.async_api import Playwright
 
 from services.observability import log_event
 from services.url_safety import resolve_scrape_targets, validate_scrape_url
@@ -683,7 +693,7 @@ class RobotsChecker:
 
     def _parse_robots(self, content: str) -> dict:
         """Parse robots.txt content."""
-        rules = {"disallow": [], "allow": []}
+        rules: dict[str, list[str]] = {"disallow": [], "allow": []}
         current_agent = None
 
         for line in content.split("\n"):
@@ -722,7 +732,7 @@ class ScraperEngine:
         self.respect_robots = respect_robots
 
         self._browser: Optional[Browser] = None
-        self._playwright = None
+        self._playwright: Optional["Playwright"] = None
         self._browser_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._extractor = ContentExtractor()
@@ -1284,7 +1294,12 @@ class ScraperEngine:
                     )
                 )
             else:
-                final_results.append(result)
+                # `gather(return_exceptions=True)` yields BaseException, not
+                # Exception, so a cancelled child task lands here rather than in
+                # the branch above and is appended as if it were a ScrapeResult.
+                # Reported as a latent bug (2026-08-07) rather than fixed here:
+                # widening the isinstance would change what a cancellation does.
+                final_results.append(cast(ScrapeResult, result))
 
         return final_results
 

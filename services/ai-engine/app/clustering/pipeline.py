@@ -435,11 +435,13 @@ Respond with ONLY the label, nothing else. Examples: "Python Async Programming",
                     cluster.name = list(domains)[0]
                 else:
                     # Use most common domain
-                    domain_counts = {}
+                    domain_counts: dict[str, int] = {}
                     for t in cluster.tabs:
                         d = self.extract_domain(t.url)
                         domain_counts[d] = domain_counts.get(d, 0) + 1
-                    cluster.name = max(domain_counts, key=domain_counts.get)
+                    # `key=domain_counts.get` returns Optional[int]; indexing is
+                    # the same ordering over the same keys, with a real int key.
+                    cluster.name = max(domain_counts, key=lambda k: domain_counts[k])
 
         return clusters
 

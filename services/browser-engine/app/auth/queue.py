@@ -318,6 +318,13 @@ class CredentialStore:
             del self._credentials[domain]
             return None
 
+        # No key configured means nothing can be decrypted. This was already the
+        # outcome -- `None.decrypt` raised AttributeError straight into the
+        # `except Exception` below -- so the explicit check changes nothing but
+        # makes the fail-closed path deliberate instead of incidental.
+        if self._fernet is None:
+            return None
+
         try:
             decrypted = self._fernet.decrypt(stored.encrypted_data)
             return json.loads(decrypted.decode())

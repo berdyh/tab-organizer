@@ -492,7 +492,7 @@ def _readable_text_from_html(html: str) -> Optional[str]:
     return text.strip() if text else None
 
 
-def _collapse_whitespace(text: str) -> str:
+def _collapse_whitespace(text: Optional[str]) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
@@ -595,7 +595,7 @@ class CDPTabHarvester:
         """Import visible HTTP(S) pages from the attached browser."""
         playwright, browser = await self._connect()
         try:
-            pages = []
+            pages: list[Any] = []
             for context in getattr(browser, "contexts", []):
                 pages.extend(getattr(context, "pages", []))
 

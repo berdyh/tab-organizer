@@ -1291,7 +1291,7 @@ class SessionManager:
         else:
             sessions = list(self._sessions.values())
         terms = [term.lower() for term in re.findall(r"\w+", query or "")]
-        results = []
+        results: list[dict] = []
         for session in sessions:
             for record in session.url_store.get_all():
                 # Match the SQLite FTS insertion condition EXACTLY so keyword

@@ -45,6 +45,10 @@ that card.
 
 Use the smallest relevant check first:
 
+0. `make type-check` — per-service mypy (`scripts/type-check.sh`), seconds, no
+   stack. Green and enforced since 2026-08-07; before that it could not run at
+   all. It sees our own signatures/Optionals/overrides, not our use of
+   fastapi/playwright/lancedb (those are `Any` here).
 1. Module target such as `make test-backend`, `make test-ai`,
    `make test-browser`, `make test-web`, or `make test-ops`.
 2. Cross-service smoke: `./scripts/cli.py test --type integration`.
@@ -68,6 +72,7 @@ The one test that needs a real embedding provider is marked `requires_ollama` /
 
 | Item | Classification | Owner module | Decision |
 | --- | --- | --- | --- |
+| `make type-check` was a gate in name only | replaced | Ops Tooling | Both callers ran `mypy services/ --ignore-missing-imports`, which cannot work here: backend-core, ai-engine and browser-engine each ship a top-level package named `app`, so mypy exits 2 with `Duplicate module named "app"` before analysing a line. Locally that was a permanent red carrying no information about anyone's change; in CI the same command ended in `|| true`, so the step was green for two independent wrong reasons at once. CLAUDE.md documented it as broken and left it — the documented-but-false pattern. Replaced 2026-08-07 by `scripts/type-check.sh` (one mypy run per service, pinned mypy + stubs, all services checked even after one fails), called by both `make type-check` and the CI step with no `|| true`. The 46 pre-existing errors it exposed were fixed rather than silenced: two `# type: ignore` remain, each on a line where the checker found a real latent bug that is deliberately NOT being fixed as a side effect of a typing change — `LLMClient.switch_provider` writing `None` into `LLMConfig.model: str` when a provider has no default llm model (the embeddings branch guards the same case with an explicit raise; the llm branch does not), and `ScrapeEngine.scrape_batch` appending a `BaseException` from `asyncio.gather(return_exceptions=True)` as if it were a `ScrapeResult` when a child task is cancelled (`isinstance(result, Exception)` does not catch it). Both are commented at the site. Frozen by `tests/unit/test_type_check_gate.py`. |
 | Legacy skipped gateway E2E file | remove | Test Harness | Removed; current direct-service coverage lives in `tests/e2e/test_workflow.py`. |
 | Old Web UI Node/Jest scripts | remove | Web UI | Removed obsolete Docker/debug scripts; retained wrappers call repo-level pytest targets. |
 | Backend fire-and-forget scrape trigger errors | replaced | Backend Core / Browser Engine | `POST /scrape` dispatch failures now surface as HTTP 502 and mark URLs `failed` (commit 3f1dcd8); inline `urls` are registered via `add_urls_to_session` before dispatch so callbacks persist instead of failing "URL not found" (WI0 B3). Covered by `tests/unit/test_scrape_callback.py`, `tests/unit/test_backend_callback_persistence.py`. |

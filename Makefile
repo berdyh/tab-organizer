@@ -224,11 +224,16 @@ security: ## Run security checks
 		safety check"
 	@echo "$(GREEN)Security checks complete$(NC)"
 
-type-check: ## Run type checking with mypy
+# One mypy pass over `services/` can never work: three services each ship a
+# top-level package named `app`, so mypy aborts with `Duplicate module named
+# "app"` before analysing anything. scripts/type-check.sh runs it per service
+# instead, and CI runs that same script -- see the comment block at its top for
+# the full reasoning and for what this gate does and does not cover.
+type-check: ## Run type checking with mypy (per service; see scripts/type-check.sh)
 	@echo "$(BLUE)Running type checks...$(NC)"
-	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim sh -c "\
-		pip install mypy > /dev/null 2>&1 && \
-		mypy services/ --ignore-missing-imports"
+	@docker run --rm -v $(PWD):/app -w /app python:3.12-slim \
+		sh /app/scripts/type-check.sh
+	@echo "$(GREEN)Type checks passed$(NC)"
 
 quality: lint format-check type-check security ## Run all code quality checks
 

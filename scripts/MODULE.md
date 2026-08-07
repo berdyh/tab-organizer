@@ -1,6 +1,7 @@
 # Ops Tooling Module Card
 
 - purpose: command-line lifecycle and local developer operations.
+- `scripts/type-check.sh` is the repo's mypy gate and the ONE copy of that invocation: `make type-check` runs it in a throwaway `python:3.12-slim` container, and `.github/workflows/ci-cd.yml`'s "Run mypy type checking" step runs it directly. It must stay per-service (`cd services/<svc> && mypy app`, plus `src`/`app.py` for web-ui and the shared `services/*.py` + underscore shims) — a single `mypy services/` pass aborts with `Duplicate module named "app"` and exits 2 before analysing anything, which is what made this gate a no-op from the day it was written until 2026-08-07 (permanently red locally, permanently green in CI behind `|| true`). It pins its own mypy and stub versions; do not let either caller grow its own copy of the command, and do not re-add a result-swallowing suffix. Frozen by `tests/unit/test_type_check_gate.py`.
 - product/module functionality: Docker Compose start/stop/logs/status/test, host-AI runtime, provider checks, `configure-provider` (probes real LLM/embedding provider availability and writes a verified choice to `.env` -- SPEC-provider-routing.md R6), Backend Core tab commands, local MCP tab wrappers, init/model setup, cleanup.
 - scope boundaries: orchestrates services but does not implement service-domain behavior.
 - connected modules/submodules: Docker Compose, AI Engine, Browser Engine, Backend Core, Test Harness, Shared Config.

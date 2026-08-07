@@ -61,21 +61,31 @@ docker compose --profile test-unit run --rm test-unit \
 make lint            # flake8 (E9,F63,F7,F82) + pylint --exit-zero
 make format          # black + isort (line-length 88, py312)
 make format-check    # what CI enforces
-make type-check      # mypy --ignore-missing-imports -- BROKEN, see below
+make type-check      # mypy, per service (scripts/type-check.sh)
 make security        # bandit + safety
 make quality         # all of the above
 ```
 
 These run in throwaway `python:3.12-slim` containers, so no local toolchain is needed.
 
-**`make type-check` has never checked anything**, and `make quality` inherits
-that. mypy aborts before analysis with `Duplicate module named "app"` — all four
-services have an `app/` package — then exits 2. So it is a gate in name only:
-a red result carries no information about your change, and it has never gone
-green for anyone. Fix it with `--explicit-package-bases`/`MYPYPATH` or per-service
-invocation, or stop listing it as a gate; leaving it as-is is the
-documented-but-false pattern this repo has been bitten by four times. Verified
-2026-08-06.
+**`make type-check` is green and enforced as of 2026-08-07** — it had never
+checked anything before that. `mypy services/` in one pass aborts with
+`Duplicate module named "app"` (backend-core, ai-engine and browser-engine each
+ship a top-level `app` package) and exits 2 before analysing a line; CI ran the
+same command with `|| true`, so the gate was simultaneously permanently red
+locally and permanently green in CI. `scripts/type-check.sh` now runs mypy once
+per service (`cd services/<svc> && mypy app`, plus `src`/`app.py` for web-ui and
+the shared `services/*.py` + underscore shims), which is also what each service
+sees in its own container. Both `make type-check` and the CI step call that one
+script, its mypy/stub versions are pinned inside it, and
+`tests/unit/test_type_check_gate.py` fails if either caller drifts back to its
+own copy or CI re-acquires a `|| true`.
+
+What it covers: our own code — signatures, `Optional`, annotations, overrides.
+What it does not: third-party runtime deps are not installed (only their stub
+packages), so `--ignore-missing-imports` makes fastapi/playwright/lancedb/
+streamlit `Any`. Type-checking against real library stubs is a different, much
+slower gate; add it as a separate target rather than widening this one.
 
 ## Architecture
 

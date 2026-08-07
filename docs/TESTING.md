@@ -147,11 +147,12 @@ docker compose --profile test-integration logs -f browser-engine
 
 ## Pre-Push Checklist
 
-1. Lint & format:
+1. Lint, format & types:
 
 ```bash
 make lint
 make format
+make type-check   # per-service mypy; see scripts/type-check.sh
 ```
 
 2. Run unit tests:

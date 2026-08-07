@@ -1,7 +1,7 @@
 """Authentication detection for web pages."""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -16,7 +16,11 @@ class AuthDetectionResult:
     form_fields: Optional[list[str]] = None
     oauth_provider: Optional[str] = None
     confidence: float = 0.0
-    details: dict = None
+    # Never None: default_factory gives each instance its own dict, and
+    # __post_init__ still normalizes an explicit `details=None` from a caller.
+    # (`details: dict = None` claimed a type the field could not hold, and
+    # `Optional[dict]` would make every `result.details[...]` a type error.)
+    details: dict = field(default_factory=dict)
     # Anti-scraping / bot-challenge interstitial (Cloudflare, PerimeterX, generic
     # 403 "prove you are human" pages). These block a scraper but are NOT
     # credential walls, so ``requires_auth`` stays False and the caller records a
@@ -97,7 +101,7 @@ class AuthDetector:
         "complete the action below",
     )
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._login_patterns = [
             re.compile(p, re.IGNORECASE) for p in self.LOGIN_URL_PATTERNS
         ]
@@ -166,15 +170,18 @@ class AuthDetector:
                         confidence=0.9,
                     )
 
-        # Check for login URL patterns
-        for pattern in self._login_patterns:
-            if pattern.search(path):
+        # Check for login URL patterns. Named `login_pattern`, not `pattern`:
+        # the OAuth loop above binds `pattern` to a plain substring in this same
+        # function scope, and reusing the name types these compiled patterns as
+        # `str`.
+        for login_pattern in self._login_patterns:
+            if login_pattern.search(path):
                 return AuthDetectionResult(
                     requires_auth=True,
                     auth_type="form",
                     login_url=url,
                     confidence=0.8,
-                    details={"matched_pattern": pattern.pattern},
+                    details={"matched_pattern": login_pattern.pattern},
                 )
 
         return AuthDetectionResult(requires_auth=False)
