@@ -628,7 +628,7 @@ def get_urls(session_id: str, status: Optional[str] = None):
 
 # Scraping endpoints
 @router.post("/scrape")
-async def start_scraping(request: ScrapeRequest, background_tasks: BackgroundTasks):
+async def start_scraping(request: ScrapeRequest):
     session = session_manager.get_session(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -683,7 +683,16 @@ async def trigger_scraping(
     urls: list[str],
     use_browser: bool = False,
 ):
-    """Background task to trigger browser engine scraping."""
+    """Dispatch the scrape to Browser Engine, inline and awaited.
+
+    NOT a background task, despite what this docstring said from 3f1dcd8
+    until 2026-08-07. It is awaited inside the request (`start_scraping`),
+    wrapped in the try/except that turns a dispatch failure into a 502 and
+    marks the URLs failed. That is the whole point of the change: a
+    fire-and-forget dispatch swallowed browser-engine outages and reported
+    the batch as started. Calling it a background task invited someone to
+    "restore" the scheduling and take the error surfacing back out.
+    """
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{_browser_engine_url()}/scrape",

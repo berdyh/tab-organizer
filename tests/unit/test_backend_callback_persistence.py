@@ -109,9 +109,7 @@ async def test_inline_scrape_urls_are_registered_then_callback_persists_and_inde
     monkeypatch.setattr(routes.httpx, "AsyncClient", lambda: FakeClient())
 
     url = "https://example.com/inline-widgets"
-    dispatched = await start_scraping(
-        ScrapeRequest(session_id=session.id, urls=[url]), None
-    )
+    dispatched = await start_scraping(ScrapeRequest(session_id=session.id, urls=[url]))
     assert dispatched["status"] == "started"
 
     # The inline url is now a registered record, not lost.
@@ -168,5 +166,5 @@ async def test_inline_scrape_urls_dedupe_against_existing_session_urls(
     monkeypatch.setattr(routes.httpx, "AsyncClient", lambda: FakeClient())
 
     before = session.url_store.count()
-    await start_scraping(ScrapeRequest(session_id=session.id, urls=[url]), None)
+    await start_scraping(ScrapeRequest(session_id=session.id, urls=[url]))
     assert session.url_store.count() == before

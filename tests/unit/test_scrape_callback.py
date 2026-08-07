@@ -337,7 +337,7 @@ async def test_start_scraping_reports_browser_engine_dispatch_failure(monkeypatc
 
     try:
         with pytest.raises(HTTPException) as exc_info:
-            await start_scraping(ScrapeRequest(session_id=session.id), None)
+            await start_scraping(ScrapeRequest(session_id=session.id))
 
         assert exc_info.value.status_code == 502
         assert "Browser Engine scrape dispatch failed" in exc_info.value.detail

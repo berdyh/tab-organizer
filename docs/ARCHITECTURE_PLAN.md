@@ -111,11 +111,14 @@ what superseded it and when. Never leave a stale doc live; a stale doc is worse 
 ## Codebase cleanup (user directive 2026-07-24)
 
 Cleanup runs **during and after** implementation, not as a deferred phase. Standing rule:
-every phase deletes what it replaces in the same commit. Known targets: dead
-`services/web-ui/.env.example` (React vars Streamlit never reads), unused `BackgroundTasks`
-param + stale docstring (`routes.py:572/604`), legacy timestamp deprecations, hardcoded
-inter-service URLs, the B2B platform subsystem (pending Q6), and every Python module
-retired by the cutover.
+every phase deletes what it replaces in the same commit. Known targets, with their
+status as of 2026-08-07: dead `services/web-ui/.env.example` (React vars Streamlit never
+reads) — **done**, and its sibling `services/web-ui/.gitignore` with it; unused
+`BackgroundTasks` param + stale docstring — **done** (the line numbers recorded here,
+`routes.py:572/604`, had themselves gone stale; the real sites were `:631` and `:686`);
+hardcoded inter-service URLs — **done** (finding 32); legacy timestamp deprecations and
+the B2B platform subsystem (pending Q6) — still open, the latter deliberately so under
+decision 41; and every Python module retired by the cutover.
 
 ## New workstreams (user directives 2026-07-23)
 
