@@ -296,6 +296,35 @@ belongs:
 4. If nothing is usable, say exactly what to install or set. Never write a
    provider the probe could not verify.
 
+**Correction, 2026-08-07 — "probe availability" was implemented as "is the key
+set".** Step 1 above reads as though presence and capability were the same
+question. They are not, and the first implementation conflated them: for a
+`type: cloud` provider, `get_provider_runtime_state` returned
+`available = bool(os.getenv(api_key_env))`, so a stale, revoked, typo'd or
+wrong-account key was reported as verified and written to `.env` beneath a menu
+captioned "only verified-available options shown". That is the same shape as the
+`openrouter.supports.embeddings` error this spec exists downstream of: a check
+adjacent to the real thing, which passes.
+
+Availability is now three states. `configured` — a key or binary is present.
+`verified` — the cheapest real generate/embed call was made through the actual
+adapter, for the exact provider **and model** that will be written, and it
+succeeded. `refuted` — the provider answered 401/403/402/400/404, which is
+positive proof the credential or model id is wrong rather than an absence of
+proof. Timeouts, transport errors and 5xx stay `unverified`: offline is not
+refuted, and the tool must still work without a network. A refuted route is never
+written. An unverified one is written only on explicit consent
+(`--allow-unverified`, or an interactive confirmation), and the outcome is
+recorded alongside the choice as `AI_PROVIDER_VERIFIED` /
+`EMBEDDING_PROVIDER_VERIFIED` so a written provider carries the provenance of how
+it was established.
+
+Note what is verified: the **final chosen route**, not every candidate. Probing
+every candidate would spawn each subscription CLI in turn (real subscription
+spend, ~10s each) and would verify each provider's *default* model while `.env`
+receives whatever model the user picked afterwards — verifying the wrong thing,
+slowly.
+
 Also: if the user picks Ollama, check the model is actually pulled and offer to
 pull it. WI0-B1 found the Ollama container running with **zero models**, which
 is indistinguishable from working until the first request fails.

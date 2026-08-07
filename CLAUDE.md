@@ -28,7 +28,8 @@ Everything runs in Docker; `scripts/cli.py` is the wrapper CI also uses.
 ./scripts/cli.py stop / status / logs -f <svc> / restart / clean
 ./scripts/cli.py host-ai --provider claude_code   # run AI Engine on the host for subscription CLI providers
 ./scripts/cli.py check-provider --provider codex_acp --generate
-./scripts/cli.py configure-provider               # probe real availability, write a verified provider choice to .env
+./scripts/cli.py configure-provider               # call the provider for real, then write the verified choice to .env
+./scripts/cli.py configure-provider --allow-unverified   # accept a route the probe could not reach (offline); recorded as unverified
 ```
 
 `start` / `host-ai` generate **four independent** local bearer tokens (`AI_ENGINE_API_TOKEN`, `BACKEND_CALLBACK_TOKEN`, `BACKEND_AGENT_API_TOKEN`, `BROWSER_ENGINE_API_TOKEN`), persisted per scope in `data/service-tokens.json` (0600) so they stay stable across restarts — services fail closed without them, so prefer these over raw `docker compose up`. The four values must never be equal: one shared value makes the agent token also open browser-engine's scrape/CDP/credential control plane.

@@ -1,5 +1,6 @@
 """Multi-provider LLM client with unified interface."""
 
+import asyncio
 import os
 import re
 from abc import ABC, abstractmethod
@@ -31,6 +32,55 @@ def redact_url_userinfo(text: Optional[str]) -> Optional[str]:
     if not text:
         return text
     return _URL_USERINFO_RE.sub(r"\g<scheme>***@", text)
+
+
+# `?key=...`, `&api_key=...`, `&access_token=...` inside a URL. Userinfo is not
+# the only place a credential rides in a URL: the Gemini adapter authenticates
+# with `params={"key": self.api_key}`, and httpx puts the full request URL --
+# query string included -- into the text of every `HTTPStatusError` it raises.
+_URL_QUERY_SECRET_RE = re.compile(
+    r"([?&](?:key|api[-_]?key|access[-_]?token|token|auth)=)[^&\s\"'>]+",
+    re.IGNORECASE,
+)
+
+
+def _configured_secret_values() -> list[str]:
+    """Every credential-looking value currently in the process environment.
+
+    Deliberately shape-based rather than a list of known key names. The named
+    list is what `redact_url_userinfo`'s first version was -- it enumerated the
+    keys somebody remembered and shipped while a credentialed `OLLAMA_HOST`
+    walked straight through it. Matching on the *variable name* suffix catches
+    the next `..._API_KEY` nobody has added to this file yet.
+    """
+    values: list[str] = []
+    for name, value in os.environ.items():
+        if not name.upper().endswith(("_API_KEY", "_TOKEN", "_KEY", "_SECRET")):
+            continue
+        stripped = (value or "").strip()
+        # Short values are not credentials and would shred unrelated text (see
+        # the one-character-token bug in `scripts/`: a token of "x" turned every
+        # message into asterisks).
+        if len(stripped) >= 8:
+            values.append(stripped)
+    return values
+
+
+def redact_secrets(text: Optional[str]) -> Optional[str]:
+    """Strip every credential shape a provider error can carry.
+
+    Strictly stronger than `redact_url_userinfo`, and used on the live-probe
+    path, where the text being redacted is a *provider's* exception rather than
+    a string this file built: the URL, the query string and sometimes the key
+    itself arrive from httpx, not from us.
+    """
+    if not text:
+        return text
+    redacted = redact_url_userinfo(text) or ""
+    redacted = _URL_QUERY_SECRET_RE.sub(r"\g<1>***", redacted)
+    for secret in _configured_secret_values():
+        redacted = redacted.replace(secret, "***")
+    return redacted
 
 
 class ProviderSelectionError(RuntimeError):
@@ -202,6 +252,29 @@ class LLMClient:
         "codex_acp": ("CODEX_ACP_COMMAND", "acpx"),
         "gemini_cli": ("GEMINI_CLI_COMMAND", "gemini"),
     }
+
+    # Three states, not two. "Not proven working" and "proven broken" are
+    # different facts and must not collapse: the first is what an offline
+    # laptop produces and may still be chosen deliberately, the second is a
+    # 401 and may not be chosen at all.
+    VERIFICATION_UNVERIFIED = "unverified"
+    VERIFICATION_VERIFIED = "verified"
+    VERIFICATION_REFUTED = "refuted"
+
+    # The cheapest real call that still exercises the same endpoint, auth and
+    # model id the service will use. Deliberately not a listing endpoint
+    # (`GET /v1/models`), which is what produced the false
+    # `openrouter.supports.embeddings: false` claim: a listing answers a
+    # different question from the one being asked.
+    LIVE_PROBE_PROMPT = "ping"
+    LIVE_PROBE_TEXT = "ping"
+    LIVE_PROBE_MAX_TOKENS = 16
+    LIVE_PROBE_TIMEOUT_SECONDS = 20.0
+    # HTTP statuses that are positive proof the route does not work. A 401/403
+    # is not "we could not tell" -- the provider looked at the credential and
+    # rejected it. 402 is the same shape for credit, and 400/404/422 mean the
+    # provider looked at this model id and refused to serve it.
+    REFUTING_STATUS_CODES = frozenset({400, 401, 402, 403, 404, 422})
 
     def __init__(
         self,
@@ -587,16 +660,26 @@ class LLMClient:
             self._embedding_provider = self._create_embedding_provider()
         return self._embedding_provider
 
-    def _create_llm_provider(self) -> BaseLLMProvider:
-        """Create LLM provider based on config."""
-        if self.llm_config is None:
+    def _create_llm_provider(
+        self, config: Optional[LLMConfig] = None
+    ) -> BaseLLMProvider:
+        """Create LLM provider based on config.
+
+        `config` overrides the selected one so the live probe
+        (`verify_provider_live`) goes through the SAME adapter map as
+        production traffic instead of hand-rolling HTTP per provider -- a probe
+        with its own transport only ever verifies its own transport. The map
+        stays inside this function on purpose: `test_provider_routing.py` reads
+        it out of this source to check it against the catalog, and a map lifted
+        into a helper would silently stop being checked.
+        """
+        config = self.llm_config if config is None else config
+        if config is None:
             raise self.llm_config_error or self._not_selected_error(
                 "AI_PROVIDER", "llm"
             )
-        if not self._ai_config.is_provider_supported(self.llm_config.provider, "llm"):
-            raise ValueError(
-                f"Provider {self.llm_config.provider} does not support LLMs"
-            )
+        if not self._ai_config.is_provider_supported(config.provider, "llm"):
+            raise ValueError(f"Provider {config.provider} does not support LLMs")
 
         from ..providers import (
             AnthropicLLMProvider,
@@ -623,23 +706,28 @@ class LLMClient:
             "openrouter": OpenAILLMProvider,
         }
 
-        provider_class = providers.get(self.llm_config.provider)
+        provider_class = providers.get(config.provider)
         if not provider_class:
-            raise ValueError(f"Unknown LLM provider: {self.llm_config.provider}")
+            raise ValueError(f"Unknown LLM provider: {config.provider}")
 
-        return provider_class(self.llm_config)
+        return provider_class(config)
 
-    def _create_embedding_provider(self) -> BaseEmbeddingProvider:
-        """Create embedding provider based on config."""
-        if self.embedding_config is None:
+    def _create_embedding_provider(
+        self, config: Optional[EmbeddingConfig] = None
+    ) -> BaseEmbeddingProvider:
+        """Create embedding provider based on config.
+
+        `config` overrides the selected one for the live probe -- see
+        `_create_llm_provider`, including why the map below must stay here.
+        """
+        config = self.embedding_config if config is None else config
+        if config is None:
             raise self.embedding_config_error or self._not_selected_error(
                 "EMBEDDING_PROVIDER", "embeddings"
             )
-        if not self._ai_config.is_provider_supported(
-            self.embedding_config.provider, "embeddings"
-        ):
+        if not self._ai_config.is_provider_supported(config.provider, "embeddings"):
             raise ValueError(
-                f"Provider {self.embedding_config.provider} does not support embeddings"
+                f"Provider {config.provider} does not support embeddings"
             )
 
         from ..providers import (
@@ -665,13 +753,11 @@ class LLMClient:
             "openrouter": OpenAIEmbeddingProvider,
         }
 
-        provider_class = providers.get(self.embedding_config.provider)
+        provider_class = providers.get(config.provider)
         if not provider_class:
-            raise ValueError(
-                f"Unknown embedding provider: {self.embedding_config.provider}"
-            )
+            raise ValueError(f"Unknown embedding provider: {config.provider}")
 
-        return provider_class(self.embedding_config)
+        return provider_class(config)
 
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text using configured LLM."""
@@ -858,7 +944,7 @@ class LLMClient:
         newly added `reason` string cannot reintroduce the leak by being
         written somewhere this file does not yet think about.
         """
-        for key in ("reason", "server_url", "command"):
+        for key in ("reason", "server_url", "command", "verification_reason"):
             if isinstance(state.get(key), str):
                 state[key] = redact_url_userinfo(state[key])
         return state
@@ -874,7 +960,18 @@ class LLMClient:
     def _raw_provider_runtime_state(
         self, provider: str, capability: str = "llm"
     ) -> dict:
-        """Return runtime availability details for a configured provider."""
+        """Return runtime availability details for a configured provider.
+
+        `available` here means CONFIGURED -- the binary is on PATH, the key
+        variable is non-empty, the local server answers. It has never meant
+        VERIFIED, and the `verification` field exists so nothing downstream can
+        keep reading it as though it did. Only `verify_provider_live()` moves
+        `verification` off `"unverified"`, because only a real call to the
+        endpoint can: `OPENAI_API_KEY=sk-revoked-yesterday` is indistinguishable
+        from a working key at this layer, exactly as
+        `openrouter.supports.embeddings` was indistinguishable from the truth
+        while it was being read off a chat-model listing.
+        """
         state = {
             "capabilities": self.PROVIDERS.get(provider, {}),
             "available": False,
@@ -882,6 +979,15 @@ class LLMClient:
             "api_key_env": None,
             "api_key_configured": None,
             "reason": None,
+            # One of VERIFICATION_UNVERIFIED / _VERIFIED / _REFUTED. Never
+            # anything else, and never absent: a missing key would read as
+            # falsey and quietly become "not verified" in some places and
+            # "unknown, assume fine" in others.
+            "verification": self.VERIFICATION_UNVERIFIED,
+            "verification_reason": (
+                "No call has been made to this provider; availability here "
+                "means configured, not proven."
+            ),
         }
 
         try:
@@ -908,6 +1014,14 @@ class LLMClient:
                     "reason": (
                         None if configured else f"{api_key_env} is not configured"
                     ),
+                    "verification_reason": (
+                        f"{api_key_env} is set, but a set variable is not a "
+                        "working credential: a stale, revoked, typo'd or "
+                        "wrong-account key looks identical here. Only a call to "
+                        "the provider settles it."
+                        if configured
+                        else f"{api_key_env} is not configured"
+                    ),
                 }
             )
             return state
@@ -932,6 +1046,148 @@ class LLMClient:
 
         state["available"] = True
         return state
+
+    def _live_probe_llm_config(self, provider: str, model: str) -> LLMConfig:
+        return LLMConfig(
+            provider=provider,
+            model=model,
+            api_key=self._api_key_for(provider),
+            base_url=self._base_url_for(provider, "LLM_BASE_URL"),
+            temperature=0.0,
+            max_tokens=self.LIVE_PROBE_MAX_TOKENS,
+        )
+
+    def _live_probe_embedding_config(
+        self, provider: str, model: str
+    ) -> EmbeddingConfig:
+        model_config = self._ai_config.get_model_config(model)
+        dimensions = model_config.get("dimensions")
+        return EmbeddingConfig(
+            provider=provider,
+            model=model,
+            api_key=self._api_key_for(provider),
+            base_url=self._base_url_for(provider, "EMBEDDING_BASE_URL"),
+            # The catalog width, not `EMBEDDING_DIMENSIONS`: this probe asks
+            # "does this route answer?", and a width the user has not committed
+            # to yet must not be able to turn a working route into a 400.
+            dimensions=int(dimensions) if dimensions is not None else 1536,
+            dimensions_configurable=bool(model_config.get("dimensions_configurable")),
+        )
+
+    @classmethod
+    def _live_probe_result(
+        cls, verification: str, reason: str, status_code: Optional[int] = None
+    ) -> dict:
+        return {
+            "verification": verification,
+            "verification_reason": redact_secrets(reason),
+            "status_code": status_code,
+        }
+
+    @classmethod
+    def classify_live_probe_error(cls, exc: BaseException) -> dict:
+        """Turn a provider exception into a verification verdict.
+
+        Split from the call so the classification is testable without a
+        network, and so the default is visible: anything not positively
+        identified is UNVERIFIED, never REFUTED. Refuting a provider hides it
+        from the operator, so it takes proof -- a status code the provider
+        itself chose -- not an inference from a timeout.
+
+        Nothing here interpolates `str(exc)` unredacted. httpx puts the full
+        request URL into its exception text and the Gemini adapter
+        authenticates with `params={"key": ...}`, so the raw message can
+        literally be the API key.
+        """
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            if status in cls.REFUTING_STATUS_CODES:
+                return cls._live_probe_result(
+                    cls.VERIFICATION_REFUTED,
+                    f"the provider rejected the call with HTTP {status}",
+                    status,
+                )
+            return cls._live_probe_result(
+                cls.VERIFICATION_UNVERIFIED,
+                f"the provider answered HTTP {status}, which proves neither "
+                "way (transient or provider-side)",
+                status,
+            )
+        if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+            return cls._live_probe_result(
+                cls.VERIFICATION_UNVERIFIED, "the call timed out"
+            )
+        if isinstance(exc, httpx.TransportError):
+            return cls._live_probe_result(
+                cls.VERIFICATION_UNVERIFIED,
+                f"the provider could not be reached ({type(exc).__name__})",
+            )
+        return cls._live_probe_result(
+            cls.VERIFICATION_UNVERIFIED,
+            f"the call failed with {type(exc).__name__}: {exc}",
+        )
+
+    async def verify_provider_live(
+        self,
+        provider: str,
+        capability: str = "llm",
+        model: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> dict:
+        """Prove or refute a (provider, model) route by CALLING it.
+
+        This is the only function in this module entitled to return
+        `VERIFICATION_VERIFIED`, and it earns it the one way a capability claim
+        may be earned (CLAUDE.md): the cheapest real generation call for an LLM
+        route, the cheapest real embed call for an embedding route. If it
+        cannot run -- offline, timeout, provider-side 5xx -- it returns
+        UNVERIFIED and says so. It never upgrades a guess.
+
+        Returns `{"verification", "verification_reason", "status_code"}`; every
+        string in it has been through `redact_secrets`.
+        """
+        timeout = self.LIVE_PROBE_TIMEOUT_SECONDS if timeout is None else timeout
+        model = model or self._ai_config.get_default_model(
+            provider, "llm" if capability == "llm" else "embedding"
+        )
+        if not model:
+            return self._live_probe_result(
+                self.VERIFICATION_UNVERIFIED,
+                f"no {capability} model is known for provider {provider!r}, so "
+                "there is no route to call",
+            )
+
+        try:
+            if capability == "llm":
+                adapter = self._create_llm_provider(
+                    self._live_probe_llm_config(provider, model)
+                )
+                call = adapter.generate(self.LIVE_PROBE_PROMPT)
+            else:
+                adapter = self._create_embedding_provider(
+                    self._live_probe_embedding_config(provider, model)
+                )
+                call = adapter.embed_single(self.LIVE_PROBE_TEXT)
+            result = await asyncio.wait_for(call, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 -- classified, never swallowed
+            return self.classify_live_probe_error(exc)
+
+        # An adapter that returns nothing answered, but did not serve. Treating
+        # that as verified is how a broken path reports success (WI0-B1).
+        if capability == "llm":
+            served = isinstance(result, str) and result.strip() != ""
+        else:
+            served = isinstance(result, (list, tuple)) and len(result) > 0
+        if not served:
+            return self._live_probe_result(
+                self.VERIFICATION_REFUTED,
+                f"the call to {provider}/{model} succeeded but returned an "
+                "empty result",
+            )
+        return self._live_probe_result(
+            self.VERIFICATION_VERIFIED,
+            f"a real {capability} call to {provider}/{model} succeeded",
+        )
 
     def _cli_provider_available(self, provider: str) -> bool:
         from ..providers import (

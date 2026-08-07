@@ -469,8 +469,19 @@ def cmd_check_provider(args):
             model=ai_config.get_default_model("openrouter", "llm") or "",
         )
     )
-    available = probe_client.is_provider_runtime_available(provider, "llm")
-    print(f"{provider}: {'available' if available else 'not available'}")
+    # "configured", not "available": this is the same cheap check
+    # configure-provider uses to build its candidate list, and for a cloud
+    # provider it is `bool(os.getenv(API_KEY))` -- true for a key revoked an
+    # hour ago. `--generate` below is the part that actually calls the route.
+    configured = probe_client.is_provider_runtime_available(provider, "llm")
+    print(
+        f"{provider}: "
+        + (
+            "configured (unverified -- pass --generate to make a real call)"
+            if configured
+            else "not configured"
+        )
+    )
 
     if args.generate:
         client = LLMClient(LLMConfig(provider=provider, model=model))
@@ -481,9 +492,11 @@ def cmd_check_provider(args):
 def _probe_client(ai_config):
     """Build a throwaway LLMClient purely to reach its shared runtime probes.
 
-    The provider/model passed here are never used to talk to a provider --
-    configure-provider only calls get_provider_runtime_state(). Both llm_config
-    and embedding_config are passed explicitly (rather than left to default)
+    The provider/model passed here are never used to talk to a provider: the
+    static probes call get_provider_runtime_state(), and the live probes
+    (`verify_llm_route` / `verify_embedding_route`) pass an explicit config for
+    the route under test, so this client's own selection is inert either way.
+    Both llm_config and embedding_config are passed explicitly (rather than left to default)
     so this does not depend on LLMClient's env-derived defaults, which are the
     exact lines SPEC-provider-routing.md R1/R2 are changing concurrently in
     services/ai-engine/app/core/llm_client.py.
@@ -524,6 +537,42 @@ def probe_embedding_provider(provider: str) -> dict:
 
     ai_config = get_ai_config()
     return _probe_client(ai_config).get_provider_runtime_state(provider, "embeddings")
+
+
+# The two probes above answer "is this provider CONFIGURED" -- binary on PATH,
+# key variable non-empty, local server answering. That is not verification, and
+# calling it verification is the failure this repo has now made twice: the
+# `openrouter.supports.embeddings: false` claim was annotated "verified" on the
+# strength of a chat-model listing that could not see the embeddings endpoint,
+# and `configure-provider` captioned its menu "verified-available" on the
+# strength of `bool(os.getenv(API_KEY))`. A revoked key, a typo'd key and a
+# wrong-account key are all "configured".
+#
+# The two functions below are the real thing: they CALL the route. They are
+# module-level for the same reason the probes are -- so tests monkeypatch this
+# seam instead of issuing billed requests (see tests/unit/test_cli_configure_provider.py).
+
+
+def verify_llm_route(provider: str, model: str, timeout: float | None = None) -> dict:
+    """Prove or refute an LLM route with the cheapest real generation call."""
+    from config.config_loader import get_ai_config
+
+    client = _probe_client(get_ai_config())
+    return asyncio.run(
+        client.verify_provider_live(provider, "llm", model, timeout=timeout)
+    )
+
+
+def verify_embedding_route(
+    provider: str, model: str, timeout: float | None = None
+) -> dict:
+    """Prove or refute an embedding route with the cheapest real embed call."""
+    from config.config_loader import get_ai_config
+
+    client = _probe_client(get_ai_config())
+    return asyncio.run(
+        client.verify_provider_live(provider, "embeddings", model, timeout=timeout)
+    )
 
 
 def probe_ollama_installed_models(base_url: str, timeout: float = 2.0) -> set[str] | None:
@@ -610,10 +659,13 @@ def _ordered_llm_candidates(ai_config) -> list[str]:
 
 
 def _probe_available_llm_providers(ai_config) -> list[tuple[str, dict]]:
-    """Return (provider, probe_state) pairs for LLM providers verified usable.
+    """Return (provider, probe_state) pairs for LLM providers that are CONFIGURED.
 
     A provider whose binary/key/server probe fails is never returned here, so
-    it can never reach the prompt_choice() menu or be written to .env.
+    it can never reach the prompt_choice() menu or be written to .env. Passing
+    this filter is necessary, not sufficient: it says a credential/binary is
+    present, not that it works. `verify_llm_route` settles that for whichever
+    route is actually chosen, before anything reaches .env.
     """
     available: list[tuple[str, dict]] = []
     for provider in _ordered_llm_candidates(ai_config):
@@ -621,15 +673,20 @@ def _probe_available_llm_providers(ai_config) -> list[tuple[str, dict]]:
             continue
         state = probe_llm_provider(provider)
         if state.get("available"):
-            print(f"  {provider}: available ({_provider_cost_model(ai_config, provider)})")
+            print(
+                f"  {provider}: configured ({_provider_cost_model(ai_config, provider)})"
+                f" -- not yet verified"
+            )
             available.append((provider, state))
         else:
-            print(f"  {provider}: not available -- {state.get('reason') or 'unknown reason'}")
+            print(f"  {provider}: not configured -- {state.get('reason') or 'unknown reason'}")
     return available
 
 
 def _probe_available_embedding_providers(ai_config) -> list[tuple[str, dict]]:
-    """Return (provider, probe_state) pairs for embedding providers verified usable.
+    """Return (provider, probe_state) pairs for embedding providers that are CONFIGURED.
+
+    "Configured", not "verified" -- see `_probe_available_llm_providers`.
 
     Filtered strictly by the catalog's `supports.embeddings` first -- a
     provider that cannot embed (the subscription CLIs, anthropic, deepseek)
@@ -650,10 +707,13 @@ def _probe_available_embedding_providers(ai_config) -> list[tuple[str, dict]]:
             continue
         state = probe_embedding_provider(provider)
         if state.get("available"):
-            print(f"  {provider}: available ({_provider_cost_model(ai_config, provider)})")
+            print(
+                f"  {provider}: configured ({_provider_cost_model(ai_config, provider)})"
+                f" -- not yet verified"
+            )
             available.append((provider, state))
         else:
-            print(f"  {provider}: not available -- {state.get('reason') or 'unknown reason'}")
+            print(f"  {provider}: not configured -- {state.get('reason') or 'unknown reason'}")
     return available
 
 
@@ -687,9 +747,123 @@ def _choose_provider_interactively(
         f"session is not interactive and {flag_name} was not given. Pass "
         f"{flag_name} explicitly -- that flag IS the deliberate choice "
         f"(SPEC-provider-routing.md R3) -- or run configure-provider attached "
-        f"to a terminal. Verified available: {', '.join(available_names)}. "
+        f"to a terminal. Configured (not yet verified): "
+        f"{', '.join(available_names)}. Nothing was written to .env."
+    )
+
+
+def _require_catalog_model(
+    ai_config, provider: str, model: str, model_type: str, flag_name: str
+) -> str:
+    """Refuse a model that is not one of `provider`'s catalog routes.
+
+    `--llm-model` / `--embedding-model` used to be written to .env verbatim.
+    `config/ai_models.yaml` is route-per-entry -- the key IS the exact wire id
+    and `provider:` names the one provider serving it -- so a model belonging
+    to a different provider, or a typo, is decidable here in a string compare.
+    Accepting it produced a .env that claimed a verified provider/model pair
+    while ai-engine could only degrade after the next restart, which is the
+    slowest possible place to learn about a typo.
+    """
+    models = ai_config.get_provider_models(provider, model_type)
+    if model in models:
+        return model
+
+    try:
+        owner = ai_config.get_model_config(model).get("provider")
+    except ValueError:
+        owner = None
+    if owner:
+        cause = (
+            f"{model!r} is a {owner!r} route, not a {provider!r} one. "
+            f"config/ai_models.yaml is route-per-entry: the catalog key is the "
+            f"exact wire id and belongs to exactly one provider."
+        )
+    else:
+        cause = f"{model!r} is not in config/ai_models.yaml at all."
+
+    raise SystemExit(
+        f"code: model_not_a_route_of_provider\n"
+        f"cause: {flag_name} {model} was given for provider {provider!r}, but "
+        f"{cause}\n"
+        f"fix: Pass one of {provider!r}'s {model_type} routes: "
+        f"{', '.join(models) or '(none in the catalog)'}. Nothing was written to .env."
+    )
+
+
+def _confirm_unverified_route(
+    role_label: str, provider: str, model: str, reason: str, args: argparse.Namespace
+) -> None:
+    """Require an explicit human act before writing a route nothing could prove.
+
+    Being offline must not make this tool unusable, so an unprovable route is
+    still choosable -- but never by default and never silently. The env var it
+    would write is read downstream (R1/R3) as the record of a deliberate human
+    choice; an unattended run that wrote an unverified route would forge that
+    record twice over.
+    """
+    print(
+        f"  {role_label} route {provider}/{model} is UNVERIFIED: {reason}. "
+        f"The probe could not run, so nothing here proves the route works."
+    )
+    if getattr(args, "allow_unverified", False):
+        print("  --allow-unverified was given; recording the choice as unverified.")
+        return
+    if sys.stdin.isatty():
+        answer = input(
+            f"Write the unverified {role_label} route {provider}/{model} anyway? [y/N] "
+        ).strip().lower()
+        if answer in {"y", "yes"}:
+            return
+        raise SystemExit("Declined. Nothing was written to .env.")
+    raise SystemExit(
+        f"code: {role_label}_route_unverified\n"
+        f"cause: The {role_label} route {provider}/{model} could not be verified "
+        f"({reason}), and this session is not interactive, so there is nobody to "
+        f"accept an unverified choice.\n"
+        f"fix: Rerun attached to a terminal, fix connectivity and rerun, or pass "
+        f"--allow-unverified to record the choice as explicitly unverified. "
         f"Nothing was written to .env."
     )
+
+
+def _settle_route_verification(
+    role_label: str,
+    provider: str,
+    model: str,
+    verify_fn,
+    args: argparse.Namespace,
+) -> str:
+    """Call the route, and return the verification state to record in .env.
+
+    Three outcomes, three different things to do -- collapsing any two of them
+    is the bug this exists to prevent:
+      verified   -> proven by a real call; say so and write it.
+      refuted    -> the provider itself rejected the call (401/403/402/400/404).
+                    Positive proof; refuse, and write nothing.
+      unverified -> the probe could not run. Choosable, but only deliberately.
+    """
+    print(f"Verifying the {role_label} route {provider}/{model} with a real call...")
+    result = verify_fn(provider, model)
+    verification = result.get("verification")
+    reason = result.get("verification_reason") or "no reason given"
+
+    if verification == "verified":
+        print(f"  verified: {reason}")
+        return "verified"
+
+    if verification == "refuted":
+        raise SystemExit(
+            f"code: {role_label}_route_refuted\n"
+            f"cause: The {role_label} route {provider}/{model} was called and "
+            f"failed: {reason}. This is proof the route does not work, not a "
+            f"missing network.\n"
+            f"fix: Fix the credential or pick another route, then rerun "
+            f"configure-provider. Nothing was written to .env."
+        )
+
+    _confirm_unverified_route(role_label, provider, model, reason, args)
+    return "unverified"
 
 
 def _ensure_ollama_model_pulled(model: str, args: argparse.Namespace) -> str:
@@ -735,16 +909,30 @@ def _ensure_ollama_model_pulled(model: str, args: argparse.Namespace) -> str:
 
 
 def cmd_configure_provider(args):
-    """Probe real provider availability and write a verified selection to .env.
+    """Probe provider availability, then VERIFY the chosen route by calling it.
 
     This is the asking the service itself cannot do
-    (docs/SPEC-provider-routing.md R6): probe which subscription CLIs are on
-    PATH and authenticated, which API keys are present, and which Ollama
-    models are actually pulled -- then present only what is genuinely usable,
-    ordered by the catalog's routing preference, annotated with cost_model.
-    Never writes AI_PROVIDER/EMBEDDING_PROVIDER to a value its own probe could
-    not verify, and always leaves EMBEDDING_DIMENSIONS blank so it resolves
-    from the catalog and cannot drift from EMBEDDING_MODEL.
+    (docs/SPEC-provider-routing.md R6). It runs in two stages, and keeping them
+    distinct is the whole point:
+
+      1. CONFIGURED -- which subscription CLIs are on PATH and authenticated,
+         which API keys are present, which Ollama models are pulled. Cheap,
+         local, and no evidence at all that anything works: for a cloud
+         provider it is `bool(os.getenv(API_KEY))`, which cannot tell a working
+         key from one revoked an hour ago. This stage only builds the menu.
+      2. VERIFIED -- the chosen provider AND model are exercised with the
+         cheapest real call (`verify_llm_route` / `verify_embedding_route`)
+         before a single byte reaches .env. A provider that rejects the call
+         is refused outright; a route nothing could reach is choosable, but
+         only by an explicit human act, and is written down as unverified.
+
+    This command captioned its menus "(only verified-available options shown)"
+    while doing stage 1 alone -- the same error as `openrouter.supports.
+    embeddings: false` annotated "verified" from a listing that could not see
+    the endpoint. It was the tool this repo added to enforce that rule.
+
+    EMBEDDING_DIMENSIONS is always left blank so it resolves from the catalog
+    and cannot drift from EMBEDDING_MODEL.
     """
     from config.config_loader import get_ai_config
     from scripts.init import ensure_env_file, prompt_choice, update_env_vars
@@ -758,7 +946,7 @@ def cmd_configure_provider(args):
     llm_available = _probe_available_llm_providers(ai_config)
     if not llm_available:
         raise SystemExit(
-            "No LLM provider is verified available. Install/authenticate one of:\n"
+            "No LLM provider is even configured. Install/authenticate one of:\n"
             "  claude_code -- `claude` on PATH, logged in (subscription)\n"
             "  codex_cli   -- `codex` on PATH, logged in (subscription)\n"
             "  codex_acp   -- `acpx` on PATH (subscription)\n"
@@ -778,8 +966,9 @@ def cmd_configure_provider(args):
         if args.provider not in llm_provider_names:
             raise SystemExit(
                 f"--provider {args.provider} failed its availability probe (or is "
-                f"unknown); refusing to write an unverified provider. Verified "
-                f"available: {', '.join(llm_provider_names)}"
+                f"unknown); refusing to write a provider whose binary/key is not "
+                f"even present. Configured (not yet verified): "
+                f"{', '.join(llm_provider_names)}"
             )
         llm_provider = args.provider
     else:
@@ -788,7 +977,8 @@ def cmd_configure_provider(args):
         ]
         llm_provider = _choose_provider_interactively(
             prompt_choice,
-            "Choose an LLM provider (only verified-available options shown):",
+            "Choose an LLM provider (configured options; the one you pick is "
+            "verified with a real call before anything is written):",
             llm_options,
             0,
             llm_provider_names,
@@ -803,18 +993,32 @@ def cmd_configure_provider(args):
     llm_model_options = [
         (m, ai_config.format_model_description(m)) for m in llm_models
     ]
-    llm_model = args.llm_model or prompt_choice(
-        f"Choose a {llm_provider} LLM model:", llm_model_options, default_index=default_index
-    )
+    if args.llm_model:
+        # An explicit flag is a deliberate choice, not a licence to skip the
+        # catalog: it is written to .env under the same "verified" banner as an
+        # interactively chosen one, so it earns the same membership check.
+        llm_model = _require_catalog_model(
+            ai_config, llm_provider, args.llm_model, "llm", "--llm-model"
+        )
+    else:
+        llm_model = prompt_choice(
+            f"Choose a {llm_provider} LLM model:",
+            llm_model_options,
+            default_index=default_index,
+        )
 
     if llm_provider == "ollama":
         llm_model = _ensure_ollama_model_pulled(llm_model, args)
+
+    llm_verification = _settle_route_verification(
+        "llm", llm_provider, llm_model, verify_llm_route, args
+    )
 
     print("Probing embedding providers (catalog supports.embeddings only)...")
     embed_available = _probe_available_embedding_providers(ai_config)
     if not embed_available:
         raise SystemExit(
-            "No embedding provider is verified available. AI_PROVIDER was not written: "
+            "No embedding provider is even configured. AI_PROVIDER was not written: "
             "an unset/unverified EMBEDDING_PROVIDER is exactly the silent-default bug "
             "R1/R2 forbid. Pull an Ollama embedding model (e.g. nomic-embed-text) or set "
             "OPENROUTER_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY, then retry.\n"
@@ -826,8 +1030,9 @@ def cmd_configure_provider(args):
         if args.embedding_provider not in embed_provider_names:
             raise SystemExit(
                 f"--embedding-provider {args.embedding_provider} cannot embed, or failed "
-                f"its availability probe; refusing to write an unverified provider. "
-                f"Verified available: {', '.join(embed_provider_names)}"
+                f"its availability probe; refusing to write a provider whose "
+                f"binary/key is not even present. Configured (not yet verified): "
+                f"{', '.join(embed_provider_names)}"
             )
         embedding_provider = args.embedding_provider
     else:
@@ -839,7 +1044,8 @@ def cmd_configure_provider(args):
         ]
         embedding_provider = _choose_provider_interactively(
             prompt_choice,
-            "Choose an embedding provider (only verified-available options shown):",
+            "Choose an embedding provider (configured options; the one you pick "
+            "is verified with a real call before anything is written):",
             embed_options,
             default_index,
             embed_provider_names,
@@ -854,14 +1060,27 @@ def cmd_configure_provider(args):
     embed_model_options = [
         (m, ai_config.format_model_description(m)) for m in embed_models
     ]
-    embedding_model = args.embedding_model or prompt_choice(
-        f"Choose a {embedding_provider} embedding model:",
-        embed_model_options,
-        default_index=default_index,
-    )
+    if args.embedding_model:
+        embedding_model = _require_catalog_model(
+            ai_config,
+            embedding_provider,
+            args.embedding_model,
+            "embedding",
+            "--embedding-model",
+        )
+    else:
+        embedding_model = prompt_choice(
+            f"Choose a {embedding_provider} embedding model:",
+            embed_model_options,
+            default_index=default_index,
+        )
 
     if embedding_provider == "ollama":
         embedding_model = _ensure_ollama_model_pulled(embedding_model, args)
+
+    embedding_verification = _settle_route_verification(
+        "embedding", embedding_provider, embedding_model, verify_embedding_route, args
+    )
 
     # All five keys land in ONE read-modify-write pass (update_env_vars), not
     # four/five sequential ones: a mid-sequence IO failure could otherwise
@@ -869,19 +1088,29 @@ def cmd_configure_provider(args):
     # a partial write scripts/MODULE.md treats as a hard constraint to avoid.
     # EMBEDDING_DIMENSIONS is written blank in the same pass so it resolves
     # from the catalog and cannot drift from EMBEDDING_MODEL.
+    # AI_PROVIDER_VERIFIED / EMBEDDING_PROVIDER_VERIFIED carry the provenance
+    # of the two lines above them, in the same file, written in the same pass.
+    # Without them .env records a choice but not whether anyone ever proved it
+    # works, and every later reader is free to assume the flattering answer --
+    # which is precisely how a `bool(os.getenv(API_KEY))` check came to be
+    # captioned "verified-available".
     update_env_vars(
         {
             "AI_PROVIDER": llm_provider,
             "LLM_MODEL": llm_model,
+            "AI_PROVIDER_VERIFIED": llm_verification,
             "EMBEDDING_PROVIDER": embedding_provider,
             "EMBEDDING_MODEL": embedding_model,
+            "EMBEDDING_PROVIDER_VERIFIED": embedding_verification,
             "EMBEDDING_DIMENSIONS": "",
         }
     )
 
     print(
-        f"Wrote AI_PROVIDER={llm_provider}, LLM_MODEL={llm_model}, "
-        f"EMBEDDING_PROVIDER={embedding_provider}, EMBEDDING_MODEL={embedding_model} to .env."
+        f"Wrote AI_PROVIDER={llm_provider} ({llm_verification}), "
+        f"LLM_MODEL={llm_model}, "
+        f"EMBEDDING_PROVIDER={embedding_provider} ({embedding_verification}), "
+        f"EMBEDDING_MODEL={embedding_model} to .env."
     )
     print(
         "EMBEDDING_DIMENSIONS left blank -- it resolves from the model catalog at "
@@ -1257,7 +1486,10 @@ Examples:
     # configure-provider
     configure_provider_parser = subparsers.add_parser(
         "configure-provider",
-        help="Probe real LLM/embedding provider availability and write a verified choice to .env",
+        help=(
+            "Probe LLM/embedding provider availability, verify the chosen route "
+            "with a real call, and write it to .env"
+        ),
     )
     configure_provider_parser.add_argument(
         "--provider",
@@ -1278,6 +1510,15 @@ Examples:
         "-y",
         action="store_true",
         help="Auto-confirm pulling a missing Ollama model instead of prompting.",
+    )
+    configure_provider_parser.add_argument(
+        "--allow-unverified",
+        action="store_true",
+        help=(
+            "Accept a route whose live probe could not RUN (offline, timeout) "
+            "and record it in .env as unverified. Never accepts a route the "
+            "provider itself rejected."
+        ),
     )
     configure_provider_parser.set_defaults(func=cmd_configure_provider)
 

@@ -22,9 +22,33 @@ def _configure_args(**overrides):
         "embedding_provider": None,
         "embedding_model": None,
         "yes": False,
+        "allow_unverified": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
+
+
+def _verified(provider, model, timeout=None):
+    return {
+        "verification": "verified",
+        "verification_reason": f"a real call to {provider}/{model} succeeded",
+        "status_code": None,
+    }
+
+
+@pytest.fixture(autouse=True)
+def _no_live_provider_calls(monkeypatch):
+    """Every test in this file stops at the live-probe seam.
+
+    `verify_llm_route` / `verify_embedding_route` issue a REAL generation/embed
+    call -- that is the whole point of them (CLAUDE.md: a capability claim comes
+    from calling the endpoint). Which is exactly why no unit test may reach
+    them: they would spawn `claude`, or spend metered credit, or hang for the
+    probe timeout on a machine with no network. Tests that care about
+    verification override this with their own stub.
+    """
+    monkeypatch.setattr(cli, "verify_llm_route", _verified)
+    monkeypatch.setattr(cli, "verify_embedding_route", _verified)
 
 
 def _write_env(tmp_path, monkeypatch, contents="AI_PROVIDER=openrouter\n"):
@@ -220,6 +244,10 @@ def test_refuses_explicit_provider_that_fails_its_probe(tmp_path, monkeypatch):
     message = str(exc_info.value)
     assert "claude_code" in message
     assert "failed its availability probe" in message
+    # The refusal must not describe what it found as "verified available" --
+    # `_probe_available_llm_providers` only established that a binary/key is
+    # present. See the verification tests below.
+    assert "verified available" not in message.lower()
     assert env_file.read_text() == "AI_PROVIDER=openrouter\n"
 
 
@@ -233,7 +261,7 @@ def test_refuses_when_nothing_is_verified_available(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         cli.cmd_configure_provider(_configure_args())
 
-    assert "No LLM provider is verified available" in str(exc_info.value)
+    assert "No LLM provider is even configured" in str(exc_info.value)
     assert env_file.read_text() == "AI_PROVIDER=openrouter\n"
 
 
@@ -477,14 +505,263 @@ def test_configure_provider_writes_all_env_keys_in_a_single_pass(tmp_path, monke
     assert calls[0] == {
         "AI_PROVIDER": "claude_code",
         "LLM_MODEL": "sonnet",
+        "AI_PROVIDER_VERIFIED": "verified",
         "EMBEDDING_PROVIDER": "ollama",
         "EMBEDDING_MODEL": "nomic-embed-text",
+        "EMBEDDING_PROVIDER_VERIFIED": "verified",
         "EMBEDDING_DIMENSIONS": "",
     }
 
     env_text = env_file.read_text()
     assert "AI_PROVIDER=claude_code" in env_text
     assert "EMBEDDING_DIMENSIONS=999" not in env_text
+
+
+# --------------------------------------------------------------------------
+# "Verified" must mean CALLED.
+#
+# Availability came from `bool(os.getenv(API_KEY))` while the menu was
+# captioned "(only verified-available options shown)" and .env was written as
+# the user's verified choice. A key revoked an hour ago is indistinguishable
+# from a working one at that layer -- the same shape of error as reading
+# `openrouter.supports.embeddings` off a chat-model listing that cannot see the
+# embeddings endpoint. The tests below pin the three outcomes apart.
+# --------------------------------------------------------------------------
+
+
+def _unverified(reason="the provider could not be reached (ConnectError)"):
+    def _probe(provider, model, timeout=None):
+        return {
+            "verification": "unverified",
+            "verification_reason": reason,
+            "status_code": None,
+        }
+
+    return _probe
+
+
+def _refuted(reason="the provider rejected the call with HTTP 401", status=401):
+    def _probe(provider, model, timeout=None):
+        return {
+            "verification": "refuted",
+            "verification_reason": reason,
+            "status_code": status,
+        }
+
+    return _probe
+
+
+def test_a_configured_but_refuted_route_is_never_written(tmp_path, monkeypatch):
+    """A 401 is positive proof the key is bad -- not "unknown", and certainly
+    not "verified available"."""
+    env_file = _write_env(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(cli, "probe_llm_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "verify_llm_route", _refuted())
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_configure_provider(
+            _configure_args(provider="claude_code", embedding_provider="ollama")
+        )
+
+    message = str(exc_info.value)
+    assert "llm_route_refuted" in message
+    assert "HTTP 401" in message
+    assert env_file.read_text() == "AI_PROVIDER=openrouter\n"
+
+
+def test_an_unverifiable_route_is_never_written_unattended(tmp_path, monkeypatch):
+    """Offline must not silently become "verified". Nobody is there to consent,
+    so nothing is written."""
+    env_file = _write_env(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(cli, "probe_llm_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "verify_llm_route", _unverified())
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_configure_provider(
+            _configure_args(provider="claude_code", embedding_provider="ollama")
+        )
+
+    message = str(exc_info.value)
+    assert "llm_route_unverified" in message
+    assert "--allow-unverified" in message
+    assert env_file.read_text() == "AI_PROVIDER=openrouter\n"
+
+
+def test_allow_unverified_records_the_choice_as_unverified_not_verified(
+    tmp_path, monkeypatch
+):
+    """The escape hatch exists so the tool still works on a plane -- but the
+    .env it writes must say what it actually knows."""
+    env_file = _write_env(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(cli, "probe_llm_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "verify_llm_route", _unverified())
+    monkeypatch.setattr(
+        cli, "probe_ollama_installed_models", lambda base_url, timeout=2.0: {"nomic-embed-text"}
+    )
+
+    cli.cmd_configure_provider(
+        _configure_args(
+            provider="claude_code", embedding_provider="ollama", allow_unverified=True
+        )
+    )
+
+    env_text = env_file.read_text()
+    assert "AI_PROVIDER=claude_code" in env_text
+    assert "AI_PROVIDER_VERIFIED=unverified" in env_text
+    # The embedding route's own probe DID succeed (autouse fixture), so the two
+    # must not be smeared into one verdict.
+    assert "EMBEDDING_PROVIDER_VERIFIED=verified" in env_text
+
+
+def test_the_written_verification_comes_from_the_live_call_not_the_key_check(
+    tmp_path, monkeypatch
+):
+    """The specific defect: a provider that is merely CONFIGURED must not reach
+    .env labelled verified. The static probe says available for everything
+    here; only the live call decides."""
+    env_file = _write_env(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(cli, "probe_llm_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(
+        cli, "probe_ollama_installed_models", lambda base_url, timeout=2.0: {"nomic-embed-text"}
+    )
+
+    called = []
+
+    def recording_verify(provider, model, timeout=None):
+        called.append((provider, model))
+        return _verified(provider, model)
+
+    monkeypatch.setattr(cli, "verify_llm_route", recording_verify)
+    monkeypatch.setattr(cli, "verify_embedding_route", recording_verify)
+
+    cli.cmd_configure_provider(
+        _configure_args(provider="claude_code", embedding_provider="ollama")
+    )
+
+    # The EXACT pair written to .env is the pair that was called -- not the
+    # provider with some other model, and not nothing at all.
+    assert called == [("claude_code", "sonnet"), ("ollama", "nomic-embed-text")]
+    assert "AI_PROVIDER_VERIFIED=verified" in env_file.read_text()
+
+
+# --------------------------------------------------------------------------
+# Explicit model flags are catalog routes, not free text.
+#
+# `--llm-model` was written to .env verbatim. config/ai_models.yaml is
+# route-per-entry: the key IS the wire id and belongs to exactly one provider,
+# so a wrong-provider model or a typo is decidable here rather than at the next
+# ai-engine restart.
+# --------------------------------------------------------------------------
+
+
+def _fully_unblocked(monkeypatch):
+    """Mock every OTHER gate open.
+
+    Without this, deleting the model check would still be caught by the
+    non-interactive provider gate further down, and the test would pass for a
+    reason it is not testing -- while the bad model never actually reached
+    .env. With it, the mutation's real consequence is visible: the wrong
+    provider's model gets written.
+    """
+    monkeypatch.setattr(cli, "probe_llm_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(
+        cli, "probe_ollama_installed_models", lambda base_url, timeout=2.0: {"nomic-embed-text"}
+    )
+
+
+def test_llm_model_flag_belonging_to_another_provider_is_refused(tmp_path, monkeypatch):
+    env_file = _write_env(tmp_path, monkeypatch)
+    _fully_unblocked(monkeypatch)
+
+    # `nomic-embed-text` is a real catalog key -- an ollama EMBEDDING route --
+    # so this is the wrong-provider case, not the unknown-model case.
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_configure_provider(
+            _configure_args(
+                provider="claude_code",
+                llm_model="nomic-embed-text",
+                embedding_provider="ollama",
+            )
+        )
+
+    message = str(exc_info.value)
+    assert "model_not_a_route_of_provider" in message
+    assert "'ollama'" in message  # names the provider it actually belongs to
+    assert "sonnet" in message  # names the valid routes
+    assert env_file.read_text() == "AI_PROVIDER=openrouter\n"
+
+
+def test_unknown_llm_model_flag_is_refused(tmp_path, monkeypatch):
+    env_file = _write_env(tmp_path, monkeypatch)
+    _fully_unblocked(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_configure_provider(
+            _configure_args(
+                provider="claude_code",
+                llm_model="sonnett",
+                embedding_provider="ollama",
+            )
+        )
+
+    message = str(exc_info.value)
+    assert "model_not_a_route_of_provider" in message
+    assert "not in config/ai_models.yaml" in message
+    assert env_file.read_text() == "AI_PROVIDER=openrouter\n"
+
+
+def test_embedding_model_flag_belonging_to_another_provider_is_refused(
+    tmp_path, monkeypatch
+):
+    env_file = _write_env(tmp_path, monkeypatch)
+    _fully_unblocked(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_configure_provider(
+            _configure_args(
+                provider="claude_code",
+                embedding_provider="ollama",
+                embedding_model="text-embedding-3-small",
+            )
+        )
+
+    message = str(exc_info.value)
+    assert "model_not_a_route_of_provider" in message
+    assert "--embedding-model" in message
+    assert "nomic-embed-text" in message
+    assert env_file.read_text() == "AI_PROVIDER=openrouter\n"
+
+
+def test_a_valid_model_flag_still_passes_through(tmp_path, monkeypatch):
+    """Guard against the check being tightened into uselessness: the legitimate
+    scripted route must keep working."""
+    env_file = _write_env(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(cli, "probe_llm_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(cli, "probe_embedding_provider", lambda provider: {"available": True})
+    monkeypatch.setattr(
+        cli, "probe_ollama_installed_models", lambda base_url, timeout=2.0: {"nomic-embed-text"}
+    )
+
+    cli.cmd_configure_provider(
+        _configure_args(
+            provider="claude_code",
+            llm_model="haiku",
+            embedding_provider="ollama",
+            embedding_model="nomic-embed-text",
+        )
+    )
+
+    assert "LLM_MODEL=haiku" in env_file.read_text()
 
 
 def test_ensure_env_file_creates_env_from_template_when_missing(tmp_path, monkeypatch):
