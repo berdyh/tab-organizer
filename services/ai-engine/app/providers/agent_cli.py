@@ -803,6 +803,29 @@ class CodexAcpLLMProvider(AgentCLILLMProvider):
 
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text by prompting a Codex ACP harness session via acpx."""
+        # `approve-all` auto-approves every tool call the model makes. This
+        # adapter is SAFE BY DEFAULT (`--deny-all`) and had no untrusted-content
+        # gate for that reason -- but `CODEX_ACP_PERMISSION_MODE=approve-all`
+        # removes the property the absence of a gate relied on, and this is the
+        # adapter the codex_cli refusal explicitly routes scraped content TO
+        # ("use codex_acp or claude_code for those flows"). So the one
+        # combination that must not exist is full tool approval plus page text
+        # an attacker wrote.
+        #
+        # The knob is not removed: it is a documented consent control
+        # (docs/AI_CONFIG.md, web-ui settings). Only the COMBINATION is refused,
+        # so an operator can still approve-all for their own prompts.
+        if self._permission_mode() == "approve-all" and (
+            self._has_untrusted_context_marker(prompt, system)
+        ):
+            raise AgentCLIError(
+                "agent_cli_untrusted_context_refused: CODEX_ACP_PERMISSION_MODE="
+                "approve-all auto-approves every tool call, and this prompt "
+                "carries scraped web content. Fix: leave "
+                "CODEX_ACP_PERMISSION_MODE unset (deny-all) or set it to "
+                "approve-reads for flows that index page content."
+            )
+
         prompt_text = self._structured_prompt_text(prompt, system)
         session_name = self._session_name()
         close_after_turn = not os.getenv(self.session_name_env, "").strip()
@@ -879,8 +902,18 @@ class CodexAcpLLMProvider(AgentCLILLMProvider):
             session_name,
         ]
 
-    def _permission_args(self) -> list[str]:
+    def _permission_mode(self) -> str:
+        """The clamped permission mode. One reader, so generate() and the argv
+        builder can never disagree about what is in effect."""
         mode = os.getenv("CODEX_ACP_PERMISSION_MODE", "deny-all").strip().lower()
+        return (
+            mode
+            if mode in {"approve-all", "deny-all", "approve-reads"}
+            else ("approve-reads")
+        )
+
+    def _permission_args(self) -> list[str]:
+        mode = self._permission_mode()
         if mode == "approve-all":
             return ["--approve-all"]
         if mode == "deny-all":
