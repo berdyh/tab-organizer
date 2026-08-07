@@ -551,7 +551,6 @@ class SessionManager:
             sessions = [s for s in sessions if s.status != "archived"]
         return sorted(sessions, key=lambda s: s.updated_at, reverse=True)
 
-
     def archive_session(self, session_id: str) -> bool:
         """Archive a session."""
         with self._lock:

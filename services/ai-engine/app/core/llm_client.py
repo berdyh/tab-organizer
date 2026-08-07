@@ -726,9 +726,7 @@ class LLMClient:
                 "EMBEDDING_PROVIDER", "embeddings"
             )
         if not self._ai_config.is_provider_supported(config.provider, "embeddings"):
-            raise ValueError(
-                f"Provider {config.provider} does not support embeddings"
-            )
+            raise ValueError(f"Provider {config.provider} does not support embeddings")
 
         from ..providers import (
             DeepSeekEmbeddingProvider,
