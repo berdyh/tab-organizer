@@ -1,6 +1,8 @@
 """Regression tests for the interactive init helper."""
 
 import argparse
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -216,19 +218,22 @@ def test_update_env_vars_never_leaves_a_partial_file_on_write_failure(tmp_path, 
     env_file.write_text(original)
     monkeypatch.setattr(init, "ENV_FILE", env_file)
 
-    real_write_text = Path.write_text
+    # The temp file is now opened with os.open + os.fdopen (so it can be
+    # created 0600 rather than at the process umask), so the failure is
+    # injected at THAT seam. Patching Path.write_text here would no longer
+    # intercept anything and the test would pass without exercising the
+    # rollback at all.
+    def failing_fdopen(fd, *args, **kwargs):
+        os.close(fd)
+        raise OSError("simulated disk full")
 
-    def failing_write_text(self, *args, **kwargs):
-        if self.name.endswith(".tmp"):
-            raise OSError("simulated disk full")
-        return real_write_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "write_text", failing_write_text)
+    monkeypatch.setattr(init.os, "fdopen", failing_fdopen)
 
     with pytest.raises(OSError):
         init.update_env_vars({"AI_PROVIDER": "claude_code", "EMBEDDING_PROVIDER": "ollama"})
 
     assert env_file.read_text() == original
+    assert not (tmp_path / ".env.tmp").exists()
 
 
 def test_configure_codex_acp_writes_subscription_runtime_env(tmp_path, monkeypatch):
@@ -267,3 +272,90 @@ def test_configure_codex_acp_writes_subscription_runtime_env(tmp_path, monkeypat
     assert "EMBEDDING_DIMENSIONS=" in env_text
     assert "EMBEDDING_DIMENSIONS=1024" not in env_text
     assert "CODEX_ACP_COMMAND=/usr/local/bin/acpx" in env_text
+
+
+@pytest.fixture
+def permissive_umask():
+    """Force a 022 umask so the permission tests below cannot pass vacuously.
+
+    Under a 077 umask the pre-fix `Path.write_text` would already have produced
+    an owner-only temp file, so these tests would go green against the bug they
+    exist to catch. Pinning the umask makes them assert the fix, not the
+    developer's shell settings.
+    """
+    previous = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def test_atomic_env_write_does_not_widen_owner_only_permissions(
+    tmp_path, monkeypatch, permissive_umask
+):
+    """An owner-only .env must stay owner-only across an update.
+
+    `Path.replace` carries the TEMP file's mode onto the destination, so
+    creating the temp file with the process umask silently republished every
+    API key and bearer token in .env to group and world.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("AI_PROVIDER=ollama\n")
+    env_file.chmod(0o600)
+    monkeypatch.setattr(init, "ENV_FILE", env_file)
+
+    init.update_env_var("AI_PROVIDER", "openrouter")
+
+    assert env_file.read_text() == "AI_PROVIDER=openrouter\n"
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    assert not (tmp_path / ".env.tmp").exists()
+
+
+def test_env_file_created_from_template_is_owner_only(
+    tmp_path, monkeypatch, permissive_umask
+):
+    """A stock install must not create a world-readable secrets file."""
+    env_file = tmp_path / ".env"
+    template = tmp_path / ".env.example"
+    template.write_text("AI_PROVIDER=\nOPENROUTER_API_KEY=\n")
+    monkeypatch.setattr(init, "ENV_FILE", env_file)
+    monkeypatch.setattr(init, "ENV_TEMPLATE", template)
+
+    init.ensure_env_file()
+
+    assert env_file.read_text() == template.read_text()
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+
+
+def test_every_duplicate_assignment_of_a_key_is_rewritten(tmp_path, monkeypatch):
+    """Docker compose, dotenv and `source` all take the LAST assignment.
+
+    Rewriting only the first match let configure-provider report a provider it
+    had not actually put into effect: the stale duplicate below it still won.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "AI_PROVIDER=openrouter\nLLM_MODEL=x\nAI_PROVIDER=ollama\n"
+    )
+    monkeypatch.setattr(init, "ENV_FILE", env_file)
+
+    init.update_env_var("AI_PROVIDER", "codex_cli")
+
+    lines = env_file.read_text().splitlines()
+    assignments = [line for line in lines if line.startswith("AI_PROVIDER=")]
+    assert assignments == ["AI_PROVIDER=codex_cli", "AI_PROVIDER=codex_cli"]
+    # The line every consumer actually reads.
+    assert assignments[-1] == "AI_PROVIDER=codex_cli"
+    assert "LLM_MODEL=x" in lines
+
+
+def test_updating_a_missing_key_still_appends_exactly_once(tmp_path, monkeypatch):
+    """Non-vacuity guard for the duplicate fix: the append path must survive."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("AI_PROVIDER=ollama\n")
+    monkeypatch.setattr(init, "ENV_FILE", env_file)
+
+    init.update_env_var("EMBEDDING_PROVIDER", "ollama")
+
+    lines = env_file.read_text().splitlines()
+    assert lines.count("EMBEDDING_PROVIDER=ollama") == 1

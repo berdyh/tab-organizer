@@ -8,6 +8,7 @@ file, selecting model providers, and pulling required docker images.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import textwrap
@@ -23,6 +24,11 @@ from config.config_loader import get_ai_config
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = PROJECT_ROOT / ".env"
 ENV_TEMPLATE = PROJECT_ROOT / ".env.example"
+
+# .env carries provider API keys and all four service bearer tokens, so it is
+# created owner-only -- the same rule `scripts/cli.py` already applies to
+# `data/service-tokens.json`.
+SECRET_FILE_MODE = 0o600
 
 
 
@@ -45,9 +51,26 @@ def _write_env_file_atomically(text: str) -> None:
     Windows both guarantee this), so a reader -- or a crash/IO error hitting
     this process -- only ever sees the old file in full or the new file in
     full, never a truncated or half-written one.
+
+    The temp file is created 0600 and .env's existing mode is restored onto it
+    before the rename. `Path.write_text` would create the temp file with the
+    process umask (0644 under the stock 022), and `replace` carries the TEMP
+    file's mode onto the destination -- so an owner-only .env silently became
+    group/world-readable on the next write. .env holds provider API keys and
+    all four service bearer tokens, so that is a credential disclosure, not a
+    cosmetic permission drift. Widening is what this prevents; a mode the
+    operator deliberately set is preserved as-is.
     """
     tmp_path = ENV_FILE.with_name(ENV_FILE.name + ".tmp")
-    tmp_path.write_text(text)
+    mode = ENV_FILE.stat().st_mode & 0o777 if ENV_FILE.exists() else SECRET_FILE_MODE
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_FILE_MODE)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        os.chmod(tmp_path, mode)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     tmp_path.replace(ENV_FILE)
 
 
@@ -67,16 +90,22 @@ def update_env_vars(pairs: Dict[str, str]) -> None:
         return
 
     lines = ENV_FILE.read_text().splitlines()
-    remaining = dict(pairs)
+    seen: set[str] = set()
     for idx, line in enumerate(lines):
-        if not remaining:
-            break
-        for key in list(remaining):
+        for key, value in pairs.items():
             if line.startswith(f"{key}="):
-                lines[idx] = f"{key}={remaining.pop(key)}"
+                # EVERY assignment of the key is rewritten, not just the first.
+                # A .env may legally carry a key twice, and every consumer
+                # (docker compose, python-dotenv, `source`) takes the LAST one
+                # -- so stopping at the first match let `configure-provider`
+                # report that it had written a new provider while the stack
+                # kept booting on the stale duplicate below it.
+                lines[idx] = f"{key}={value}"
+                seen.add(key)
                 break
-    for key, value in remaining.items():
-        lines.append(f"{key}={value}")
+    for key, value in pairs.items():
+        if key not in seen:
+            lines.append(f"{key}={value}")
 
     _write_env_file_atomically("\n".join(lines) + "\n")
 
@@ -97,7 +126,13 @@ def ensure_env_file() -> None:
         return
     if not ENV_TEMPLATE.exists():
         raise SystemExit("Missing .env template; cannot initialize environment.")
-    ENV_FILE.write_text(ENV_TEMPLATE.read_text())
+    # Created owner-only from the start: the very next thing a stock install
+    # does is write API keys and four bearer tokens into this file, and a
+    # 0644 .env would have handed them to every local account.
+    fd = os.open(ENV_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_FILE_MODE)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(ENV_TEMPLATE.read_text())
+    os.chmod(ENV_FILE, SECRET_FILE_MODE)
     print("Created .env from .env.example. Update sensitive values after this setup.")
 
 
