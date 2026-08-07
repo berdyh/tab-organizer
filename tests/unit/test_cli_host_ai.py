@@ -943,13 +943,13 @@ def test_tabs_cli_errors_redact_configured_agent_token(monkeypatch, capsys):
     assert "<redacted>" in output.err
 
 
-def test_short_token_is_not_redacted_and_warns(monkeypatch, capsys):
-    """A 1-char token must not shred output; it must warn instead.
+def test_short_token_does_not_shred_unrelated_text_and_warns(monkeypatch, capsys):
+    """A 1-char token must not shred output.
 
     A misconfigured BACKEND_CALLBACK_TOKEN=":" made str.replace rewrite every
     URL and timestamp in the CLI's output as "http<redacted>//host<redacted>9222".
-    Nothing is protected by redacting a value that short, and the shredded
-    output hides the diagnostics an operator needs.
+    Boundary-aware matching leaves those alone: every colon here is flanked by
+    token characters, so none of them is the token as a whole token.
     """
     from scripts.mcp import tabs as mcp_tabs
 
@@ -962,6 +962,42 @@ def test_short_token_is_not_redacted_and_warns(monkeypatch, capsys):
     message = 'http://host.docker.internal:9222 at 14:09:40'
     assert mcp_tabs.redact_configured_secrets(message) == message
     assert "BACKEND_CALLBACK_TOKEN is 1 characters" in capsys.readouterr().err
+
+
+def test_short_token_is_still_redacted_where_it_is_a_whole_token(monkeypatch):
+    """Not shredding must not become not redacting.
+
+    Every service's bearer check accepts a short token verbatim, so it is a
+    working credential; skipping redaction for it meant the CLI printed a
+    usable credential whenever one turned up in a backend payload or error.
+    """
+    from scripts.mcp import tabs as mcp_tabs
+
+    monkeypatch.setattr(mcp_tabs, "_warned_short_tokens", set())
+    for key in ("BACKEND_AGENT_API_TOKEN", "AI_ENGINE_API_TOKEN",
+                "BROWSER_ENGINE_API_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("BACKEND_CALLBACK_TOKEN", "hunter2")
+
+    for message, expected in (
+        # a Bearer header echoed back in an error
+        ("rejected Authorization: Bearer hunter2", "Bearer <redacted>"),
+        # a JSON body field
+        ('{"token": "hunter2"}', '{"token": "<redacted>"}'),
+        # a query string
+        ("GET /tabs?token=hunter2&x=1", "GET /tabs?token=<redacted>&x=1"),
+        # end of string, no trailing delimiter at all
+        ("callback token is hunter2", "callback token is <redacted>"),
+    ):
+        out = mcp_tabs.redact_configured_secrets(message)
+        assert "hunter2" not in out, message
+        assert expected in out, message
+
+    # ...and it is still a whole-token match, not a substring one.
+    assert (
+        mcp_tabs.redact_configured_secrets("see hunter2000 for details")
+        == "see hunter2000 for details"
+    )
 
 
 def test_a_real_length_token_is_still_redacted(monkeypatch):

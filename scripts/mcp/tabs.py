@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -84,28 +85,46 @@ def _require_urls(urls: list[str]) -> list[str]:
     return cleaned
 
 
-MIN_REDACTABLE_TOKEN_LEN = 12
+MIN_SAFE_TOKEN_LEN = 12
+
+# What may NOT sit next to a token for it to count as a whole token. Tokens are
+# minted by `secrets.token_urlsafe`, whose alphabet is exactly this class, so a
+# real token is delimited by quotes, spaces, `:`, `/`, `=`, `&` or end-of-string
+# in every place it can appear (a Bearer header, a URL, a JSON body).
+_TOKEN_CHARS = r"A-Za-z0-9_\-"
 
 _warned_short_tokens: set[str] = set()
+
+
+def _token_pattern(token: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?<![{_TOKEN_CHARS}]){re.escape(token)}(?![{_TOKEN_CHARS}])"
+    )
 
 
 def redact_configured_secrets(message: str) -> str:
     """Redact configured service tokens from user-visible text.
 
-    A token shorter than ``MIN_REDACTABLE_TOKEN_LEN`` is NOT redacted, and the
-    reason is not leniency. ``str.replace`` has no notion of a token boundary,
-    so a one-character value turns every occurrence of that character into
-    ``<redacted>`` -- a misconfigured ``BACKEND_CALLBACK_TOKEN=":"`` rewrote
-    every URL and timestamp in this CLI's output to
-    ``"http<redacted>//host<redacted>9222"``. Nothing is protected by that: a
-    value that short has no secrecy to preserve, while the shredded output
-    actively hides the diagnostics an operator needs.
+    Redaction is BOUNDARY-AWARE, and both properties it buys are load-bearing:
+
+    * every configured token is redacted, however short. A short token is not
+      "not secret enough to bother with" -- every service's bearer check
+      accepts it verbatim, so it is a working credential, and printing it in a
+      backend payload or an error hands it over.
+    * a short token does not shred unrelated text. ``str.replace`` has no
+      notion of a token boundary, so a misconfigured
+      ``BACKEND_CALLBACK_TOKEN=":"`` rewrote every URL and timestamp in this
+      CLI's output to ``"http<redacted>//host<redacted>9222"``. Matching the
+      token only where it is delimited leaves those alone, because each of
+      those colons is flanked by token characters.
+
+    The previous fix for the shredding traded the first property away to buy
+    the second. It does not have to be a trade.
 
     `scripts/cli.py` mints these with `secrets.token_urlsafe`, so any real
-    token is far longer than this floor. A value below it is misconfiguration,
-    which is why this warns once per token rather than staying silent -- a
-    one-character service token is itself a security problem, and silently
-    declining to redact it would hide that too.
+    token is far longer than ``MIN_SAFE_TOKEN_LEN``. A value below it is
+    misconfiguration -- a service token nobody has to guess -- so it still
+    warns once per variable, while being redacted like any other.
     """
     redacted = message
     for key in (
@@ -117,20 +136,17 @@ def redact_configured_secrets(message: str) -> str:
         token = os.getenv(key, "").strip()
         if not token:
             continue
-        if len(token) < MIN_REDACTABLE_TOKEN_LEN:
-            if key not in _warned_short_tokens:
-                _warned_short_tokens.add(key)
-                print(
-                    f"warning: {key} is {len(token)} characters, below the "
-                    f"{MIN_REDACTABLE_TOKEN_LEN}-character floor for a service "
-                    "token. It is not being redacted from output, because "
-                    "redacting a value that short would corrupt every message "
-                    "instead of protecting anything. Regenerate it with "
-                    "./scripts/cli.py start.",
-                    file=sys.stderr,
-                )
-            continue
-        redacted = redacted.replace(token, "<redacted>")
+        if len(token) < MIN_SAFE_TOKEN_LEN and key not in _warned_short_tokens:
+            _warned_short_tokens.add(key)
+            print(
+                f"warning: {key} is {len(token)} characters, below the "
+                f"{MIN_SAFE_TOKEN_LEN}-character floor for a service token. It "
+                "is still redacted from output, but a value that short is "
+                "guessable and every service accepts it as a valid bearer "
+                "credential. Regenerate it with ./scripts/cli.py start.",
+                file=sys.stderr,
+            )
+        redacted = _token_pattern(token).sub("<redacted>", redacted)
     return redacted
 
 
