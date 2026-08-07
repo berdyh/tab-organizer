@@ -5,7 +5,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Union, cast
 
 import httpx
 
@@ -169,12 +169,18 @@ class BaseLLMProvider(ABC):
         """Generate text from prompt."""
         pass
 
+    # Declared WITHOUT `async` on purpose. Every implementation is an async
+    # generator (`async def` + `yield`), whose type is `AsyncIterator[str]`,
+    # not `Coroutine[..., AsyncIterator[str]]` -- an `async def` here would
+    # describe a coroutine that *returns* an iterator, which is a different
+    # protocol and makes every adapter an incompatible override. Callers use
+    # `async for ... in provider.generate_stream(...)`, never `await`.
     @abstractmethod
-    async def generate_stream(
+    def generate_stream(
         self, prompt: str, system: Optional[str] = None
     ) -> AsyncIterator[str]:
         """Stream generated text."""
-        pass
+        ...
 
 
 class BaseEmbeddingProvider(ABC):
@@ -342,7 +348,7 @@ class LLMClient:
                 code="provider_config_invalid",
                 cause=(
                     f"The {capability} configuration could not be resolved: "
-                    f"{type(exc).__name__}: {redact_url_userinfo(str(exc))}"
+                    f"{type(exc).__name__}: {redact_secrets(str(exc))}"
                 ),
                 fix=(
                     f"Check {env_vars} against config/ai_models.yaml, or run "
@@ -706,7 +712,15 @@ class LLMClient:
             "openrouter": OpenAILLMProvider,
         }
 
-        provider_class = providers.get(config.provider)
+        # Typed as a factory, not `type[BaseLLMProvider]`: every value in the
+        # map is a concrete adapter, but the inferred join is the abstract base,
+        # and an abstract *type object* is not instantiable as far as a type
+        # checker is concerned. The annotation goes on the lookup rather than on
+        # the map literal so `providers = {` keeps the exact shape
+        # test_provider_routing.py reads out of this source.
+        provider_class: Optional[Callable[[LLMConfig], BaseLLMProvider]] = (
+            providers.get(config.provider)
+        )
         if not provider_class:
             raise ValueError(f"Unknown LLM provider: {config.provider}")
 
@@ -751,7 +765,10 @@ class LLMClient:
             "openrouter": OpenAIEmbeddingProvider,
         }
 
-        provider_class = providers.get(config.provider)
+        # Factory-typed for the same reason as `_create_llm_provider`.
+        provider_class: Optional[Callable[[EmbeddingConfig], BaseEmbeddingProvider]] = (
+            providers.get(config.provider)
+        )
         if not provider_class:
             raise ValueError(f"Unknown embedding provider: {config.provider}")
 
@@ -825,7 +842,20 @@ class LLMClient:
                     provider=target_provider, model=target_model or ""
                 )
             self.llm_config.provider = target_provider
-            self.llm_config.model = target_model
+            # BUG, left as-is on purpose (found by the first real run of
+            # `make type-check`, 2026-08-07): `target_model` is Optional here.
+            # If no provider was selected yet, `llm_provider` names one whose
+            # catalog entry has no default llm model, and `llm_model` was not
+            # given, then `target_model` is None, the `elif self.llm_config is
+            # not None` branch above cannot supply one, and this line writes
+            # None into `LLMConfig.model: str` -- defeating the `or ""` on the
+            # constructor one line up. The embeddings branch below guards the
+            # same case with an explicit `embedding_model_not_selected` raise;
+            # the llm branch has no such guard. Fixing it is a behaviour change
+            # (a switch that silently half-succeeds today would start failing
+            # closed), so it is reported rather than smuggled in with a
+            # type-checker fix.
+            self.llm_config.model = target_model  # type: ignore[assignment]
             self.llm_config.api_key = self._api_key_for(target_provider)
             self.llm_config.base_url = self._base_url_for(
                 target_provider, "LLM_BASE_URL"
@@ -944,7 +974,7 @@ class LLMClient:
         """
         for key in ("reason", "server_url", "command", "verification_reason"):
             if isinstance(state.get(key), str):
-                state[key] = redact_url_userinfo(state[key])
+                state[key] = redact_secrets(state[key])
         return state
 
     def get_provider_runtime_state(
@@ -1156,16 +1186,17 @@ class LLMClient:
             )
 
         try:
+            call: Awaitable[Any]
             if capability == "llm":
-                adapter = self._create_llm_provider(
+                llm_adapter = self._create_llm_provider(
                     self._live_probe_llm_config(provider, model)
                 )
-                call = adapter.generate(self.LIVE_PROBE_PROMPT)
+                call = llm_adapter.generate(self.LIVE_PROBE_PROMPT)
             else:
-                adapter = self._create_embedding_provider(
+                embedding_adapter = self._create_embedding_provider(
                     self._live_probe_embedding_config(provider, model)
                 )
-                call = adapter.embed_single(self.LIVE_PROBE_TEXT)
+                call = embedding_adapter.embed_single(self.LIVE_PROBE_TEXT)
             result = await asyncio.wait_for(call, timeout=timeout)
         except Exception as exc:  # noqa: BLE001 -- classified, never swallowed
             return self.classify_live_probe_error(exc)
@@ -1215,18 +1246,43 @@ class LLMClient:
         if model_config.get("type") != model_type:
             raise ValueError(f"Model {model} is not a {model_type} model")
 
+    def _role_not_selected_error(self, capability: str) -> ProviderSelectionError:
+        """The `{code, cause, fix}` for a role that has no provider.
+
+        Always returns an error object and says nothing about whether one IS
+        selected -- `_selection_error` is the predicate form. Split out so a
+        caller that has already established "not selected" (by testing the
+        config itself) can get the error without an Optional it must re-check.
+        """
+        if capability == "llm":
+            return self.llm_config_error or self._not_selected_error(
+                "AI_PROVIDER", "llm"
+            )
+        return self.embedding_config_error or self._not_selected_error(
+            "EMBEDDING_PROVIDER", "embeddings"
+        )
+
     def _selection_error(self, capability: str) -> Optional[ProviderSelectionError]:
         if capability == "llm":
             if self.llm_config is not None:
                 return None
-            return self.llm_config_error or self._not_selected_error(
-                "AI_PROVIDER", "llm"
-            )
-        if self.embedding_config is not None:
+        elif self.embedding_config is not None:
             return None
-        return self.embedding_config_error or self._not_selected_error(
-            "EMBEDDING_PROVIDER", "embeddings"
-        )
+        return self._role_not_selected_error(capability)
+
+    def _selected_llm_config(self) -> LLMConfig:
+        """`self.llm_config` for a caller that has established it is set.
+
+        `_selection_error("llm") is None` is true exactly when `llm_config` is
+        not None, but that link runs through two attributes and a string, so a
+        type checker cannot follow it. The cast records it; it is a no-op at
+        runtime, so an unselected role still fails exactly as it does today.
+        """
+        return cast(LLMConfig, self.llm_config)
+
+    def _selected_embedding_config(self) -> EmbeddingConfig:
+        """`self.embedding_config`; see `_selected_llm_config` for the rule."""
+        return cast(EmbeddingConfig, self.embedding_config)
 
     def _unselected_runtime_state(self, error: ProviderSelectionError) -> dict:
         """Runtime state for a role nobody chose: unavailable, and says why."""
@@ -1248,12 +1304,14 @@ class LLMClient:
             return self._unselected_runtime_state(error)
 
         if capability == "llm":
-            provider = self.llm_config.provider
-            model = self.llm_config.model
+            llm_config = self._selected_llm_config()
+            provider = llm_config.provider
+            model = llm_config.model
             model_type = "llm"
         else:
-            provider = self.embedding_config.provider
-            model = self.embedding_config.model
+            embedding_config = self._selected_embedding_config()
+            provider = embedding_config.provider
+            model = embedding_config.model
             model_type = "embedding"
 
         state = self.get_provider_runtime_state(provider, capability)
@@ -1294,7 +1352,7 @@ class LLMClient:
             raise ProviderUnavailableError(
                 cause=(
                     f"The selected {capability} provider {provider!r} is not usable: "
-                    f"{redact_url_userinfo(state.get('reason')) or 'unknown reason'}"
+                    f"{redact_secrets(state.get('reason')) or 'unknown reason'}"
                 ),
                 fix=(
                     "Make that provider usable (install/authenticate its CLI, set "
@@ -1326,18 +1384,18 @@ class LLMClient:
     def _ollama_current_model_state(self, capability: str, model: str) -> dict:
         """Check the selected Ollama server and model for health reporting."""
         if capability == "llm":
-            base_url = self.llm_config.base_url or self._base_url_for(
+            base_url = self._selected_llm_config().base_url or self._base_url_for(
                 "ollama", "LLM_BASE_URL"
             )
         else:
-            base_url = self.embedding_config.base_url or self._base_url_for(
+            base_url = self._selected_embedding_config().base_url or self._base_url_for(
                 "ollama", "EMBEDDING_BASE_URL"
             )
         base_url = base_url.rstrip("/")
         # Everything below this line is destined for `GET /health` (which is
         # unauthenticated) and for log lines, so it carries the redacted form.
         # `base_url` itself stays intact for the request.
-        safe_url = redact_url_userinfo(base_url)
+        safe_url = redact_secrets(base_url)
 
         try:
             response = httpx.get(
@@ -1352,7 +1410,7 @@ class LLMClient:
                 "server_url": safe_url,
                 # httpx embeds the request URL in several of its exception
                 # messages, so redact the composed string, not just the prefix.
-                "reason": redact_url_userinfo(
+                "reason": redact_secrets(
                     f"Ollama is not reachable at {base_url}: {exc}"
                 ),
             }
@@ -1425,7 +1483,11 @@ class LLMClient:
                 "error": error.to_dict(),
             }
 
-        config = self.llm_config if capability == "llm" else self.embedding_config
+        config: Union[LLMConfig, EmbeddingConfig] = (
+            self._selected_llm_config()
+            if capability == "llm"
+            else self._selected_embedding_config()
+        )
         provider = config.provider
         model = config.model
         try:
@@ -1444,7 +1506,7 @@ class LLMClient:
         if capability == "llm":
             summary["tier"] = model_config.get("tier")
         else:
-            summary["dimensions"] = config.dimensions
+            summary["dimensions"] = self._selected_embedding_config().dimensions
         return summary
 
     def get_active_providers(self) -> dict:
@@ -1462,9 +1524,11 @@ class LLMClient:
             "llm": {
                 "provider": llm_provider,
                 "model": self.llm_config.model if self.llm_config else None,
-                "capabilities": self.PROVIDERS.get(llm_provider, {}),
+                "capabilities": (
+                    self.PROVIDERS.get(llm_provider, {}) if llm_provider else {}
+                ),
                 "error": (
-                    self._selection_error("llm").to_dict()
+                    self._role_not_selected_error("llm").to_dict()
                     if self.llm_config is None
                     else None
                 ),
@@ -1476,7 +1540,7 @@ class LLMClient:
                     embedding_config.dimensions if embedding_config else None
                 ),
                 "error": (
-                    self._selection_error("embeddings").to_dict()
+                    self._role_not_selected_error("embeddings").to_dict()
                     if embedding_config is None
                     else None
                 ),

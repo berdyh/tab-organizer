@@ -1703,3 +1703,33 @@ def test_validate_config_rejects_a_malformed_evidence_record(
 def test_the_shipped_catalog_has_no_evidence_errors():
     """Non-vacuity for the validator: the real file must pass it."""
     assert get_ai_config().validate_config() == []
+
+
+# A gateway-fronted Ollama/OpenAI-compatible endpoint authenticates by QUERY
+# STRING, not by userinfo. `redact_url_userinfo` cannot see that shape, so the
+# credential was published verbatim on unauthenticated `/health` -- on the
+# HEALTHY path, not only on errors.
+#
+# This is the same lesson as the userinfo canary above, one surface over: the
+# canary set was "the credential shape we already fixed", so it could not fail
+# for the shape we had not. Both shapes are pinned now.
+QUERY_CREDENTIALED_OLLAMA_HOST = (
+    "http://gateway.internal:11434/ollama?api_key=SuperSecretValue123"
+)
+
+
+@pytest.mark.asyncio
+async def test_health_never_leaks_a_query_string_credential(monkeypatch):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_HOST", QUERY_CREDENTIALED_OLLAMA_HOST)
+    _block_ollama_probe(monkeypatch)
+    monkeypatch.setattr(ai_main, "chatbot", _FakeChatbot())
+    monkeypatch.setattr(ai_main, "llm_client", LLMClient())
+
+    body = json.dumps(await ai_main.health())
+
+    assert "SuperSecretValue123" not in body
+    # still diagnosable: the host survives, only the credential is gone
+    assert "gateway.internal" in body
