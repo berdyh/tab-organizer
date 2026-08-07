@@ -107,6 +107,21 @@ class AgentCLILLMProvider(BaseLLMProvider):
     # become the prompt.
     EXTRA_ARG_ALLOWLIST: dict[str, bool] = {}
 
+    # The complete list of env->argv channels, so nobody has to re-derive it:
+    #   *_EXTRA_ARGS        -- gated here, by EXTRA_ARG_ALLOWLIST
+    #   *_COMMAND           -- gated by _validate_command (program only)
+    #   GEMINI_CLI_APPROVAL_MODE / CODEX_CLI_SANDBOX / CODEX_ACP_PERMISSION_MODE
+    #                       -- clamped to enumerated safe values at their sites
+    #   CODEX_ACP_PREFLIGHT_ARGS -- NOT gated, deliberately. It reaches only
+    #     `is_available()`'s preflight, which runs a `--version`-shaped probe
+    #     with stdin at DEVNULL and no prompt, so no scraped or untrusted
+    #     content is ever in that process. Gating it while argv[0] stays
+    #     operator-chosen would be theatre: an operator who can set the program
+    #     can already run any program. What they must NOT be able to do is
+    #     re-open a safety flag on the CONTENT-facing invocation, which is what
+    #     the two rules above cover. Revisit if the preflight ever grows a
+    #     prompt.
+
     def __init__(self, config: LLMConfig):
         self.config = config
         self.timeout = self._read_timeout()
@@ -122,15 +137,58 @@ class AgentCLILLMProvider(BaseLLMProvider):
             return self.default_timeout
 
     def _command(self) -> list[str]:
-        raw = os.getenv(self.command_env, self.default_command)
-        return shlex.split(raw)
+        return self._validate_command(os.getenv(self.command_env, self.default_command))
+
+    @classmethod
+    def _validate_command(cls, raw: str) -> list[str]:
+        """Resolve `*_COMMAND` to a PROGRAM, never a program plus arguments.
+
+        `_command()`'s result is splatted into argv at position 0, ahead of
+        every safety flag the adapter then appends, so a multi-token value was
+        a complete bypass of `EXTRA_ARG_ALLOWLIST` -- the same flag, refused
+        through `*_EXTRA_ARGS`, sailed through here:
+
+            CLAUDE_CODE_COMMAND='claude --dangerously-skip-permissions --add-dir /'
+            -> ['claude', '--dangerously-skip-permissions', '--add-dir', '/']
+
+        The allowlist commit stated the invariant as "nothing reachable from
+        the environment may re-open a safety-relevant flag" and then left this
+        channel open, which is this repo's recurring shape: the fix closed the
+        instance it was shown and not the class. Every adapter's
+        `default_command` is a single token (`claude`, `codex`, `gemini`,
+        `acpx`, `agent`), so nothing legitimate needs more than one; an
+        operator who genuinely must wrap the binary points this at a wrapper
+        script, which keeps the argument list under their review rather than
+        under an env var's.
+        """
+        tokens = shlex.split(raw)
+        if not tokens:
+            raise AgentCLIError(
+                f"{cls.command_env} is empty; set it to the path of the CLI to run."
+            )
+        if len(tokens) > 1:
+            # Never echo the extra tokens: one of them could be a pasted secret.
+            raise AgentCLIError(
+                f"agent_cli_command_rejected: {cls.command_env} must name a single "
+                f"program, but it carries {len(tokens) - 1} extra argument(s). "
+                "Arguments here land in argv ahead of the adapter's safety flags "
+                "and bypass the reviewed extra-argument allowlist. Fix: point "
+                f"{cls.command_env} at the binary (or a wrapper script) and pass "
+                "nothing else."
+            )
+        return tokens
 
     @classmethod
     def is_available(cls) -> bool:
         """Return whether the configured CLI command can start in this runtime."""
         raw = os.getenv(cls.command_env, cls.default_command)
-        command = shlex.split(raw)
-        if not command:
+        try:
+            command = cls._validate_command(raw)
+        except AgentCLIError:
+            # A rejected command means the provider is NOT available. Reporting
+            # availability here and refusing at generate() time would advertise
+            # a provider that cannot answer -- the `gemini --version` hazard
+            # this adapter family already documents.
             return False
         if shutil.which(command[0]) is None:
             return False

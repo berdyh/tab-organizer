@@ -1169,3 +1169,100 @@ async def test_codex_cli_sandbox_still_honours_a_permitted_widening(monkeypatch)
 
     args = calls[0]["args"]
     assert args[args.index("-s") + 1] == "workspace-write"
+
+
+HOSTILE_COMMANDS = [
+    pytest.param(
+        ClaudeCodeLLMProvider,
+        "claude_code",
+        "CLAUDE_CODE_COMMAND",
+        "claude --dangerously-skip-permissions --add-dir /",
+        id="claude-command-carries-skip-permissions",
+    ),
+    pytest.param(
+        CodexCliLLMProvider,
+        "codex_cli",
+        "CODEX_CLI_COMMAND",
+        "codex --dangerously-bypass-approvals-and-sandbox",
+        id="codex-command-carries-bypass",
+    ),
+    pytest.param(
+        GeminiCliLLMProvider,
+        "gemini_cli",
+        "GEMINI_CLI_COMMAND",
+        "gemini --policy /tmp/grant-everything.toml",
+        id="gemini-command-carries-policy",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "provider_cls,provider_name,env_name,hostile_value", HOSTILE_COMMANDS
+)
+@pytest.mark.asyncio
+async def test_the_command_env_var_cannot_smuggle_arguments_into_argv(
+    monkeypatch, provider_cls, provider_name, env_name, hostile_value
+):
+    """`*_COMMAND` is a program, not a command line.
+
+    `_command()`'s result is splatted into argv at position 0, ahead of every
+    safety flag the adapter appends, so a multi-token value bypassed
+    EXTRA_ARG_ALLOWLIST completely: the SAME flag that `*_EXTRA_ARGS` refuses
+    was accepted here. Verified before the fix --
+    `CLAUDE_CODE_COMMAND='claude --dangerously-skip-permissions --add-dir /'`
+    produced argv `['claude', '--dangerously-skip-permissions', '--add-dir', '/']`.
+    """
+    calls = []
+    _fake_exec(monkeypatch, FakeProcess(b'{"result": "ok", "response": "ok"}'), calls)
+    monkeypatch.setenv(env_name, hostile_value)
+
+    provider = provider_cls(LLMConfig(provider=provider_name, model=""))
+
+    with pytest.raises(AgentCLIError) as excinfo:
+        await provider.generate("summarise these tabs", None)
+
+    assert "agent_cli_command_rejected" in str(excinfo.value)
+    assert calls == [], (
+        f"{env_name}={hostile_value!r} reached execve; argv[0..n] is ungated"
+    )
+    # The refusal must not echo the smuggled tokens: one could be a secret.
+    assert "--dangerously-skip-permissions" not in str(excinfo.value)
+    assert "grant-everything" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "provider_cls,provider_name,env_name",
+    [
+        (ClaudeCodeLLMProvider, "claude_code", "CLAUDE_CODE_COMMAND"),
+        (CodexCliLLMProvider, "codex_cli", "CODEX_CLI_COMMAND"),
+        (GeminiCliLLMProvider, "gemini_cli", "GEMINI_CLI_COMMAND"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_single_token_command_path_still_works(
+    monkeypatch, provider_cls, provider_name, env_name
+):
+    """Non-vacuity guard: the rule must not refuse a legitimate binary path.
+
+    Without this, `_validate_command` could refuse everything and the test
+    above would still pass while the providers were all unusable.
+    """
+    calls = []
+    _fake_exec(monkeypatch, FakeProcess(b'{"result": "ok", "response": "ok"}'), calls)
+    monkeypatch.setenv(env_name, "/usr/local/bin/some-cli")
+
+    provider = provider_cls(LLMConfig(provider=provider_name, model=""))
+    await provider.generate("summarise these tabs", None)
+
+    assert calls, "a single-token command path was refused; the rule is too strict"
+    assert calls[0]["args"][0] == "/usr/local/bin/some-cli"
+
+
+def test_is_available_reports_false_for_a_command_carrying_arguments(monkeypatch):
+    """A rejected command means unavailable, not available-then-failing.
+
+    Advertising a provider that `generate()` will refuse is the
+    `gemini --version` hazard this adapter family already documents.
+    """
+    monkeypatch.setenv("CLAUDE_CODE_COMMAND", "claude --dangerously-skip-permissions")
+    assert ClaudeCodeLLMProvider.is_available() is False
