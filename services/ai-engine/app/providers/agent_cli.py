@@ -73,6 +73,40 @@ class AgentCLILLMProvider(BaseLLMProvider):
         "CLAUDE_CONFIG_DIR",
     }
 
+    # Which flags a `*_EXTRA_ARGS` env var may contribute to argv, as
+    # {flag: takes_a_value}. EMPTY means the adapter accepts no extra args at
+    # all, which is the shipped state for every adapter here.
+    #
+    # This is an ALLOW-list on purpose. Each adapter's safety decision lives in
+    # argv (`--approval-mode plan`, `-s read-only`, `--tools ""`), and extra
+    # args were appended AFTER it, so the environment was a channel into the
+    # safety configuration. A deny-list of "dangerous flags" is wrong by
+    # default -- it cannot know the flag the next CLI release adds. It is also
+    # already demonstrably too narrow: a deny-list built around the clamped
+    # flag would have missed every one of these, all read out of the installed
+    # CLIs' own `--help` on 2026-08-07:
+    #   gemini 0.54.0 : --policy / --admin-policy (load extra tool policies),
+    #                   --allowed-tools, --include-directories, --raw-output
+    #   claude        : --dangerously-skip-permissions, --permission-mode,
+    #                   --allowedTools, --add-dir, --settings, --mcp-config
+    #   codex exec    : --dangerously-bypass-approvals-and-sandbox,
+    #                   -c sandbox_permissions=[...] (arbitrary config override)
+    # Each re-opens write/shell/exfiltration capability on a subprocess that is
+    # fed scraped, untrusted web content, and none of them is the flag a clamp
+    # on `--approval-mode`/`-s` would watch.
+    #
+    # Ordering is NOT a substitute for this. "Put our safety flags last and let
+    # the parser take the last occurrence" only fails closed if the parser is
+    # last-wins, which is per-CLI, per-version and unverifiable from here:
+    # measured on gemini-cli 0.54.0, a duplicated `--approval-mode` does not
+    # take the last value at all, it becomes the array `plan,yolo` and the CLI
+    # aborts. Correct behaviour must not rest on that accident.
+    #
+    # The value says whether the flag takes a value, so the parser never has to
+    # guess arity and can refuse a stray positional -- which, for gemini, would
+    # become the prompt.
+    EXTRA_ARG_ALLOWLIST: dict[str, bool] = {}
+
     def __init__(self, config: LLMConfig):
         self.config = config
         self.timeout = self._read_timeout()
@@ -159,8 +193,75 @@ class AgentCLILLMProvider(BaseLLMProvider):
         return env
 
     def _extra_args(self, env_name: str) -> list[str]:
+        """Return the operator's extra argv, refusing anything unreviewed.
+
+        See `EXTRA_ARG_ALLOWLIST`. The whole string is refused on the first bad
+        token: a partially-applied argv is exactly the state that made the
+        clamp look enforced while it was not.
+        """
         raw = os.getenv(env_name, "")
-        return shlex.split(raw) if raw else []
+        if not raw.strip():
+            return []
+        return self._validate_extra_args(env_name, shlex.split(raw))
+
+    def _validate_extra_args(self, env_name: str, tokens: list[str]) -> list[str]:
+        allowed = self.EXTRA_ARG_ALLOWLIST
+        validated: list[str] = []
+        awaiting_value_for: Optional[str] = None
+
+        for token in tokens:
+            if awaiting_value_for is not None:
+                awaiting_value_for = None
+                validated.append(token)
+                continue
+
+            if not token.startswith("-") or token == "-":
+                # Never echo a bare value back: it is the one token that could
+                # be a pasted secret rather than a flag name.
+                raise AgentCLIError(
+                    self._extra_arg_refusal(
+                        env_name,
+                        f"argument {len(validated) + 1}",
+                        "it is a bare value, not a permitted flag",
+                    )
+                )
+
+            name, separator, _value = token.partition("=")
+            if name not in allowed:
+                raise AgentCLIError(
+                    self._extra_arg_refusal(
+                        env_name, name, "it is not a reviewed, permitted flag"
+                    )
+                )
+            takes_value = allowed[name]
+            if separator and not takes_value:
+                raise AgentCLIError(
+                    self._extra_arg_refusal(env_name, name, "it takes no value")
+                )
+            validated.append(token)
+            if takes_value and not separator:
+                awaiting_value_for = name
+
+        if awaiting_value_for is not None:
+            raise AgentCLIError(
+                self._extra_arg_refusal(
+                    env_name, awaiting_value_for, "its value is missing"
+                )
+            )
+        return validated
+
+    def _extra_arg_refusal(self, env_name: str, subject: str, cause: str) -> str:
+        permitted = ", ".join(sorted(self.EXTRA_ARG_ALLOWLIST)) or "(none)"
+        return (
+            f"agent_cli_extra_arg_rejected: {env_name} carries {subject}, and "
+            f"{cause}. Cause: extra arguments land in the same argv as this "
+            f"adapter's safety flags, so an unreviewed one can re-open them. "
+            f"Flags accepted for {self.provider_label}: {permitted}. "
+            f"Fix: remove it from {env_name}, or add the flag to "
+            f"{type(self).__name__}.EXTRA_ARG_ALLOWLIST in a reviewed change, "
+            "having checked it grants no tool, file, shell, network or policy "
+            "access."
+        )
 
     def _user_prompt_text(self, prompt: str) -> str:
         return prompt.strip()
@@ -354,6 +455,14 @@ class CodexCliLLMProvider(AgentCLILLMProvider):
     default_command = "codex"
     timeout_env = "CODEX_CLI_TIMEOUT"
 
+    # `codex exec -s` accepts read-only | workspace-write | danger-full-access.
+    # The third is not reachable from the environment: it drops the sandbox for
+    # a subprocess that may be carrying scraped page text, which is the same
+    # hazard `GEMINI_CLI_APPROVAL_MODE=yolo` is clamped for. `CODEX_CLI_SANDBOX`
+    # took its value verbatim, so the clamp on one adapter and the raw
+    # passthrough on its sibling contradicted each other.
+    SANDBOX_MODES = {"read-only", "workspace-write"}
+
     async def generate(self, prompt: str, system: Optional[str] = None) -> str:
         """Generate text by invoking `codex exec` locally."""
         if (
@@ -368,7 +477,7 @@ class CodexCliLLMProvider(AgentCLILLMProvider):
             )
 
         prompt_text = self._structured_prompt_text(prompt, system)
-        sandbox = os.getenv("CODEX_CLI_SANDBOX", "read-only")
+        sandbox = self._sandbox_mode()
         args = [
             *self._command(),
             "exec",
@@ -392,6 +501,11 @@ class CodexCliLLMProvider(AgentCLILLMProvider):
 
         stdout, _stderr = await self._run(args, prompt_text)
         return self._parse_jsonl(stdout)
+
+    def _sandbox_mode(self) -> str:
+        """Sandboxed by default; `danger-full-access` is not reachable from env."""
+        mode = os.getenv("CODEX_CLI_SANDBOX", "read-only").strip().lower()
+        return mode if mode in self.SANDBOX_MODES else "read-only"
 
     def _parse_jsonl(self, stdout: str) -> str:
         output_parts: list[str] = []
@@ -500,7 +614,13 @@ class GeminiCliLLMProvider(AgentCLILLMProvider):
         return cls._has_local_credentials()
 
     def _approval_mode(self) -> str:
-        """Read-only by default; `yolo`/`auto_edit` are not reachable from env."""
+        """Read-only by default; `yolo`/`auto_edit` are not reachable from env.
+
+        This clamp is only half the guarantee. It bounds the value of the flag
+        this adapter sets; `EXTRA_ARG_ALLOWLIST` on the base class bounds what
+        else the environment may append to the same argv, which is where a
+        second `--approval-mode yolo` used to land.
+        """
         mode = os.getenv("GEMINI_CLI_APPROVAL_MODE", "plan").strip().lower()
         return mode if mode in self.APPROVAL_MODES else "plan"
 
@@ -548,8 +668,12 @@ class GeminiCliLLMProvider(AgentCLILLMProvider):
         if self.config.model:
             args.extend(["-m", self.config.model])
 
+        # Anything this env var carries is validated against
+        # EXTRA_ARG_ALLOWLIST first, so it cannot append a second
+        # `--approval-mode`, a `--policy` file, `--allowed-tools`, or a bare
+        # positional. `-p` still goes last so a future allowlisted flag cannot
+        # displace the prompt.
         args.extend(self._extra_args("GEMINI_CLI_EXTRA_ARGS"))
-        # Last, so a stray GEMINI_CLI_EXTRA_ARGS cannot displace the prompt.
         args.extend(["-p", prompt_text])
 
         stdout, _stderr = await self._run(args)

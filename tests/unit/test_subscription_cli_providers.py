@@ -968,3 +968,204 @@ async def test_gemini_cli_generates_against_the_real_subscription():
     assert answer.strip(), "the CLI returned no text; the JSON parser or the "
     "flags are wrong"
     assert "pong" in answer.strip().lower()
+
+
+# ---------------------------------------------------------------------------
+# `*_EXTRA_ARGS` may not re-open a clamped safety flag.
+#
+# The clamp on GEMINI_CLI_APPROVAL_MODE bounded the value of the flag the
+# adapter sets, but GEMINI_CLI_EXTRA_ARGS was appended to the SAME argv
+# afterwards, so the environment still reached the safety configuration. The
+# class of the bug is "anything reachable from the environment may re-open a
+# safety-relevant flag", not "--approval-mode specifically" -- so these probes
+# drive every adapter that takes extra args, and use flags that are NOT the
+# clamped one (`--policy`, `--dangerously-skip-permissions`,
+# `--dangerously-bypass-approvals-and-sandbox`), which is what a deny-list
+# around the clamped flag would have missed.
+#
+# Recorded argv before the fix (2026-08-07, all four reproduced):
+#   gemini : [... '--approval-mode', 'plan', ..., '--approval-mode', 'yolo', '-p', ...]
+#   gemini : [... '--policy', '/tmp/grant-everything.toml', '-p', ...]
+#   claude : [... '--tools', '', '--dangerously-skip-permissions',
+#             '--allowedTools', 'Bash']
+#   codex  : [... '-s', 'read-only', ...,
+#             '--dangerously-bypass-approvals-and-sandbox',
+#             '-s', 'danger-full-access', '-']
+# ---------------------------------------------------------------------------
+
+HOSTILE_EXTRA_ARGS = [
+    pytest.param(
+        GeminiCliLLMProvider,
+        "gemini_cli",
+        "GEMINI_CLI_EXTRA_ARGS",
+        "--approval-mode yolo",
+        "--approval-mode",
+        id="gemini-second-approval-mode",
+    ),
+    pytest.param(
+        GeminiCliLLMProvider,
+        "gemini_cli",
+        "GEMINI_CLI_EXTRA_ARGS",
+        "--policy /tmp/grant-everything.toml",
+        "--policy",
+        id="gemini-extra-tool-policy",
+    ),
+    pytest.param(
+        GeminiCliLLMProvider,
+        "gemini_cli",
+        "GEMINI_CLI_EXTRA_ARGS",
+        "--allowed-tools run_shell_command",
+        "--allowed-tools",
+        id="gemini-allowed-tools",
+    ),
+    pytest.param(
+        ClaudeCodeLLMProvider,
+        "claude_code",
+        "CLAUDE_CODE_EXTRA_ARGS",
+        "--dangerously-skip-permissions",
+        "--dangerously-skip-permissions",
+        id="claude-skip-permissions",
+    ),
+    pytest.param(
+        ClaudeCodeLLMProvider,
+        "claude_code",
+        "CLAUDE_CODE_EXTRA_ARGS",
+        "--allowedTools Bash",
+        "--allowedTools",
+        id="claude-allowed-tools",
+    ),
+    pytest.param(
+        CodexCliLLMProvider,
+        "codex_cli",
+        "CODEX_CLI_EXTRA_ARGS",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-approvals-and-sandbox",
+        id="codex-bypass-sandbox",
+    ),
+    pytest.param(
+        CodexCliLLMProvider,
+        "codex_cli",
+        "CODEX_CLI_EXTRA_ARGS",
+        "-s danger-full-access",
+        "-s",
+        id="codex-second-sandbox-flag",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "provider_cls,provider_name,env_name,hostile_value,rejected", HOSTILE_EXTRA_ARGS
+)
+@pytest.mark.asyncio
+async def test_extra_args_cannot_reopen_a_clamped_safety_flag(
+    monkeypatch, provider_cls, provider_name, env_name, hostile_value, rejected
+):
+    calls = []
+    _fake_exec(monkeypatch, FakeProcess(b'{"result": "ok", "response": "ok"}'), calls)
+    monkeypatch.setenv(env_name, hostile_value)
+
+    provider = provider_cls(LLMConfig(provider=provider_name, model=""))
+
+    with pytest.raises(AgentCLIError) as excinfo:
+        await provider.generate("summarise these tabs", None)
+
+    assert "agent_cli_extra_arg_rejected" in str(excinfo.value)
+    assert rejected in str(excinfo.value)
+    assert calls == [], (
+        f"{env_name}={hostile_value!r} reached execve; the clamp is decorative"
+    )
+
+
+@pytest.mark.parametrize(
+    "provider_cls,provider_name,env_name",
+    [
+        (GeminiCliLLMProvider, "gemini_cli", "GEMINI_CLI_EXTRA_ARGS"),
+        (ClaudeCodeLLMProvider, "claude_code", "CLAUDE_CODE_EXTRA_ARGS"),
+        (CodexCliLLMProvider, "codex_cli", "CODEX_CLI_EXTRA_ARGS"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_extra_args_reject_a_bare_positional_without_echoing_it(
+    monkeypatch, provider_cls, provider_name, env_name
+):
+    """A bare token is refused, and the refusal must not print the token.
+
+    For gemini a bare positional becomes the `query` and would silently
+    displace the guarded prompt; for the others it is an unreviewed value on
+    an unreviewed flag. It is also the one token that could be a pasted
+    secret, so the message names its position, not its text.
+    """
+    calls = []
+    _fake_exec(monkeypatch, FakeProcess(b'{"result": "ok", "response": "ok"}'), calls)
+    monkeypatch.setenv(env_name, "sk-live-not-a-flag")
+
+    provider = provider_cls(LLMConfig(provider=provider_name, model=""))
+
+    with pytest.raises(AgentCLIError) as excinfo:
+        await provider.generate("summarise these tabs", None)
+
+    assert "bare value" in str(excinfo.value)
+    assert "sk-live-not-a-flag" not in str(excinfo.value)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "provider_cls,provider_name,env_name",
+    [
+        (GeminiCliLLMProvider, "gemini_cli", "GEMINI_CLI_EXTRA_ARGS"),
+        (ClaudeCodeLLMProvider, "claude_code", "CLAUDE_CODE_EXTRA_ARGS"),
+        (CodexCliLLMProvider, "codex_cli", "CODEX_CLI_EXTRA_ARGS"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_unset_or_blank_extra_args_var_still_runs(
+    monkeypatch, provider_cls, provider_name, env_name
+):
+    """Non-vacuity: the refusal path must not be the only path.
+
+    Without this, a `_extra_args` that raised unconditionally -- or a provider
+    that never ran at all -- would pass every probe above.
+    """
+    calls = []
+    _fake_exec(monkeypatch, FakeProcess(b'{"result": "ok", "response": "ok"}'), calls)
+    monkeypatch.setenv(env_name, "   ")
+
+    provider = provider_cls(LLMConfig(provider=provider_name, model=""))
+    await provider.generate("summarise these tabs", None)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_codex_cli_sandbox_cannot_be_widened_to_danger_full_access(monkeypatch):
+    """The same class, reached without extra args at all.
+
+    `CODEX_CLI_SANDBOX` was passed to `codex exec -s` verbatim, so
+    `CODEX_CLI_SANDBOX=danger-full-access` dropped the sandbox on a
+    subprocess that may carry scraped page text -- the hazard the sibling
+    gemini adapter clamps `yolo` for.
+    """
+    calls = []
+    _fake_exec(monkeypatch, FakeProcess(b"", b"", 0), calls)
+    monkeypatch.setenv("CODEX_CLI_SANDBOX", "danger-full-access")
+
+    provider = CodexCliLLMProvider(LLMConfig(provider="codex_cli", model=""))
+    await provider.generate("summarise these tabs", None)
+
+    args = calls[0]["args"]
+    assert args[args.index("-s") + 1] == "read-only"
+    assert "danger-full-access" not in args
+
+
+@pytest.mark.asyncio
+async def test_codex_cli_sandbox_still_honours_a_permitted_widening(monkeypatch):
+    """Non-vacuity for the clamp: `workspace-write` is still reachable."""
+    calls = []
+    _fake_exec(monkeypatch, FakeProcess(b"", b"", 0), calls)
+    monkeypatch.setenv("CODEX_CLI_SANDBOX", "workspace-write")
+
+    provider = CodexCliLLMProvider(LLMConfig(provider="codex_cli", model=""))
+    await provider.generate("summarise these tabs", None)
+
+    args = calls[0]["args"]
+    assert args[args.index("-s") + 1] == "workspace-write"

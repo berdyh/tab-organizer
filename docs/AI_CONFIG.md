@@ -237,7 +237,7 @@ The system uses these environment variables:
 - `CLAUDE_CODE_DISABLE_TOOLS`: Disable Claude Code tools for app LLM calls, defaults to `true`
 - `CODEX_CLI_COMMAND`: Codex CLI command, defaults to `codex`
 - `CODEX_CLI_TIMEOUT`: Codex CLI request timeout in seconds, defaults to `300`
-- `CODEX_CLI_SANDBOX`: Codex sandbox mode, defaults to `read-only`
+- `CODEX_CLI_SANDBOX`: Codex sandbox mode, defaults to `read-only`. Clamped to `{read-only, workspace-write}` — anything else, including `danger-full-access`, falls back to `read-only`. Same reasoning as `GEMINI_CLI_APPROVAL_MODE` below: the subprocess may be carrying scraped page text, so dropping its sandbox must not be reachable from the environment.
 - `CODEX_CLI_ALLOW_UNTRUSTED_CONTEXT`: Allow `codex_cli` for scraped-content prompts. Defaults to disabled because `codex exec` is not a tool-free LLM-only mode.
 - `GEMINI_CLI_COMMAND` / `GEMINI_CLI_TIMEOUT`: Command and timeout for `gemini_cli`.
 - `GEMINI_CLI_APPROVAL_MODE`: `plan` (read-only, default) or `default`. Anything else, including `yolo`, is clamped to `plan`.
@@ -248,6 +248,7 @@ The system uses these environment variables:
 - `CODEX_ACP_NON_INTERACTIVE_PERMISSIONS`: ACPX policy for non-interactive permission prompts, defaults to `fail` (`deny` is also accepted)
 - `CODEX_ACP_QUEUE_TTL_SECONDS`: ACPX queue-owner TTL for each prompt turn, defaults to `0.1`
 - `CODEX_ACP_SESSION_NAME`: Optional persistent ACP session name. If unset, each app LLM call creates and closes a unique ACP session to avoid cross-request context bleed.
+- `CLAUDE_CODE_EXTRA_ARGS` / `CODEX_CLI_EXTRA_ARGS` / `GEMINI_CLI_EXTRA_ARGS`: extra argv for the corresponding CLI. **Allow-listed, and every adapter currently ships an EMPTY allow-list, so any non-blank value is refused with an `agent_cli_extra_arg_rejected` error and no subprocess runs.** These are appended to the same argv that carries each adapter's safety flags, so an unreviewed flag re-opens them — `GEMINI_CLI_EXTRA_ARGS="--approval-mode yolo"` walked straight around the `--approval-mode` clamp, and `--policy`, `--allowed-tools`, `--dangerously-skip-permissions` and `--dangerously-bypass-approvals-and-sandbox` are not that flag at all, so no deny-list would have caught them. To permit one, add it to that adapter's `EXTRA_ARG_ALLOWLIST` in `services/ai-engine/app/providers/agent_cli.py` in a reviewed change, having checked it grants no tool, file, shell, network or policy access.
 - `AGENT_CLI_WORKDIR`: Working directory for local agent CLI calls, defaults to `/tmp/tab-organizer-agent-cli`
 - `AI_ENGINE_API_TOKEN`: Bearer token required by generation, indexing, clustering, chat, search, summarization, document deletion, and provider-switch endpoints. `scripts/cli.py start` and `scripts/cli.py host-ai` generate it automatically, storing one independent token per service scope in `data/service-tokens.json` (0600). The four scopes (`AI_ENGINE_API_TOKEN`, `BACKEND_CALLBACK_TOKEN`, `BACKEND_AGENT_API_TOKEN`, `BROWSER_ENGINE_API_TOKEN`) must stay distinct.
 - `BACKEND_CALLBACK_TOKEN`: Bearer token required for browser-engine scrape callbacks into backend-core. Defaults operationally to the same generated local token when started through `scripts/cli.py`.
