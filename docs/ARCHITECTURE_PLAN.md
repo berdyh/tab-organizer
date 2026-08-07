@@ -599,8 +599,8 @@ second user/company on the platform routes, or a stated commercialization roadma
 **UNRESOLVED DECISIONS:**
 - Framework: Next.js vs TanStack Start; better-sqlite3 vs libsql (non-blocking; defaults
   Next.js + better-sqlite3 unless overridden)
-- Clustering evaluation not yet run (100/500/2000-page corpora; purity, coherence, useful
-  singleton rate, stability across reruns) — until then the Python geometry sidecar stays
+- ~~Clustering evaluation not yet run~~ — **RUN 2026-08-07. Verdict: DROP the sidecar.**
+  Decision 25 is resolved; see `docs/EVAL-clustering.md` and decision 49 below.
 
 ## WI0 addendum (2026-07-24)
 
@@ -749,3 +749,69 @@ therefore been characterizing the fallback while appearing to test UMAP+HDBSCAN,
 eval run in that image would have filed k-means numbers under the sidecar's name. The
 degradation must be logged, and any run claiming to measure the geometry pipeline must
 assert the real imports succeeded.
+
+### Addendum 2026-08-07 (b) — G4 result: decision 25 resolved, sidecar DROPPED
+
+The evaluation pre-registered above ran. Full report and reproduction:
+`docs/EVAL-clustering.md`; harness in `scripts/eval/`.
+
+| # | Decision | Class |
+|---|---|---|
+| 49 | **Drop the Python UMAP/HDBSCAN sidecar.** TypeScript ships agglomerative or k-means over cosine similarity. Supersedes decision 25 | Mechanical, by the pre-registered rule |
+| 50 | Freeform geometry carries LESS load than the plan assumed; the facet path (`GROUP BY facet_value`) carries more | Mechanical, forced by the numbers |
+
+**The numbers, against the rule as written.**
+
+| | n=500 | n=2000 |
+|---|---|---|
+| Production UMAP+HDBSCAN, ARI | 0.274 | 0.179 |
+| Best TypeScript-candidate arm, ARI | 0.144 | 0.112 |
+| ARI margin (rule needs ≥ +0.10) | +0.130 PASS | +0.067 **FAIL** |
+| Purity margin (rule needs ≥ +10 pts) | −0.260 **FAIL** | −0.310 **FAIL** |
+| Decision-39 group survival | 0.782 vs 0.969 **FAIL** | 0.916 vs 0.992 **FAIL** |
+
+The rule required the quality leg at **both** sizes plus no-worse survival. A
+single-size win is explicitly a drop, and this is not even a tie. The verdict is
+unchanged under every resolution of the rule's ambiguities, and unchanged if the
+agglomerative arms are deleted and only k-means is compared.
+
+**Three findings that matter more than the verdict.**
+
+1. **HDBSCAN's stated advantage did not appear.** The corpus was built to
+   exercise exactly what geometry is supposed to be good at — unknown k, skewed
+   sizes, genuine noise. Arm A isolated **1 of 10** injected one-off outliers at
+   n=500 and **0 of 10** at n=2000, and all five of its noise points at n=2000
+   were orphans from well-populated groups. The argument for keeping the sidecar
+   was that facets "cannot discover themes"; the sidecar did not discover them
+   either.
+2. **Arm A is order-dependent.** `random_state=42` fixes the seed, not the row
+   order: shuffling input gives ARI 0.022 / 0.462 / 0.746 against the base run at
+   100/500/2000. Agglomerative is exactly 1.000, order-invariant by construction.
+   Tab ingest order is arbitrary in production, so this is the property most
+   destructive to decision-39 group identity — the user's relabels do not survive
+   a re-run that saw the same tabs in a different order.
+3. **Its clusters have almost no cosine coherence** (intra−inter of
+   0.008/0.033/0.013, against 0.089–0.321 for every non-degenerate alternative).
+   The groups are UMAP-geometry artifacts rather than similarity in the space
+   hybrid search actually ranks in.
+
+**Also worth stating plainly: nobody organises this corpus well.** The best ARI
+anywhere in the study is 0.274. This is a choice among mediocre options, and the
+sidecar is the most expensive one — which is decision 50, and an argument for
+investing in facets rather than in better geometry.
+
+**Honest limits, from the report's own §5/§6.** One corpus seed and one embedding
+model, so the 0.033 ARI shortfall at n=2000 sits inside plausible seed variance —
+§5 names the re-run that would settle it, and the survival and purity legs fail by
+margins that seed variance does not explain. The rule's purity leg is close to
+unusable (purity rises monotonically with cluster count; an arm scores 0.977 by
+putting 604 documents in their own clusters) and its survival leg has no validity
+floor (an arm emitting 2 clusters forever has perfect survival). Both are recorded
+as flaws in the rule; the verdict was taken on the rule as written rather than on
+a rule rewritten after seeing the numbers.
+
+**One protocol deviation, disclosed.** Arm B's silhouette-selected threshold
+degenerated to k=2 (ARI 0.002), so a B2 arm with a k≥5 floor was added to avoid
+crediting arm A against a broken comparator. That change strengthens the
+TypeScript side — it pushes toward the null. The verdict is identical with B2
+deleted.
