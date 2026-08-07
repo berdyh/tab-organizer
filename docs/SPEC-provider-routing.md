@@ -11,7 +11,7 @@ Config side landed in `6493974`. Service side (ai-engine):
 | R4 startup log + `/health` | **Implemented.** `provider.active` per role; `providers` block on `/health`. |
 | R4 UI badge | **Deferred to TS** (plan decision 16). |
 | R5 per-response attribution | **Implemented for cluster labels** (2026-08-07), as a per-cluster `generated_by` stamp inside the existing JSON column — still no columns added. Facets/summaries and the content-addressed rows remain TS-at-cutover. |
-| R6 `cli.py configure-provider` | **Implemented.** See `scripts/MODULE.md`. Provider selection refuses to proceed non-interactively without an explicit flag; `host-ai` and `check-provider` fail closed the same way. |
+| R6 `cli.py configure-provider` | **Implemented, and it now CALLS the provider** (2026-08-07). Until then "probe availability" was implemented as "is the API-key env var non-empty", so a stale or revoked key was written as verified — see the correction in the R6 section. Availability is three states (`configured` / `verified` / `refuted`); a refuted route is never written and an unverified one needs explicit consent. Provider selection still refuses to proceed non-interactively without an explicit flag; `host-ai` and `check-provider` fail closed the same way. See `scripts/MODULE.md`. |
 
 R2 also covers dimensions: `EMBEDDING_DIMENSIONS` is catalog-derived, a missing
 catalog entry raises `embedding_dimensions_unknown` rather than inferring 1536,
