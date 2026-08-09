@@ -1,3 +1,13 @@
+# No `restart:` policy here on purpose. This is the local dev stack, and
+# `restart: unless-stopped` means "come back whenever dockerd starts, unless the
+# user explicitly stopped me" — so a stack left running at shutdown silently
+# reappears at next boot, holding RAM and ports for a test nobody is running.
+# Docker has no idle timeout to counter it. Without a policy these come up only
+# when you run `docker compose up`, and `docker compose down` really ends them.
+#
+# In production this must be set back to `restart: unless-stopped` (or `always`)
+# on every service — surviving a host reboot unattended is the whole point there.
+
 services:
   backend-core:
     build:
@@ -28,7 +38,6 @@ services:
       - tab-organizer-network
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: unless-stopped
     profiles: [default, dev]
 
   ai-engine:
@@ -90,7 +99,6 @@ services:
       - lancedb-data:/data/lancedb
     networks:
       - tab-organizer-network
-    restart: unless-stopped
     profiles: [default, dev]
 
   browser-engine:
@@ -116,7 +124,6 @@ services:
       - tab-organizer-network
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: unless-stopped
     profiles: [default, dev]
 
   web-ui:
@@ -142,7 +149,6 @@ services:
       - tab-organizer-network
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: unless-stopped
     profiles: [default, dev]
 
   ollama:
@@ -154,7 +160,6 @@ services:
       - ollama-data:/root/.ollama
     networks:
       - tab-organizer-network
-    restart: unless-stopped
     profiles: [default, dev]
 
   test-unit:
