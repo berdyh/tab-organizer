@@ -815,3 +815,56 @@ degenerated to k=2 (ARI 0.002), so a B2 arm with a k≥5 floor was added to avoi
 crediting arm A against a broken comparator. That change strengthens the
 TypeScript side — it pushes toward the null. The verdict is identical with B2
 deleted.
+
+### Addendum 2026-08-15 — wk1 landed: the TS edge facade exists and passes the freeze
+
+The 2026-08-05 addendum's status line ("No TypeScript exists — no `package.json`,
+no `tsconfig.json`, no `.ts` file") is now historical. It is left as written
+rather than edited, because the date on it is what makes it useful.
+
+| # | Decision | Class |
+|---|---|---|
+| 51 | The facade's route table generates BOTH the published OpenAPI document and the runtime auth guard, and `scope: 'public'` structurally requires a written reason | Mechanical (P5) |
+| 52 | The facade forwards the caller's own credential and never mints one server-side | Mechanical (P5) |
+| 53 | Framework defaults taken as written: `better-sqlite3` stands; the Next.js-vs-TanStack call is deferred to wk2, when the app package actually needs it. The gateway is a standalone Fastify process either way | Mechanical, resolves half of the standing UNRESOLVED item |
+
+**What shipped.** `server/gateway` (Fastify, Node native type-stripping, no build
+step) in front of Python backend-core, owning browser-origin policy, scoped
+capability tokens, `X-Request-ID`, and the SEC-45 outbound projection.
+`packages/contracts` holds the route table, the generated OpenAPI document, and
+the `{code, cause, fix}` error contract. `/api/v1/platform/*` is not exposed —
+decision 41 taking effect, with a test asserting the absence so nobody "fixes"
+it by porting the routes.
+
+**Acceptance, per decision 43.** Frozen suite in attached mode, `SEC_BACKEND_URL`
+at the gateway, ai/browser still Python: **186 passed, 27 skipped, 0 failed**
+(SECSUITE 1.6.0). Skips are the 21 `sec_managed` probes, four needing internet,
+and gitleaks absent from PATH. Decision 43 predicted only CORS and token scopes
+would bite from the first facade commit; in practice SEC-44/45 bit hardest,
+because they demand the facade publish a complete, correctly-classified route
+table rather than a partial one. That is a better outcome than predicted, not a
+worse one — but it means a TS facade cannot ship a *subset* of the backend
+surface, which constrains wk2-6 sequencing.
+
+**Non-vacuity, checked rather than assumed.** The standing counter-argument in
+the 2026-08-05 addendum ("we are rewriting it, so a documented invariant will be
+implemented correctly" — 0 for 3, plus six more from the wk0 rounds) applies with
+full force to a green suite on new code. Two checks, both run: setting
+`CORS_ALLOWED_ORIGINS='*'` makes SEC-43 `[backend]` fail on both its checks while
+`[ai]`/`[browser]` keep passing; stopping the gateway while backend-core keeps
+serving on :8080 fails all four SEC-44/45 probes. The probes read the facade.
+
+**One thing the port surfaced in the Python stack.** `routes.py` allows six
+metadata keys on the URL listing; the frozen SEC-45 probe allows five. They
+disagree about `credential_scope_drop`, and the first capture redirected off its
+credential's origin will fail SEC-45 against **Python**. It has never fired
+because no probe capture triggers a scope drop. Recorded in the
+`MODULE_INDEX.md` ledger as needing a decision — widen the probe (ledger row +
+`SECSUITE_VERSION` bump, per the freeze rule) or narrow the service. The facade
+mirrors the service for now, and says so in its card.
+
+**Clock check.** The wk16 reverse kill-switch started when wk0 landed
+(2026-08-09 by the last commit on that work). wk1 landing 2026-08-15 puts this
+comfortably inside the box; the wk10 atomic cutover and the wk11-12 funded
+deletion phase remain the gated, high-risk events they were, and nothing here
+touches them.
