@@ -45,6 +45,18 @@ env/
 # Same, for `scripts/cli.py`'s service-token store.
 data/service-tokens.json.tmp
 
+# Node / TypeScript (the wk1 facade onward)
+node_modules/
+# pnpm's content-addressable store and per-project state.
+.pnpm-store/
+# tsc scratch: present whenever anything switches to `--build` / project refs.
+*.tsbuildinfo
+# Next.js and Vite outputs, for the app package that lands in wk2.
+.next/
+.turbo/
+# `dist/` and `build/` are already ignored above by the Python block, which is
+# load-bearing here too -- do not "clean up" those lines.
+
 # Docker
 docker-compose.override.yml
 

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+
+    // Node >= 22.18 strips types natively, so nothing in this repo is compiled
+    // before it runs. `erasableSyntaxOnly` makes that a compiler-enforced fact
+    // rather than a convention: enums, parameter properties and namespaces all
+    // need a real emit step, and none of them may enter the tree.
+    // `allowImportingTsExtensions` + `noEmit` follow from the same choice --
+    // relative imports carry `.ts` because that is the file Node opens.
+    "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}
