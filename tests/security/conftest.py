@@ -6,14 +6,19 @@ Ground rules (frozen with the suite, see MODULE.md and README.md):
   observation of a subprocess a service spawned. Two flagged Python-seam
   exceptions (``sec_seam``) touch importable code directly and carry a
   TS-porting rule.
-* Managed vs attached. ``SEC_BACKEND_URL`` / ``SEC_AI_URL`` /
-  ``SEC_BROWSER_URL`` point the harness at already-running servers (attached
-  mode). With none set, the harness runs each FastAPI app in-process through an
-  ASGI transport with a fully controlled environment (managed mode). It gets
-  that control by importing the Python module (``_load_app``), so managed mode
-  works only against this stack. ``SEC_BOOT_*_CMD`` -- harness-launched servers
-  in any language -- is PLANNED, NOT IMPLEMENTED; see ``README.md`` for what
-  that costs a TS port and when it must land.
+* Three modes, decided PER SERVICE. ``SEC_BOOT_*_CMD`` makes the harness
+  launch that service from a command it owns and restart it whenever a probe
+  mutates the environment (boot mode, any language). ``SEC_*_URL`` points it at
+  an already-running server (attached mode). Neither set means the FastAPI app
+  runs in-process through an ASGI transport with a fully controlled environment
+  (managed mode), which works only against this Python stack because it imports
+  the module (``_load_app``). Boot mode beats attached, which beats managed; the
+  three can be mixed, so a booted TS backend can be probed alongside a managed
+  Python ai-engine. See ``boot.py`` and ``README.md``.
+* ``sec_managed`` probes need a controllable environment, so they skip when a
+  service they touch is ATTACHED -- decided when the probe asks for that
+  service's client, not at collection time, because which services a probe
+  touches is data (``fixtures/*.json``) and can be chosen at runtime.
 * Platform exclusion (plan decision 41). Any request whose path contains
   ``/platform/`` raises ``PlatformPathBlocked`` so the exclusion is enforced.
 * Global redaction audit. Every response body is recorded and, at session
@@ -42,18 +47,40 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Imported after the path insert: ``boot`` lives in this package and the suite
+# is run from several working directories.
+from tests.security import boot  # noqa: E402
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # ---------------------------------------------------------------------------
 # Mode + token wiring
 # ---------------------------------------------------------------------------
 
-ATTACHED = bool(
-    os.getenv("SEC_BACKEND_URL")
-    or os.getenv("SEC_AI_URL")
-    or os.getenv("SEC_BROWSER_URL")
-)
-MODE = "attached" if ATTACHED else "managed"
+URL_ENVS = {
+    "backend": "SEC_BACKEND_URL",
+    "ai": "SEC_AI_URL",
+    "browser": "SEC_BROWSER_URL",
+}
+
+
+def service_mode(service: str) -> str:
+    """Mode for one service. Boot beats attached beats managed."""
+    if boot.boot_command(service):
+        return "boot"
+    if os.getenv(URL_ENVS[service]):
+        return "attached"
+    return "managed"
+
+
+SERVICE_MODES = {service: service_mode(service) for service in URL_ENVS}
+# A service the harness controls the environment of. Managed does it by owning
+# the process's own ``os.environ``; boot does it by restarting a child. Attached
+# does not, which is what ``sec_managed`` skips on.
+CONTROLLED_MODES = ("managed", "boot")
+ATTACHED = any(mode == "attached" for mode in SERVICE_MODES.values())
+_distinct = sorted(set(SERVICE_MODES.values()))
+MODE = _distinct[0] if len(_distinct) == 1 else "mixed(" + "+".join(_distinct) + ")"
 
 # Distinct tokens per scope so cross-acceptance is genuinely observable.
 TOKEN_ENVS = {
@@ -192,23 +219,57 @@ _RECORDED_BODIES: list[str] = []
 _UNSET = object()
 
 
+class _LogCapture:
+    """Whatever the service wrote while a ``capture_logs`` block was open."""
+
+    text: str = ""
+
+
+class _ListHandler(__import__("logging").Handler):
+    def __init__(self):
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record):
+        with contextlib.suppress(Exception):
+            self.messages.append(record.getMessage())
+
+
+_BOOT_WORKDIR: Optional[tempfile.TemporaryDirectory] = None
+
+
+def _boot_workdir() -> str:
+    global _BOOT_WORKDIR
+    if _BOOT_WORKDIR is None:
+        _BOOT_WORKDIR = tempfile.TemporaryDirectory(prefix="sec-boot-")
+    return _BOOT_WORKDIR.name
+
+
 class ServiceClient:
     """Thin request wrapper: in-process ASGI or attached HTTP."""
 
     def __init__(self, service: str, loop: asyncio.AbstractEventLoop):
         self.service = service
         self._loop = loop
-        env_url = {
-            "backend": "SEC_BACKEND_URL",
-            "ai": "SEC_AI_URL",
-            "browser": "SEC_BROWSER_URL",
-        }[service]
-        self.base_url = os.getenv(env_url, f"http://{service}.sec.test")
+        self.mode = SERVICE_MODES[service]
         token_scope = {"backend": "agent", "ai": "ai", "browser": "browser"}[service]
         self.token = os.environ.get(TOKEN_ENVS[token_scope], "")
-        if ATTACHED:
+        self._boot: Optional[boot.BootedService] = None
+        if self.mode == "boot":
+            # No base_url: the port changes on every restart, so each request
+            # builds an absolute URL from the child that is currently serving.
+            self.base_url = ""
+            self._boot = boot.BootedService(
+                service,
+                boot.boot_command(service),
+                Path(_boot_workdir()) / service,
+            )
+            self._client = httpx.AsyncClient(timeout=30.0)
+        elif self.mode == "attached":
+            self.base_url = os.getenv(URL_ENVS[service], f"http://{service}.sec.test")
             self._client = httpx.AsyncClient(base_url=self.base_url, timeout=15.0)
         else:
+            self.base_url = f"http://{service}.sec.test"
             app = _load_app(service)
             transport = httpx.ASGITransport(app=app)
             self._client = httpx.AsyncClient(
@@ -230,9 +291,16 @@ class ServiceClient:
         hdrs = dict(headers or {})
         if token is not _UNSET and token is not None:
             hdrs["Authorization"] = f"Bearer {token}"
+        url = path
+        if self._boot is not None:
+            # Per REQUEST, not per test: SEC-22 stages two different
+            # environments inside one test function and asserts different
+            # answers, so a coarser restart would collapse it into one.
+            self._boot.ensure(boot.env_fingerprint())
+            url = self._boot.base_url + path
         response = self._loop.run_until_complete(
             self._client.request(
-                method, path, json=json, params=params, headers=hdrs
+                method, url, json=json, params=params, headers=hdrs
             )
         )
         with contextlib.suppress(Exception):
@@ -248,9 +316,52 @@ class ServiceClient:
     def delete(self, path, **kw):
         return self.request("DELETE", path, **kw)
 
+    @contextlib.contextmanager
+    def capture_logs(self, level: str = "ERROR"):
+        """Capture this service's diagnostics for the duration of the block.
+
+        One channel, two implementations, because "the secret is absent" must
+        mean the same thing in both modes. Managed mode attaches a handler to
+        the root logger; boot mode records the child's stdout/stderr offset and
+        reads what it wrote. The yielded object exposes ``.text``.
+
+        Attached mode raises rather than yielding an empty capture: a probe that
+        reads diagnostics it cannot see would pass having observed nothing, and
+        that vacuous pass is the failure mode boot mode exists to remove.
+        """
+        import logging
+
+        holder = _LogCapture()
+        if self._boot is not None:
+            self._boot.ensure(boot.env_fingerprint())
+            start = self._boot.log_size()
+            try:
+                yield holder
+            finally:
+                holder.text = self._boot.log_text(start)
+            return
+        if self.mode == "attached":
+            raise RuntimeError(
+                f"{self.service}: service diagnostics are not observable in "
+                "attached mode; this probe needs managed or boot mode"
+            )
+        handler = _ListHandler()
+        root = logging.getLogger()
+        previous = root.level
+        root.addHandler(handler)
+        root.setLevel(getattr(logging, level))
+        try:
+            yield holder
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(previous)
+            holder.text = "\n".join(handler.messages)
+
     def close(self) -> None:
         with contextlib.suppress(Exception):
             self._loop.run_until_complete(self._client.aclose())
+        if self._boot is not None:
+            self._boot.close()
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +380,11 @@ def _managed_env():
     fixture keeps the mutation contained to ``tests/security`` and guarantees a
     restore, so nothing leaks outside this suite.
     """
-    if MODE != "managed":
+    if not any(m in CONTROLLED_MODES for m in SERVICE_MODES.values()):
         yield
         return
+    # Boot mode needs this too: the controlled environment is what the child is
+    # started with, so the tokens and temp paths must exist before any launch.
     _install_managed_env()
     try:
         yield
@@ -301,6 +414,13 @@ def _clients(_managed_env, _event_loop):
             built[service] = ServiceClient(service, _event_loop)
             yield_map[service] = built[service]
         except Exception as exc:  # import error (e.g. missing dep) -> unavailable
+            if SERVICE_MODES[service] == "boot":
+                # Skipping here would delete the probes boot mode was built to
+                # run, and report green for having run nothing.
+                raise boot.BootFailure(
+                    f"{service}: boot mode configured but the client could not "
+                    f"be built: {exc}"
+                ) from exc
             yield_map[service] = None
             yield_map[f"{service}_error"] = str(exc)  # type: ignore[assignment]
     yield yield_map
@@ -317,7 +437,23 @@ def _clients(_managed_env, _event_loop):
     assert not leaked, "configured token value leaked into an HTTP response body"
 
 
-def _client_or_skip(clients: dict, service: str) -> ServiceClient:
+def _client_or_skip(clients: dict, service: str, request=None) -> ServiceClient:
+    """Hand a probe its client, or skip with the reason it cannot have one.
+
+    The ``sec_managed`` decision happens HERE rather than at collection time.
+    Which services a probe touches is data -- SEC-21 reads ``service`` out of
+    ``fixtures/token_scope_failclosed.json`` and resolves the fixture at
+    runtime -- so a collection-time rule cannot see it, and an all-or-nothing
+    rule would wrongly skip a booted service just because a different one is
+    attached.
+    """
+    if request is not None and "sec_managed" in request.node.keywords:
+        mode = SERVICE_MODES[service]
+        if mode not in CONTROLLED_MODES:
+            pytest.skip(
+                f"sec_managed needs harness-controlled env; {service} is "
+                f"{mode} (set {boot.BOOT_ENVS[service]} to run it here)"
+            )
     client = clients.get(service)
     if client is None:
         reason = clients.get(f"{service}_error", "app unavailable")
@@ -326,18 +462,18 @@ def _client_or_skip(clients: dict, service: str) -> ServiceClient:
 
 
 @pytest.fixture()
-def backend(_clients) -> ServiceClient:
-    return _client_or_skip(_clients, "backend")
+def backend(_clients, request) -> ServiceClient:
+    return _client_or_skip(_clients, "backend", request)
 
 
 @pytest.fixture()
-def ai(_clients) -> ServiceClient:
-    return _client_or_skip(_clients, "ai")
+def ai(_clients, request) -> ServiceClient:
+    return _client_or_skip(_clients, "ai", request)
 
 
 @pytest.fixture()
-def browser(_clients) -> ServiceClient:
-    return _client_or_skip(_clients, "browser")
+def browser(_clients, request) -> ServiceClient:
+    return _client_or_skip(_clients, "browser", request)
 
 
 class CanaryListener:
@@ -533,10 +669,52 @@ def load_fixture():
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip sec_managed tests in attached mode (no controllable env)."""
-    if MODE != "attached":
+    """Skip ``sec_managed`` only when NO service is environment-controllable.
+
+    With every service attached this reproduces the old blanket skip exactly.
+    With any service controllable the decision moves to ``_client_or_skip``,
+    which knows which service the probe actually asked for.
+    """
+    if any(mode in CONTROLLED_MODES for mode in SERVICE_MODES.values()):
         return
     skip = pytest.mark.skip(reason="sec_managed needs harness-controlled env")
     for item in items:
         if "sec_managed" in item.keywords:
             item.add_marker(skip)
+
+
+_SEC_MANAGED_OUTCOMES: dict[str, str] = {}
+
+
+def pytest_runtest_logreport(report):
+    """Record what each ``sec_managed`` probe actually did."""
+    if "sec_managed" not in getattr(report, "keywords", {}):
+        return
+    if report.when == "call":
+        _SEC_MANAGED_OUTCOMES[report.nodeid] = report.outcome
+    elif report.when == "setup" and report.outcome in ("skipped", "failed"):
+        _SEC_MANAGED_OUTCOMES.setdefault(report.nodeid, report.outcome)
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Say how many ``sec_managed`` probes ran, and name the ones that did not.
+
+    A count, not an assertion. SEC-34/35 legitimately skip without a live
+    embedding backend even in managed mode, so failing on any skip would freeze
+    an environment requirement rather than an invariant. What must not happen is
+    a silent removal, so the number that EXECUTED is printed next to the number
+    collected, and every skipped probe is named.
+    """
+    if not boot.any_boot_configured():
+        return
+    total = len(_SEC_MANAGED_OUTCOMES)
+    if not total:
+        return
+    ran = [n for n, o in _SEC_MANAGED_OUTCOMES.items() if o != "skipped"]
+    skipped = sorted(n for n, o in _SEC_MANAGED_OUTCOMES.items() if o == "skipped")
+    modes = ", ".join(f"{svc}={mode}" for svc, mode in sorted(SERVICE_MODES.items()))
+    terminalreporter.write_sep("-", "sec_managed coverage")
+    terminalreporter.write_line(f"modes: {modes}")
+    terminalreporter.write_line(f"executed {len(ran)}/{total} sec_managed probes")
+    for nodeid in skipped:
+        terminalreporter.write_line(f"  NOT EXECUTED: {nodeid}")
