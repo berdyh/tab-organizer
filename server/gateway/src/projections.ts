@@ -22,17 +22,19 @@
 const URL_RECORD_FIELDS = ['original', 'normalized', 'status', 'metadata'] as const;
 
 /**
- * Mirrors `routes.py::URL_LIST_METADATA_FIELDS`.
+ * Mirrors `routes.py::URL_LIST_METADATA_FIELDS`, and — since SECSUITE 1.7.0 —
+ * the frozen SEC-45 probe as well. All three name the same six keys.
  *
- * NOTE: this list has seven entries; the frozen SEC-45 probe asserts
- * `set(metadata) <= {title, status_code, auth_type, auth_used, capture_id}` --
- * five. The two disagree about `credential_scope_drop` and `auth_type` is in
- * both. The disagreement is invisible today only because no probe capture
- * triggers a credential scope drop. Matching the SERVICE here rather than the
- * probe, because dropping `credential_scope_drop` would hide that a redirect
- * carried the fetch off-origin and the credentials were dropped -- which is the
- * signal that keeps a logged-out capture from reading as an authenticated one.
- * Flagged for a ledger decision; see the gateway MODULE.md card.
+ * They did not always. The probe asserted a subset of FIVE while the service
+ * emitted six, so the first capture redirected off the origin its credentials
+ * belong to would have failed SEC-45 against the Python stack. It never fired
+ * because no probe capture triggers a scope drop. Resolved 2026-08-19 by
+ * widening the probe: `credential_scope_drop` records that credentials were
+ * DROPPED rather than sent onward (hostnames, booleans and a hop count — no
+ * credentials, no paths, no queries), and withholding it is what would let a
+ * logged-out capture read as an authenticated one.
+ *
+ * A seventh key requires changing all three together. That is the point.
  */
 const URL_METADATA_FIELDS = [
   'title',

@@ -1,6 +1,6 @@
 # Security-Invariant Suite (FROZEN)
 
-This suite is **FROZEN** at `SECSUITE_VERSION = "1.6.0"` (see `__init__.py`). It
+This suite is **FROZEN** at `SECSUITE_VERSION = "1.7.0"` (see `__init__.py`). It
 is the black-box security contract for the Tab Organizer backend. The
 TypeScript reimplementation **must pass the same probes** by pointing the
 harness env vars at its own servers/boot commands — the test IDs and fixture
@@ -20,6 +20,41 @@ in `docs/MODULE_INDEX.md`'s ledger and a bump of `SECSUITE_VERSION`. See
 `sec_seam` exceptions (SEC-26 MCP tool surface, SEC-39 auth classifier, SEC-40
 RAG chat prompt-assembly seam, SEC-41 cluster-label prompt-assembly seam,
 SEC-42 agent env-allowlist drift check, SEC-48 fixture-completeness guard).
+
+## New in 1.7.0 (SEC-45 metadata whitelist widened to six keys)
+
+SEC-45's subset assertion and the service's own
+`routes.py::URL_LIST_METADATA_FIELDS` had disagreed ever since
+`credential_scope_drop` was added to the service and not to the probe. The
+service can emit six keys; this asserted a subset of five. **The first capture
+whose fetch was redirected off the origin its credentials belong to would have
+failed SEC-45 against the PYTHON stack**, not merely against a port. It never
+fired because no probe capture triggers a scope drop — a could-not-fail gap
+wearing the costume of a passing test, which is the class this repo has now met
+six times.
+
+Found by the TypeScript port, which had to pick one of the two lists to mirror
+and could not, because they were not the same list.
+
+Widened the probe rather than narrowing the service. `credential_scope_drop` is
+a security SIGNAL, not a leak: it records that a redirect carried the fetch
+off-origin so the stored credentials were dropped instead of being sent onward.
+Removing it from the listing is what would let a logged-out capture read as an
+authenticated one — the exact confusion `auth_used=False` exists to prevent, and
+which feeds the decision-37 "authenticated capture ⇒ local embeddings" gate.
+
+Payload verified by reading the producer rather than trusting the comment above
+it (`engine.py::_credential_drop_fields`, `CredentialHopTrace`): the value is
+`{reason, auth_type, credential_origin_host, dropped_at_host, hops, 
+credential_scope_domain, credential_scope_subdomains}` — hostnames via
+`urlparse(...).hostname`, an integer hop COUNT, booleans and an auth-type label.
+No credentials, no paths, no queries. The comment's "hosts only, never full
+URLs" is accurate.
+
+**No assertion was weakened.** It remains a subset assertion against a closed,
+reviewed list; a seventh key still fails, and the probe still ingests a capture
+carrying an unreviewed `description` key and requires it dropped, so the
+deny-by-default property is still executable rather than assumed.
 
 ## New in 1.6.0 (plan decision 44 — the boot-mode hedge, executed)
 
