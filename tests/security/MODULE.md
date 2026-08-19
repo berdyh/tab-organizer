@@ -15,20 +15,37 @@
 - special operating rules:
   - Black-box only; six flagged `sec_seam` exceptions touch importable code
     (SEC-26, SEC-39, SEC-40, SEC-41, SEC-42, SEC-48).
-  - Managed mode boots services in-process via ASGI with a controlled env. It
-    imports the Python module to do that, so it works only against this stack.
-    `SEC_BOOT_*_CMD` (harness-launched servers, any language) is **PLANNED, NOT
-    IMPLEMENTED** — the name appears in prose only. Until it exists a TS port
-    runs 192/213 probes in attached mode and auto-skips the 21 `sec_managed`
-    ones, which are exactly the process-boundary guarantees (agent subprocess
-    hardening, credential isolation, prompt envelope, token fail-closed
-    defaults, the CORS non-vacuity check, URL safety under controlled config).
-    Trigger revised 2026-08-05: land it before the first TS commit touching
-    credentials, tokens, or agent subprocesses (~wk8), not before facade work.
-    CORS and token scopes apply from wk1 but need no boot mode — they run in
-    attached mode. (The counts here and in `README.md` were stale at 1.5.0 —
-    "173/192" and "19" are pre-SEC-46/47 figures and are still uncorrected in
-    `docs/ARCHITECTURE_PLAN.md`'s Addendum 2026-08-05.)
+  - Three modes, resolved **per service**: boot beats attached beats managed.
+    Managed runs the app in-process via ASGI with a controlled env, which needs
+    a Python import and so works only against this stack. `SEC_BOOT_*_CMD`
+    (harness-launched servers, any language) is **IMPLEMENTED as of 1.8.0** —
+    plan decision 42's T6, landed before the first TS commit touching
+    credentials, tokens, or agent subprocesses. All 213 probes now run against
+    any implementation that can be started from a command; attached mode still
+    runs 192/213 and auto-skips the 21 `sec_managed` ones. Verified by booting
+    the TS gateway and mutating its CORS default, which SEC-43[backend] caught.
+    (The stale "173/192"/"19" counts this card used to flag were corrected in
+    `docs/ARCHITECTURE_PLAN.md` on 2026-08-07.)
+  - **Boot mode restarts the child per REQUEST, not per test**, because SEC-22
+    stages two different environments inside one test function; a coarser
+    restart would collapse it. A launch failure RAISES (`BootFailure`) and never
+    skips — skipping would delete exactly the coverage boot mode adds. A restart
+    resets service state, so a probe needing state to survive an environment
+    change cannot be expressed in boot mode and must say so.
+  - **An observation channel that dies at the process boundary is a vacuous
+    pass.** The recorder (`assert dumps`) and the SEC-10 canary (`hatch_set`
+    requires a connection) were already guarded. SEC-27's was not: `caplog` sees
+    nothing from a subprocess, so it now reads `ai.capture_logs(...)` — root
+    logger in managed mode, child stdout/stderr in boot mode — and asserts the
+    capture is non-empty. Any new probe reading a service-side channel must
+    state what it observes when that channel is dead.
+  - `boot.ENV_NOISE_KEYS` (the keys excluded when deciding the child's
+    environment drifted) is **load-bearing in one direction only**: a key
+    wrongly ADDED is a silent false pass, because the child keeps serving under
+    a stale environment the probe thinks it changed; a key wrongly OMITTED only
+    costs a restart. Extend it that way round -- justify each entry, and prefer
+    slow to silent. Restarts are observable: `boot.py` writes a
+    `=== boot #N ===` marker to the child log on every launch.
   - **Every `sec_managed` probe's inputs and expected refusals are DATA**
     (`fixtures/*.json`), not inline Python — plan decision 44, the hedge
     against deferring boot mode. A probe body stages and observes; what must
@@ -73,6 +90,9 @@
     (`sec_seam`) separately pins `AgentCLILLMProvider.ENV_ALLOWLIST` to equal
     that same fixture, so a Python-side drift from the frozen contract fails
     loudly instead of silently changing what SEC-25 permits.
+- boot-mode files: `boot.py` (launcher, `BootFailure`, playwright shim across
+  the process boundary), `conftest.py` (`SERVICE_MODES`, `capture_logs`,
+  per-service `sec_managed` gating, the `executed N/21` coverage line).
 - invariants: SEC-1..10 (`test_url_safety_scrape.py`), SEC-11..15
   (`test_cdp_local_only.py`), SEC-16..23 (`test_token_scopes.py`), SEC-43
   (`test_cors_policy.py`), SEC-44..45 (`test_route_exposure.py`), SEC-24..27,

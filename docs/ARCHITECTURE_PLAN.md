@@ -940,3 +940,56 @@ its own Docker volumes (`ts-facade_*`), so the WI0 dataset in
 `pnpm typecheck && pnpm test` are the hermetic TS gates. **`plan-completion/.env`
 and `main/.env` still carry the one-character callback token** — deliberately not
 edited, since they are the author's files.
+
+### Addendum 2026-08-19 (b) — T6 landed: boot mode exists, and it caught a TS regression
+
+| # | Decision | Class |
+|---|---|---|
+| 57 | `SEC_BOOT_*_CMD` is implemented (`SECSUITE_VERSION` 1.7.0 → 1.8.0). Decision 42's precondition on the agent layer is **satisfied** | Executes 42 |
+| 58 | Security-suite mode is resolved **per service** (boot > attached > managed), not globally, so a booted TS service and a managed Python one coexist in one run | Mechanical |
+| 59 | A probe reading an observation channel that is dead in the current mode must fail, not pass. SEC-27 gains a non-vacuity assertion; new probes reading a service-side channel must state what they observe when it is dead | Mechanical, generalises the SEC-27 fix |
+
+**What was blocking.** The wk1 gateway touched no credentials, tokens or agent
+subprocesses, so decision 42 did not bite. The agent layer touches all three,
+and until boot mode existed the 21 `sec_managed` probes auto-skipped against
+anything that is not this Python stack — meaning a TS agent runner could have
+shipped green with zero executable coverage of agent subprocess hardening,
+credential isolation, prompt-envelope containment, token fail-closed defaults,
+the CORS non-vacuity check, and URL safety under controlled config. Decision 44
+had already moved every one of those contracts into `fixtures/*.json`; what was
+still owed was the mechanism to *launch* a service with that data's environment.
+It is now paid, and **wk2's agent layer is unblocked**.
+
+**The part that was not obvious.** Boot mode green against Python is necessary
+and not sufficient — it is satisfiable by observing nothing. Four channels carry
+what the `sec_managed` probes actually see, and each had to be asked what it
+asserts when it is dead across a process boundary. The agent recorder was
+already guarded (`assert dumps`) and SEC-10's canary already had a positive
+control, but **SEC-27's was broken**: `caplog` captures nothing from a
+subprocess, so "the planted secret is absent from the logs" would have passed
+against an empty string. It now reads a mode-symmetric channel and asserts the
+capture is non-empty — which strengthens managed mode too. This is the same
+shape as the repo's standing counter-argument: documentation states the class,
+only a probe tests it, and a probe that observes nothing tests nothing.
+
+**Evidence.** Managed mode before and after: 205 passed / 3 skipped / 5
+deselected. Boot mode, all three Python services launched as real subprocesses:
+205 passed / 3 skipped / 5 deselected. Attached mode: unchanged. The six
+code-side mutations from the SECSUITE 1.6.0 ledger row were re-applied to a
+throwaway copy of `services/` and each was observed failing **in boot mode**; a
+seventh (`_redact` made a no-op) was added for the new log channel and caught by
+SEC-27 reading the planted `sk-ant-…` sentinel out of the launched child's
+stderr. Then the decisive one: the **TypeScript** gateway was booted by the
+harness, `http://localhost:8089` was removed from its `DEFAULT_ALLOWED_ORIGINS`,
+and SEC-43[backend] failed. The frozen Python suite caught a TypeScript
+regression through a harness-launched Node process. That is what T6 was for.
+
+**Still open, unchanged by this work.** The real-tab CDP run (WI0) — the live
+`tab-organizer_backend-data` still reads `tab_import_jobs = 0`. Worth recording
+precisely, because the two records looked contradictory: the 2026-08-06
+checkpoint's claim that G2 closed with an executed run is **true**, and lands in
+`main_backend-data` (4 jobs / 25 sessions / 27 url_records). The mechanism works;
+what has never happened is WI0's actual bar — ~50 real tabs through
+attach→scrape→index→search→chat against the live dataset, letting the result
+reorder the bug list. Also still open: `cli.py` accepting a bearer token of any
+quality (see the previous addendum).
