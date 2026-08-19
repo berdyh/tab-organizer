@@ -31,5 +31,6 @@
     SEC_BROWSER_URL=http://127.0.0.1:8083 \
       pytest tests/security -o addopts="" -q
     ```
-    Last run 2026-08-15: **186 passed, 27 skipped, 0 failed** (SECSUITE 1.6.0). The 27 skips are the 21 `sec_managed` probes, four needing internet, and gitleaks not on PATH.
+    Last run 2026-08-19: **186 passed, 27 skipped, 0 failed** (SECSUITE 1.7.0), and the same figures against the Python backend on :8080 from the same stack — the facade neither gains nor loses a probe. The 27 skips are the 21 `sec_managed` probes, four needing internet, and gitleaks not on PATH.
+  - Resolve the four scope tokens with `cli.py`'s own precedence (explicit `.env` value first, then the minted `data/service-tokens.json` entry). Reading the store alone returns an empty string for any scope the operator set by hand, and the suite then reports two token-scope failures that look like a service bug and are not.
   - Non-vacuity, re-run whenever this module's policy code changes: set `CORS_ALLOWED_ORIGINS='*'` and confirm SEC-43 `[backend]` **fails**; stop the gateway with backend-core still up and confirm all four SEC-44/45 probes **fail**. A suite that cannot fail against this implementation is not evidence about it.

@@ -868,3 +868,75 @@ mirrors the service for now, and says so in its card.
 comfortably inside the box; the wk10 atomic cutover and the wk11-12 funded
 deletion phase remain the gated, high-risk events they were, and nothing here
 touches them.
+
+### Addendum 2026-08-19 — blockers resolved; wk2 handoff
+
+Session goal was to clear blockers and record state, not to write more of the
+port. Implementation resumes from a fresh session. Below is everything the next
+session needs, and nothing it has to rediscover.
+
+| # | Decision | Class |
+|---|---|---|
+| 54 | **Next.js** for the app package. The framework half of the standing UNRESOLVED item is closed; `better-sqlite3` was already the default and stands | User-directed |
+| 55 | SEC-45's metadata whitelist is **six keys**. The probe was widened, not the service narrowed; `SECSUITE_VERSION` 1.6.0 → 1.7.0 | User-directed |
+| 56 | The real-tab CDP run happens against a browser **the user launches** with `--remote-debugging-port`. The app attaches; it never launches or closes a browser (existing invariant) | User-directed |
+
+**RESOLVED — the semantic pipeline works.** WI0 B1 said it never had on this
+deployment. Verified by CALLING the endpoint, not by reading a status field,
+because this repo's most expensive mistake was recording a capability from a
+listing: `POST /embed` returned one 4096-dim vector from openrouter
+`qwen/qwen3-embedding-8b`. `OPENROUTER_API_KEY` is set and the Ollama volume now
+holds `llama3.2` + `nomic-embed-text`, so the local fallback is real too.
+
+**RESOLVED — SEC-45 contract disagreement** (decision 55). Full reasoning in
+`tests/security/README.md` "New in 1.7.0" and the `MODULE_INDEX.md` ledger row.
+Verified green at 1.7.0 against BOTH implementations from one stack:
+Python backend :8080 → 186 passed / 27 skipped / 0 failed; TS facade :8085 →
+186 passed / 27 skipped / 0 failed.
+
+**STILL OPEN — the real-tab CDP run.** `tab_import_jobs` is still 0 in the live
+database (161 sessions, 190 url_records, 20 FTS rows — the FTS count moving off
+zero confirms the B3 fix landed). Two things were tried this session and did not
+work: the Chromium already running holds :9222 but was launched WITHOUT
+`--remote-debugging-port` (every `/json/*` path 404s, cmdline read from
+`/proc`), and reading the Brave profile's `Sessions/Tabs_*` to harvest a URL
+list was refused by the agent permission layer as exfiltration-shaped. Next
+session: the user starts `brave --remote-debugging-port=9223` with real tabs and
+the run proceeds through the app's own attach path. Remember WI0 B2 — Chrome
+binds the debug port to 127.0.0.1 and rejects non-IP Host headers, so a
+CONTAINERISED browser-engine cannot reach it via `host.docker.internal`; expect
+to need browser-engine on the host, or to prove B2 has since been fixed.
+
+**STILL OPEN — T6 / `SEC_BOOT_*_CMD`, and it is the critical path.** Decision 42
+requires it before the first TS commit touching credentials, tokens, or agent
+subprocesses. The wk1 gateway touched none of those; the agent layer does, and
+the agent layer is next. Until boot mode exists, 21 `sec_managed` probes
+auto-skip in attached mode — including ALL agent-subprocess hardening (SEC-28..33,
+46, 47) — so a TS agent runner would ship with zero executable coverage of
+exactly the properties step 3 says to port rather than assume the SDK provides.
+**Start here next session.**
+
+**NEW, needs a decision — `cli.py` accepts a bearer token of any quality.**
+`ensure_service_token` (`scripts/cli.py:166`) documents that an explicit
+environment/.env value wins and is never clobbered, which is the correct
+"an already-set env var is consent" rule. But it accepts ANY non-empty string.
+The author's `.env` carried `BACKEND_CALLBACK_TOKEN=:` — a one-character bearer
+token guarding `POST /api/v1/ingest/v1` and the legacy scrape callback, i.e. the
+content write path. Two harms, both observed: the door is trivially guessable,
+and a 1-char token makes SEC-27's global redaction audit match every response
+body containing a colon, which reads as a leak in a suite that is otherwise
+green. Commit `b429976` fixed the shredding symptom in the scripts; nothing
+rejects the value. Consent to a token is not consent to a one-character one.
+Suggested fix: refuse a configured token below a minimum length with a
+`{code, cause, fix}` error at startup, and cover it in the tooling unit tests
+(a deployment-shape assertion, so NOT in the frozen black-box suite).
+
+**Environment notes for the next session.** Work continues on branch
+`ts-facade`, worktree `~/Projects/github/tab-organizer/ts-facade`, based on
+`plan-completion`. That worktree has its own `.env` (the broken callback token
+blanked so `cli.py` mints a real 43-char one; `.env.bak` holds the original) and
+its own Docker volumes (`ts-facade_*`), so the WI0 dataset in
+`tab-organizer_backend-data` is untouched. A `.venv` there runs the frozen suite;
+`pnpm typecheck && pnpm test` are the hermetic TS gates. **`plan-completion/.env`
+and `main/.env` still carry the one-character callback token** — deliberately not
+edited, since they are the author's files.

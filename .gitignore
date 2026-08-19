@@ -44,6 +44,13 @@ env/
 .env.tmp
 # Same, for `scripts/cli.py`'s service-token store.
 data/service-tokens.json.tmp
+# Editor/agent backups of .env. `.env.bak` is not covered by `.env` or
+# `.env.*.local` above, and a backup carries every API key and bearer token the
+# original does. One was created and deleted on 2026-08-19; the rule closes the
+# window rather than relying on remembering.
+.env.bak
+.env.orig
+.env.save
 
 # Node / TypeScript (the wk1 facade onward)
 node_modules/
