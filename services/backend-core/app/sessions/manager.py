@@ -143,6 +143,12 @@ TERMINAL_TAB_IMPORT_STATUSES = {
 }
 
 
+# Migration identifiers are interpolated into DDL because SQLite cannot bind
+# them. These patterns are the guard that keeps that interpolation safe.
+_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SQL_DEFINITION = re.compile(r"^[A-Za-z0-9_ ]+$")
+
+
 class SessionManager:
     """Manage multiple sessions."""
 
@@ -285,6 +291,16 @@ class SessionManager:
         """
         migrations = (("tab_import_jobs", "skipped", "INTEGER NOT NULL DEFAULT 0"),)
         for table, column, definition in migrations:
+            # SQLite cannot parameterise identifiers or DDL, so these must be
+            # interpolated. Guard the CLASS rather than trusting that the tuple
+            # above stays hardcoded: if anything ever threads a caller-supplied
+            # name in here, it fails loudly instead of becoming injection.
+            if not all(
+                _SQL_IDENTIFIER.match(part) for part in (table, column)
+            ) or not _SQL_DEFINITION.match(definition):
+                raise ValueError(
+                    f"refusing unsafe migration identifier: {table}.{column}"
+                )
             try:
                 existing = {
                     row[1] for row in conn.execute(f"PRAGMA table_info({table})")

@@ -774,10 +774,14 @@ class CDPTabHarvester:
         # two checks read content the harvester already holds, cost no network
         # call, and only ANNOTATE -- the hold-or-embed decision belongs to the
         # backend, which is where the per-domain consent record lives.
-        privacy = classify_privacy(html, url)
+        # Off the event loop: both are pure-CPU regex sweeps, and real pages are
+        # big (a google.com results page in the WI0 run was 2.4 MB of HTML).
+        # Harvesting runs tabs concurrently under a semaphore, so doing this
+        # inline would serialise every parallel tab behind each sweep.
+        privacy = await asyncio.to_thread(classify_privacy, html, url)
         if privacy.is_private:
             extra_metadata["privacy"] = privacy.to_dict()
-        secrets = scan_for_secrets(content)
+        secrets = await asyncio.to_thread(scan_for_secrets, content)
         if secrets.found:
             extra_metadata["secrets"] = secrets.to_dict()
 
