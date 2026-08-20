@@ -1206,6 +1206,26 @@ def run_backend_tab_tool(tool, *args, **kwargs) -> None:
         raise SystemExit(1) from error
 
 
+def cmd_privacy_list(args):
+    """Show every recorded per-domain embedding decision."""
+    run_backend_tab_tool(mcp_tabs.privacy_list)
+
+
+def cmd_privacy_allow(args):
+    """Permit embedding for one domain's flagged pages."""
+    run_backend_tab_tool(mcp_tabs.privacy_set, args.domain, "allow", args.reason or "")
+
+
+def cmd_privacy_deny(args):
+    """Refuse embedding for one domain; keyword search still finds its pages."""
+    run_backend_tab_tool(mcp_tabs.privacy_set, args.domain, "deny", args.reason or "")
+
+
+def cmd_privacy_forget(args):
+    """Return a domain to undecided; its pages are held again next run."""
+    run_backend_tab_tool(mcp_tabs.privacy_forget, args.domain)
+
+
 def cmd_tabs_import(args):
     """Import currently open browser tabs through Backend Core."""
     run_backend_tab_tool(
@@ -1587,6 +1607,30 @@ Examples:
         ),
     )
     configure_provider_parser.set_defaults(func=cmd_configure_provider)
+
+    # privacy (per-domain embedding consent -- plan decision 37)
+    privacy_parser = subparsers.add_parser(
+        "privacy",
+        help="Review and answer which domains may be embedded",
+    )
+    privacy_sub = privacy_parser.add_subparsers(
+        dest="privacy_command", help="Privacy commands", required=True
+    )
+    privacy_list_parser = privacy_sub.add_parser(
+        "list", help="Show recorded per-domain embedding decisions"
+    )
+    privacy_list_parser.set_defaults(func=cmd_privacy_list)
+    for name, handler, blurb in (
+        ("allow", cmd_privacy_allow, "Permit embedding for a domain"),
+        ("deny", cmd_privacy_deny, "Refuse embedding for a domain"),
+        ("forget", cmd_privacy_forget, "Return a domain to undecided"),
+    ):
+        sub = privacy_sub.add_parser(name, help=blurb)
+        sub.add_argument("domain", help="Domain, e.g. claude.ai")
+        sub.add_argument(
+            "--reason", default="", help="Why, for your own future reference"
+        )
+        sub.set_defaults(func=handler)
 
     # tabs
     tabs_parser = subparsers.add_parser(

@@ -6,6 +6,7 @@ import os
 import uuid
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
@@ -853,6 +854,52 @@ def _merge_search_results(
     return list(merged.values())[:limit]
 
 
+def _partition_by_domain_consent(documents: list) -> tuple[list, list]:
+    """Split documents into (embeddable, held) using recorded domain consent.
+
+    A document is held when the harvester flagged it -- `metadata["privacy"]`
+    for logged-in content, `metadata["secrets"]` for a credential shape -- and
+    its domain has no recorded decision, or has been denied. Unflagged
+    documents are unaffected, so a public corpus behaves exactly as before.
+
+    Held is not lost: the capture is already stored and keyword-searchable. Only
+    the embedding step waits for an answer, which is what makes "flag and ask
+    once" safe to default to holding rather than to sending.
+    """
+    embeddable: list = []
+    held: list = []
+    for document in documents:
+        metadata = document.get("metadata") or {}
+        privacy = metadata.get("privacy")
+        secrets = metadata.get("secrets")
+        if not privacy and not secrets:
+            embeddable.append(document)
+            continue
+
+        domain = (urlparse(document.get("url", "")).hostname or "").lower()
+        decision = session_manager.get_domain_consent(domain)
+        if decision == "allow":
+            embeddable.append(document)
+            continue
+
+        held.append(
+            {
+                "url": document.get("url", ""),
+                "title": document.get("title", ""),
+                "domain": domain,
+                "reason": (
+                    "denied_by_domain" if decision == "deny" else "awaiting_consent"
+                ),
+                "flagged_for": (["private"] if privacy else [])
+                + (["secrets"] if secrets else []),
+                "privacy": privacy,
+                # Kinds and counts only -- never a matched credential value.
+                "secrets": secrets,
+            }
+        )
+    return embeddable, held
+
+
 async def import_tabs_background(job_id: str, cdp_url: str, max_tabs: int) -> None:
     """Import live browser tabs through Browser Engine and index them."""
     job = session_manager.update_tab_import_job(job_id, status="running")
@@ -929,7 +976,14 @@ async def import_tabs_background(job_id: str, cdp_url: str, max_tabs: int) -> No
             },
         )
 
-        indexed = await _index_tab_documents(job.session_id, indexable)
+        # Decision 37's gate. A document the harvester flagged as private
+        # (logged-in content) or as carrying a credential is HELD until a human
+        # has answered for its domain -- an absent decision is never read as
+        # permission. Held documents are still captured, stored and keyword
+        # searchable; only the embedding step waits.
+        embeddable, held = _partition_by_domain_consent(indexable)
+
+        indexed = await _index_tab_documents(job.session_id, embeddable)
         final_status = "completed_with_errors" if failed else "completed"
         session_manager.update_tab_import_job(
             job_id,
@@ -942,6 +996,10 @@ async def import_tabs_background(job_id: str, cdp_url: str, max_tabs: int) -> No
             metadata={
                 "errors": payload.get("errors", []),
                 "skipped_tabs": skipped_tabs,
+                # Surfaced, not buried: this is the "ask once" queue, and it is
+                # answerable with `./scripts/cli.py privacy allow|deny <domain>`.
+                "held_tabs": held,
+                "held_domains": sorted({h["domain"] for h in held}),
             },
         )
     except Exception as error:
@@ -976,6 +1034,50 @@ def _downstream_error_text(error: Exception) -> str:
 
 
 # Agent-facing tab workflow endpoints
+class DomainConsentRequest(BaseModel):
+    domain: str
+    decision: str
+    reason: str = ""
+
+
+@router.get("/privacy/domains")
+def list_domain_consent(_auth=Depends(_require_backend_agent_auth)):
+    """Every recorded per-domain embedding decision.
+
+    Plan decision 37's "per-domain explicit opt-in" as a real surface. The
+    TypeScript settings UI (the per-domain toggle list) reads this; the CLI uses
+    it so the decision can be answered before that UI exists.
+    """
+    return {"domains": session_manager.list_domain_consent()}
+
+
+@router.post("/privacy/domains")
+def set_domain_consent(
+    request: DomainConsentRequest,
+    _auth=Depends(_require_backend_agent_auth),
+):
+    """Record allow/deny for one domain. There is deliberately no 'unset'.
+
+    Clearing a decision back to "undecided" would mean re-holding documents
+    already embedded under an allow, which is a different operation (a purge)
+    and should not hide behind a toggle.
+    """
+    try:
+        session_manager.set_domain_consent(
+            request.domain, request.decision, request.reason
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return {"domain": request.domain.strip().lower(), "decision": request.decision}
+
+
+@router.delete("/privacy/domains/{domain}")
+def forget_domain_consent(domain: str, _auth=Depends(_require_backend_agent_auth)):
+    """Return a domain to undecided so its pages are held again."""
+    existed = session_manager.forget_domain_consent(domain)
+    return {"domain": domain.strip().lower(), "forgotten": existed}
+
+
 @router.post("/tabs/import")
 async def import_tabs_from_browser(
     request: TabImportRequest,
