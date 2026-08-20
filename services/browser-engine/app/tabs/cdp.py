@@ -15,6 +15,8 @@ import httpx
 from services.observability import log_event
 from services.url_safety import validate_scrape_url
 
+from ..extraction.fallbacks import ExtractionFailed, select_extractor
+
 LOCAL_CDP_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 DEFAULT_CDP_URL = "http://host.docker.internal:9222"
 
@@ -530,15 +532,56 @@ class TabHarvestError:
 
 
 @dataclass(frozen=True)
+class SkippedTab:
+    """A tab that was deliberately NOT imported, and why.
+
+    A skip is a first-class outcome, never a silent drop. Before this existed a
+    blank tab was imported as a document with `content: ""`, which read as a
+    success everywhere -- the job counted it, the operator saw nothing, and the
+    embedding provider rejected the entire batch it travelled in because an
+    empty string is not embeddable. Anything this harvester declines to import
+    appears here with a reason a human can act on.
+
+    Reasons:
+      ``auth_wall``  the page is a sign-in prompt, so its text is a login form
+                     rather than the content the user has open. Embedding it
+                     would file the login page under the tab's title.
+      ``blank``      no text after the readable-HTML pass, the innerText pass,
+                     and any format-specific fallback. Genuinely empty.
+      ``extraction_failed``  a fallback extractor recognised the format and
+                     could not read it (the detail says why).
+    """
+
+    url: str
+    title: str
+    reason: str
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "url": self.url,
+            "title": self.title,
+            "reason": self.reason,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
 class TabHarvestResult:
     """Result of importing tabs from an attached browser."""
 
     tabs: list[HarvestedTab]
     errors: list[TabHarvestError] = field(default_factory=list)
+    skipped: list[SkippedTab] = field(default_factory=list)
 
     @property
     def total(self) -> int:
-        return len(self.tabs)
+        """Every tab the harvester considered, including the ones it skipped.
+
+        `total` used to equal `imported`, which made a skip invisible in the
+        arithmetic as well as in the payload.
+        """
+        return len(self.tabs) + len(self.skipped)
 
     @property
     def failed(self) -> int:
@@ -549,10 +592,30 @@ class TabHarvestResult:
         return {
             "total": self.total,
             "imported": len(self.tabs),
+            "skipped": len(self.skipped),
             "failed": self.failed,
             "tabs": [tab.to_document() for tab in self.tabs],
+            "skipped_tabs": [skip.to_dict() for skip in self.skipped],
             "errors": [error.__dict__ for error in self.errors],
         }
+
+
+_AUTH_DETECTOR = None
+
+
+def _auth_detector():
+    """The shared auth classifier, built on first use.
+
+    Imported lazily so this module keeps importing when the auth package's
+    dependencies are not present -- the harvester is exercised by tests that
+    have no credential store.
+    """
+    global _AUTH_DETECTOR
+    if _AUTH_DETECTOR is None:
+        from ..auth.detector import AuthDetector
+
+        _AUTH_DETECTOR = AuthDetector()
+    return _AUTH_DETECTOR
 
 
 class CDPTabHarvester:
@@ -617,37 +680,99 @@ class CDPTabHarvester:
             )
 
             tabs: list[HarvestedTab] = []
+            skipped: list[SkippedTab] = []
             errors: list[TabHarvestError] = []
             for page, result in zip(importable_pages, results):
                 if isinstance(result, HarvestedTab):
                     tabs.append(result)
-                elif isinstance(result, Exception):
+                elif isinstance(result, SkippedTab):
+                    skipped.append(result)
+                elif isinstance(result, BaseException):
+                    # BaseException, not Exception: `gather(return_exceptions=True)`
+                    # yields CancelledError too, and testing for Exception let a
+                    # cancelled task fall through and be appended as if it were a
+                    # tab. Same defect the scraper module documents in its card.
                     errors.append(
                         TabHarvestError(
                             url=getattr(page, "url", ""),
-                            error=str(result),
+                            error=str(result) or type(result).__name__,
                         )
                     )
-            return TabHarvestResult(tabs=tabs, errors=errors)
+            return TabHarvestResult(tabs=tabs, errors=errors, skipped=skipped)
         finally:
             await playwright.stop()
 
-    async def _harvest_page(self, page) -> HarvestedTab:
+    async def _harvest_page(self, page) -> Union[HarvestedTab, SkippedTab]:
         url = getattr(page, "url", "")
         title = await page.title()
         html = await page.content()
+
+        # A sign-in prompt is not the content of the tab. Capturing it stores
+        # the login form under the page's title and -- once embedded -- makes
+        # the logged-OUT page answer searches for the logged-IN one. The
+        # classifier is the one SEC-39 freezes against `fixtures/authwalls/`;
+        # it answers "is this page ASKING me to sign in", which is exactly the
+        # case where a capture went wrong. A page the user is already signed
+        # in to reports False and is captured normally.
+        auth = _auth_detector().detect_from_html(html, url)
+        if auth.requires_auth:
+            return SkippedTab(
+                url=url,
+                title=title or url,
+                reason="auth_wall",
+                detail=(
+                    f"page is a sign-in prompt (auth_type={auth.auth_type}, "
+                    f"confidence={auth.confidence})"
+                ),
+            )
+
         content = _readable_text_from_html(html)
         if not content:
             content = await page.evaluate(
                 "() => document.body ? document.body.innerText : ''"
             )
         content = _collapse_whitespace(content)
+
+        extra_metadata: dict[str, Any] = {}
+        if not content:
+            # The DOM has nothing. Some tabs render their text outside it
+            # entirely -- a PDF lives in PDFium, not in the page -- so give a
+            # format-specific extractor a turn before calling the tab blank.
+            name, extractor = select_extractor(url)
+            if extractor is not None:
+                try:
+                    content = _collapse_whitespace(await extractor(page, url))
+                    if content:
+                        extra_metadata["extracted_via"] = name
+                except ExtractionFailed as exc:
+                    return SkippedTab(
+                        url=url,
+                        title=title or url,
+                        reason="extraction_failed",
+                        detail=f"{name}: {exc}",
+                    )
+
+        if not content:
+            return SkippedTab(
+                url=url,
+                title=title or url,
+                reason="blank",
+                detail="no text in the DOM and no extractor produced any",
+            )
+
+        # A bot challenge is recorded but never skipped on: these pages carry
+        # real content often enough that skipping them loses more than it
+        # saves (verified against replit.com, which scored 0.9 on the
+        # bot-challenge signal while serving 3.4k characters of real text).
+        if auth.auth_type == "bot_challenge":
+            extra_metadata["bot_challenge_confidence"] = auth.confidence
+
         return HarvestedTab(
             url=url,
             title=title or url,
             content=content,
             html=html,
-            metadata={"title": title or url},
+            metadata={"title": title or url, **extra_metadata},
         )
 
     async def open_urls(self, urls: list[str]) -> list[dict[str, str]]:
