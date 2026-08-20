@@ -1062,3 +1062,62 @@ The 2026-08-06 port-9222 rules were already gone. Run landed in the isolated
 `ts-facade_*` volumes by choice; the `tab-organizer_backend-data` dataset the
 plan measures is untouched, and the 2026-08-06 checkpoint's G2 claim is true and
 lives in `main_backend-data` (4 jobs).
+
+### Addendum 2026-08-21 — decision 37, rebuilt on a signal that can fire
+
+| # | Decision | Class |
+|---|---|---|
+| 64 | Decision 37's gate runs on a **content-derived privacy signal**, not `auth_used`. That flag means "we spent a credential from our own store" and cannot fire on the browser-tab path | Amends 37 |
+| 65 | The gate's outcome is **hold-until-answered**, not force-local-embeddings. Per-domain allow/deny, and an absent decision is never permission | User-directed, amends 37 |
+| 66 | A configured bearer token below 16 characters is refused at startup | User-directed |
+| 67 | Content is scanned for credential shapes before embedding; a hit holds the document. Kinds and counts are reported, never the matched value | User-directed |
+
+**Why 64 amends rather than executes 37.** Decision 37 named its own
+prerequisite — "propagating an auth flag from capture to index (does not exist
+today)" — and that prerequisite was built: `auth_used` flows capture → ledger →
+`/index` metadata, with a real column behind it. The gate was never built on top,
+and this addendum records *why that was the right instinct*: `auth_used` is set
+only in the three credential-store branches, so it means **"we spent a credential
+from our own store."** A tab open in the user's already-logged-in browser spends
+none. Building decision 37 on that flag would have produced a gate that is
+correct for scrape-with-stored-credentials and **silently inert on the main
+path** — looking built, testing green, protecting nothing where it matters most.
+That is a worse outcome than the acknowledged gap.
+
+The replacement signal is derived from page content the harvester already holds:
+sign-OUT affordances and account chrome mean we are logged IN (the inverse of
+the auth-wall check, which catches the logged-OUT case and skips it), plus OAuth
+session infrastructure and host shape. No extra network call.
+
+**Why 65 changes the outcome.** Decision 37 says an authenticated capture must
+not reach a non-local embedding provider. The user chose a different remedy:
+flag, ask once, then remember per domain. It is stronger for undecided content —
+nothing is embedded *anywhere*, local or remote — and it puts the judgement with
+the person whose data it is, which a heuristic classifier should not take from
+them. Held captures remain stored and keyword-searchable, so holding costs
+recall on the semantic leg only, and only until the question is answered.
+
+**What is still NOT built, stated plainly so nobody reads this as 37 completed:**
+once a domain is **allowed**, its documents go to whatever `EMBEDDING_PROVIDER`
+is configured — including a remote metered one. Provider-forcing (37's literal
+requirement) and its per-domain escape hatch are a separate work item. The
+per-domain toggle UI and chat group-toggling are TypeScript work by the user's
+direction; `domain_index_consent` plus `/api/v1/privacy/domains` is the
+mechanism they will read.
+
+**Why this was fixed in Python despite the "do not fix twice" rule.** The
+embedding leg ports at stage 2 and capture at stage 4, so this code will be
+rewritten. It was still worth building now: the gap is live, it sends the user's
+logged-in pages to a metered third party today, and the same triage rule already
+carries an exception for defects that bite before the migration lands
+(fail-closed credentials, `auth/queue.py`). The classifier and the consent table
+are small; what survives the port is the *contract*, which is now written down.
+
+**Decision 66** closes the last open item from the 2026-08-19 addendum.
+`ensure_service_token` treated "non-empty" as the test for "a human chose this".
+Non-empty tests presence, never adequacy. An author's `.env` carried
+`BACKEND_CALLBACK_TOKEN=:` — one colon guarding the content write path — and it
+was accepted, which also made SEC-27's redaction audit match every JSON response
+containing a colon and report a leak inside a green suite. The floor sits well
+under the 43 characters the tooling mints, asserted so a fresh install cannot
+trip it.

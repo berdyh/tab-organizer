@@ -36,6 +36,14 @@
   - Page and byte caps (`MAX_PDF_PAGES`, `MAX_PDF_BYTES`) bound the cost of one
     tab import; a truncated extraction must stay distinguishable from a
     complete one.
+  - **`privacy.py` only annotates; it never decides.** `classify_privacy` and
+    `scan_for_secrets` attach signals to a tab's metadata, and the backend's
+    per-domain consent record decides whether the document is embedded. Keeping
+    the judgement and the policy apart matters: the classifier is a heuristic,
+    and a heuristic that also enforces has no place for a human to disagree.
+    Neither function ever returns or logs a matched credential value -- a
+    detector that echoes the key has copied it into a job payload, a database
+    row and a log line in order to report that it was somewhere it should not be.
 - current stubs/placeholders: only PDF has a fallback extractor; a scanned,
   image-only PDF yields no text and correctly becomes a `blank` skip rather than
   an error (OCR is out of scope). `ContentExtractor` still lives in the scraper
