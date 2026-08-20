@@ -16,6 +16,7 @@ from services.observability import log_event
 from services.url_safety import validate_scrape_url
 
 from ..extraction.fallbacks import ExtractionFailed, select_extractor
+from ..extraction.privacy import classify_privacy, scan_for_secrets
 
 LOCAL_CDP_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 DEFAULT_CDP_URL = "http://host.docker.internal:9222"
@@ -766,6 +767,19 @@ class CDPTabHarvester:
         # bot-challenge signal while serving 3.4k characters of real text).
         if auth.auth_type == "bot_challenge":
             extra_metadata["bot_challenge_confidence"] = auth.confidence
+
+        # Decision 37's gate needs a signal the CDP path can actually produce.
+        # `auth_used` cannot: it means "we spent a credential from our own
+        # store", and a tab in the user's logged-in browser spends none. These
+        # two checks read content the harvester already holds, cost no network
+        # call, and only ANNOTATE -- the hold-or-embed decision belongs to the
+        # backend, which is where the per-domain consent record lives.
+        privacy = classify_privacy(html, url)
+        if privacy.is_private:
+            extra_metadata["privacy"] = privacy.to_dict()
+        secrets = scan_for_secrets(content)
+        if secrets.found:
+            extra_metadata["secrets"] = secrets.to_dict()
 
         return HarvestedTab(
             url=url,
