@@ -152,6 +152,49 @@ def _legacy_single_token() -> str:
         return ""
 
 
+# A configured token must clear this to be accepted. `secrets.token_urlsafe(32)`
+# mints 43 characters, so this floor is well under anything the tooling itself
+# produces and only rejects values no one would choose deliberately.
+MIN_SERVICE_TOKEN_LENGTH = 16
+
+
+def _require_adequate_token(env_name: str, value: str) -> None:
+    """Refuse a configured bearer token that is too short to be one.
+
+    `ensure_service_token` treats an already-set env/.env value as the record
+    that a human chose it, and never clobbers it. That precedence is correct and
+    deliberate. What was missing is that "non-empty" was standing in for "a
+    human chose this" -- non-empty is a test for PRESENCE, never for adequacy,
+    and consent to a token is not consent to a one-character one.
+
+    Observed, not hypothetical: an author's `.env` carried
+    `BACKEND_CALLBACK_TOKEN=:`, a single colon guarding `POST /api/v1/ingest/v1`
+    -- the content write path. Two harms followed. The door was trivially
+    guessable. And SEC-27's global redaction audit asserts that no configured
+    token value appears in any response body, so a one-character token matched
+    every JSON response that contained a colon and read as a credential leak
+    inside an otherwise-green suite.
+
+    Fails closed at startup rather than warning, because a warning about a
+    credential is a warning nobody acts on.
+    """
+    if len(value) >= MIN_SERVICE_TOKEN_LENGTH:
+        return
+    raise SystemExit(
+        f"code: service_token_too_short\n"
+        f"cause: {env_name} is set to a {len(value)}-character value. Tokens "
+        f"shorter than {MIN_SERVICE_TOKEN_LENGTH} characters are refused: this "
+        f"one guards a service trust boundary, and a guessable value is not a "
+        f"credential. An already-set variable is consent to a token, not "
+        f"consent to this one.\n"
+        f"fix: Remove {env_name} from .env (or leave it blank) and re-run "
+        f"./scripts/cli.py start -- a fresh 43-character token is minted and "
+        f"persisted per scope in data/service-tokens.json. To keep a value you "
+        f"chose yourself, make it at least {MIN_SERVICE_TOKEN_LENGTH} "
+        f"characters."
+    )
+
+
 def ensure_service_token(env_name: str) -> str:
     """Return the stable local bearer token for one service trust scope.
 
@@ -165,11 +208,15 @@ def ensure_service_token(env_name: str) -> str:
     """
     configured = os.getenv(env_name, "").strip()
     if configured:
+        _require_adequate_token(env_name, configured)
         return configured
 
     store = _read_service_token_store()
     persisted = store.get(env_name, "").strip()
     if persisted:
+        # `data/service-tokens.json` is a file a human can edit, so it is a
+        # second door onto the same trust boundary and gets the same check.
+        _require_adequate_token(env_name, persisted)
         return persisted
 
     token = ""
