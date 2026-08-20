@@ -715,6 +715,7 @@ def _job_response(job) -> dict[str, Any]:
         "total": job.total,
         "imported": job.imported,
         "indexed": job.indexed,
+        "skipped": job.skipped,
         "failed": job.failed,
         "error": job.error,
         "metadata": job.metadata,
@@ -870,6 +871,29 @@ async def import_tabs_background(job_id: str, cdp_url: str, max_tabs: int) -> No
             payload = response.json()
 
         documents = _tab_documents_from_import_payload(payload)
+        skipped_tabs = list(payload.get("skipped_tabs") or [])
+
+        # Defence in depth, and the general form of the bug that motivated the
+        # harvester's skip path: a document with no content cannot be embedded,
+        # and the provider rejects the ENTIRE batch it arrives in rather than
+        # that one entry -- so two blank tabs among 46 blocked all 46. Browser
+        # Engine no longer emits blanks from the CDP path, but the scrape path
+        # reaches this same indexer, so the guard lives where the batch is
+        # assembled. Dropped documents are REPORTED, never silently discarded.
+        indexable = []
+        for document in documents:
+            if (document.get("content") or "").strip():
+                indexable.append(document)
+            else:
+                skipped_tabs.append(
+                    {
+                        "url": document.get("url", ""),
+                        "title": document.get("title", ""),
+                        "reason": "blank",
+                        "detail": "no content to embed; dropped before indexing",
+                    }
+                )
+
         if documents:
             session_manager.add_urls_to_session(
                 job.session_id, [d["url"] for d in documents]
@@ -886,24 +910,69 @@ async def import_tabs_background(job_id: str, cdp_url: str, max_tabs: int) -> No
                     },
                 )
 
-        indexed = await _index_tab_documents(job.session_id, documents)
+        # Record what has ALREADY happened before attempting the index leg.
+        # These rows are durable the moment the loop above returns, so leaving
+        # the counters until after indexing meant an index failure reported
+        # `total=0 imported=0` over a database holding 43 captured pages.
+        # Progress is written when it is achieved, not when the job ends.
         failed = int(payload.get("failed", 0))
+        session_manager.update_tab_import_job(
+            job_id,
+            status="running",
+            total=int(payload.get("total", len(documents))),
+            imported=len(documents),
+            skipped=len(skipped_tabs),
+            failed=failed,
+            metadata={
+                "errors": payload.get("errors", []),
+                "skipped_tabs": skipped_tabs,
+            },
+        )
+
+        indexed = await _index_tab_documents(job.session_id, indexable)
         final_status = "completed_with_errors" if failed else "completed"
         session_manager.update_tab_import_job(
             job_id,
             status=final_status,
             total=int(payload.get("total", len(documents))),
             imported=len(documents),
+            skipped=len(skipped_tabs),
             indexed=indexed,
             failed=failed,
-            metadata={"errors": payload.get("errors", [])},
+            metadata={
+                "errors": payload.get("errors", []),
+                "skipped_tabs": skipped_tabs,
+            },
         )
     except Exception as error:
+        # Keep whatever the run achieved. `status="failed"` alone left the
+        # counters at their initial zeros, so a job that captured and stored 43
+        # pages and then failed to index reported that nothing had happened.
         session_manager.update_tab_import_job(
             job_id,
             status="failed",
-            error=str(error),
+            error=_downstream_error_text(error),
         )
+
+
+def _downstream_error_text(error: Exception) -> str:
+    """Error text that includes the downstream RESPONSE BODY, not just its status.
+
+    `httpx`'s `raise_for_status()` renders only "Client error '400 Bad Request'
+    for url ...". Every failure in this path is produced by another service that
+    put the actual reason in the body -- Browser Engine's "must be a local Chrome
+    debugging endpoint", the embedding provider's "expected string to have >=1
+    characters" -- and all of it was being thrown away, leaving an operator with a
+    status code and no cause.
+    """
+    response = getattr(error, "response", None)
+    body = ""
+    if response is not None:
+        try:
+            body = (response.text or "")[:500]
+        except Exception:
+            body = ""
+    return f"{error}: {body}" if body else str(error)
 
 
 # Agent-facing tab workflow endpoints
