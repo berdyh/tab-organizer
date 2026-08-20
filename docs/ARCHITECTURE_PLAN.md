@@ -993,3 +993,72 @@ what has never happened is WI0's actual bar — ~50 real tabs through
 attach→scrape→index→search→chat against the live dataset, letting the result
 reorder the bug list. Also still open: `cli.py` accepting a bearer token of any
 quality (see the previous addendum).
+
+### Addendum 2026-08-20 — WORK ITEM ZERO IS DONE, and it reordered the bug list
+
+46 live tabs from a user-started Brave, through attach → scrape → index →
+search → chat. `tab_import_jobs` is no longer 0. The run is what decision 36
+asked for and it did exactly what that decision predicted: it found defects
+that code review, CI, and a curated three-tab run had all missed.
+
+| # | Decision | Class |
+|---|---|---|
+| 60 | A tab is imported, skipped, or failed — **never imported empty**. A skip carries a reason and is counted in `total` | Mechanical, from the run |
+| 61 | A **sign-in page is not content**. It is skipped rather than embedded, reusing the classifier SEC-39 already freezes | User-directed |
+| 62 | Job counters record progress **when it is achieved**, not when the job ends | Mechanical, from the run |
+| 63 | `tab_import_jobs.skipped` + `_migrate_schema` — the first additive-migration path this database has had | Mechanical |
+
+**The defect that mattered.** Two arXiv PDFs harvested as empty strings, because
+Chrome renders a PDF in PDFium rather than the DOM. The embedding provider
+rejects the **entire batch** an empty string arrives in, so **0 of 46 tabs
+indexed**. Two blank tabs lost forty-four good ones. No amount of review would
+have found this: every layer was individually correct, and a curated three-tab
+run has no blank tab in it. That is the whole argument for work item zero.
+
+**The defect that hid it.** The job reported `total=0 imported=0` while the
+database held 43 fully captured pages with FTS rows — counters were written only
+on the success path. And `raise_for_status()` discarded every downstream error
+body at three separate layers, so each diagnosis needed a direct call to the
+inner service to recover a message the caller already had in hand. A run that
+was two-thirds successful reported as though nothing had happened, and said
+nothing about why.
+
+**What the run confirms works.** CDP attach at real scale. The B3 fix: 43 FTS
+rows with full content, against the original diagnosis of 15 scrapes → 0 rows.
+Keyword search. Semantic search that is genuinely semantic — "nerve pain in the
+leg" retrieves *Lumbosacral radiculoplexus neuropathy* (0.53) and "3d modelling
+software" retrieves Blender/Maya MCP (0.66), neither sharing a keyword with its
+query. Chat, citing one of the two PDFs the fix recovered.
+
+**Finding 5 — decision 37 is documented as a HARD GATE and does not exist.**
+`grep auth_used services/ai-engine/` returns **zero occurrences**; nothing on the
+embedding path reads the flag. `services/backend-core/app/sessions/MODULE.md`
+already said so in its own words ("the decision-37 gate is a separate work
+item") — this addendum records that the plan's own text at line 563 still reads
+as though it were enforced. Worse, the CDP tab-import document carries no auth
+field **at all** (`HarvestedTab.to_document`), and ambient browser-session auth
+is invisible by design, so the gate would not have fired for this run even if it
+existed. The user was told this before the run proceeded and chose to embed
+through the metered remote provider anyway; that is a recorded decision, not an
+oversight. **The gate remains unbuilt and is now a named work item.**
+
+This is the standing counter-argument landing a fourth time: a documented
+invariant that was never executed. The plan records it 0-for-3 plus six from
+wk0. Add this one.
+
+**Not a defect, but it cost debugging time twice.** `validate_cdp_url` accepts
+only four literal host spellings while `LOCAL_CDP_NETWORKS` admits a wider set
+of resolved addresses. That is coherent by design — the input gate constrains
+what an operator may NAME, the resolved-address allowlist constrains where those
+names may POINT — but `services/browser-engine/MODULE.md` told the reader to
+"test with the resolved IP", which reads as an instruction to pass a bridge IP
+as `cdp_url`, and that is a 400. The card now distinguishes the two.
+
+**Environment.** Port 9223 (not 9222), `socat TCP-LISTEN:9223,fork,bind=172.17.0.1`,
+and `ufw allow from 172.20.0.0/16 to 172.17.0.1 port 9223 proto tcp`. That rule
+grants unauthenticated CDP control of the user's browser to any container on the
+project network and **is still open** — revoke with the matching `ufw delete`.
+The 2026-08-06 port-9222 rules were already gone. Run landed in the isolated
+`ts-facade_*` volumes by choice; the `tab-organizer_backend-data` dataset the
+plan measures is untouched, and the 2026-08-06 checkpoint's G2 claim is true and
+lives in `main_backend-data` (4 jobs).
