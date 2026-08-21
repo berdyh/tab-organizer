@@ -369,3 +369,112 @@ async def test_index_documents_rejects_wrong_embedding_dimension(tmp_path):
             ],
             session_id="wrong-dim-session",
         )
+
+
+class DistanceRankedLLMClient:
+    """Embeddings where the QUERY is nearest to the crowd, not to the target.
+
+    The bug this exists for only appears when a session's documents are NOT the
+    corpus-wide nearest neighbours. A fake client that returns one constant
+    vector cannot express that, so this one places the query beside a large
+    "other session" cluster and puts the target session's single document
+    further away.
+    """
+
+    CROWD = [1.0, 0.0, 0.0, 0.0]
+    TARGET = [0.0, 1.0, 0.0, 0.0]
+    QUERY = [0.99, 0.14, 0.0, 0.0]  # much closer to CROWD than to TARGET
+
+    async def embed(self, texts):
+        return [self.TARGET if "target" in t.lower() else self.CROWD for t in texts]
+
+    async def embed_single(self, text):
+        return self.QUERY
+
+
+@pytest.mark.asyncio
+async def test_session_scoped_search_is_not_starved_by_other_sessions(tmp_path):
+    """A scoped search must return the session's matches, not the corpus's.
+
+    LanceDB's `.where()` POST-filters by default: it takes the global top-K
+    nearest vectors and only then drops the ones outside the session. So a
+    scoped search returned NOTHING whenever the session's documents were not
+    also the corpus-wide nearest -- silently, with a 200 and an empty list.
+
+    It degrades as the corpus grows and is invisible while one session
+    dominates it, which is why a 46-tab run where a single session held 120 of
+    129 rows never surfaced it. This test builds the multi-session shape on
+    purpose: `crowd` owns most of the corpus and sits nearest the query, while
+    `target` owns one document further away.
+    """
+    runtime = RAGChatbot(db_uri=str(tmp_path / "scoped"), embedding_dim=4)
+    runtime.set_llm_client(DistanceRankedLLMClient())
+
+    await runtime.index_documents(
+        [
+            Document(
+                id=f"https://crowd.example/{n}",
+                url=f"https://crowd.example/{n}",
+                title=f"Crowd page {n}",
+                content="crowd document that sits nearest the query vector",
+            )
+            for n in range(10)
+        ],
+        session_id="crowd-session",
+    )
+    await runtime.index_documents(
+        [
+            Document(
+                id="https://target.example/only",
+                url="https://target.example/only",
+                title="Target page",
+                content="target document, further from the query than the crowd",
+            )
+        ],
+        session_id="target-session",
+    )
+
+    results = await runtime.search("anything", session_id="target-session", top_k=3)
+
+    assert results, (
+        "scoped search returned nothing while the session's document was "
+        "indexed -- the filter is being applied AFTER the top-K cut"
+    )
+    assert all(r["url"] == "https://target.example/only" for r in results), (
+        f"scoped search leaked documents from another session: {results}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unscoped_search_still_ranks_across_the_whole_corpus(tmp_path):
+    """The scoping fix must not turn an unscoped search into a filtered one."""
+    runtime = RAGChatbot(db_uri=str(tmp_path / "unscoped"), embedding_dim=4)
+    runtime.set_llm_client(DistanceRankedLLMClient())
+
+    await runtime.index_documents(
+        [
+            Document(
+                id="https://crowd.example/1",
+                url="https://crowd.example/1",
+                title="Crowd page",
+                content="crowd document nearest the query",
+            )
+        ],
+        session_id="crowd-session",
+    )
+    await runtime.index_documents(
+        [
+            Document(
+                id="https://target.example/only",
+                url="https://target.example/only",
+                title="Target page",
+                content="target document further away",
+            )
+        ],
+        session_id="target-session",
+    )
+
+    results = await runtime.search("anything", session_id=None, top_k=2)
+
+    assert len(results) == 2, "an unscoped search must still see every session"
+    assert results[0]["url"] == "https://crowd.example/1", "nearest-first ordering lost"
