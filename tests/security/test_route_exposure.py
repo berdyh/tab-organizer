@@ -199,12 +199,36 @@ def test_sec45_url_listing_carries_no_page_content(backend):
         )
         # Deny-by-default: unknown metadata keys are dropped, so a future
         # capture field carrying sensitive data cannot leak by accident.
+        #
+        # Widened from five keys to six at SECSUITE 1.7.0. This list and the
+        # service's own `routes.py::URL_LIST_METADATA_FIELDS` had disagreed
+        # ever since `credential_scope_drop` was added to the service and not
+        # here: the service can emit six keys while this asserted a subset of
+        # five, so the FIRST capture whose fetch was redirected off the origin
+        # its credentials belong to would have failed this probe against the
+        # PYTHON stack. It never fired because no probe capture triggers a
+        # scope drop -- a could-not-fail gap, not a passing test. Found by the
+        # TS port, which had to pick one of the two lists to mirror.
+        #
+        # Resolved by widening the probe rather than narrowing the service,
+        # because the field is a security SIGNAL and not a leak: it records
+        # that a redirect carried the fetch off-origin so the stored
+        # credentials were dropped rather than sent onward, and it holds
+        # hostnames only -- never paths or queries, which can carry tokens.
+        # Dropping it from the listing is what would let a logged-out capture
+        # read as an authenticated one.
+        #
+        # The deny-by-default property is UNCHANGED: this is still a subset
+        # assertion against a closed, reviewed list, and a seventh key still
+        # fails. Six is the whole list; adding to it requires the same freeze
+        # ceremony that produced this line.
         assert set(metadata) <= {
             "title",
             "status_code",
             "auth_type",
             "auth_used",
             "capture_id",
+            "credential_scope_drop",
         }, f"URL listing metadata carries unreviewed keys: {sorted(metadata)}"
 
     backend.delete(f"/api/v1/sessions/{session_id}", token=None)

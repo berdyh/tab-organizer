@@ -315,7 +315,17 @@ class RAGChatbot:
         results = self.table.search(query_embedding)
         if session_id:
             escaped = session_id.replace("'", "''")
-            results = results.where(f"session_id = '{escaped}'")
+            # prefilter=True is load-bearing, not a tuning knob. LanceDB's
+            # default POST-filters: it takes the global top-K nearest vectors
+            # first and only then drops the ones outside this session, so a
+            # scoped search returns NOTHING whenever the session's documents
+            # are not also the corpus-wide nearest. That degrades silently as
+            # the corpus grows and is invisible while one session dominates it
+            # -- which is exactly why it survived a 46-tab run where a single
+            # session held 120 of 129 rows. Prefiltering restricts the search
+            # space to the session first, so top_k is K matches WITHIN the
+            # session, which is what a scoped search means.
+            results = results.where(f"session_id = '{escaped}'", prefilter=True)
 
         df = results.limit(top_k).to_pandas()
         if df.empty:

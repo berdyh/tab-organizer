@@ -1,0 +1,15 @@
+{
+  "name": "@tab-organizer/gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "scripts": {
+    "start": "node src/main.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.3.0",
+    "@tab-organizer/contracts": "workspace:*",
+    "fastify": "^5.12.0"
+  }
+}

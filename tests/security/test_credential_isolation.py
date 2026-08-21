@@ -166,10 +166,16 @@ def test_mcp_tool_surface_has_no_credential_verbs():
 
 
 @pytest.mark.sec_managed
-def test_agent_diagnostics_redact_planted_secret(ai, agent_cli_recorder, monkeypatch, caplog):
-    """SEC-27: a planted secret never surfaces in responses or diagnostics."""
-    import logging
+def test_agent_diagnostics_redact_planted_secret(ai, agent_cli_recorder, monkeypatch):
+    """SEC-27: a planted secret never surfaces in responses or diagnostics.
 
+    Diagnostics are read through ``ai.capture_logs`` rather than ``caplog`` so
+    the probe means the same thing on both sides of a process boundary: managed
+    mode captures the in-process root logger, boot mode reads what the launched
+    child wrote. ``caplog`` sees nothing from a subprocess, and "the secret is
+    absent from an empty log" is a pass that observed nothing -- so the capture
+    is also asserted non-empty below.
+    """
     spec = contracts.probe_spec(FIXTURE, "SEC-27")
     expect = contracts.expectations(spec, "SEC-27")
     contracts.assert_expect_keys_consumed(
@@ -189,7 +195,7 @@ def test_agent_diagnostics_redact_planted_secret(ai, agent_cli_recorder, monkeyp
     )
 
     switch_llm_provider(ai, staging["provider"])
-    with caplog.at_level(getattr(logging, expect["service_log_level"])):
+    with ai.capture_logs(expect["service_log_level"]) as logs:
         response = ai_generate(ai, spec["input"]["generate_prompt"])
 
     # Provider failure surfaces as 5xx.
@@ -202,5 +208,10 @@ def test_agent_diagnostics_redact_planted_secret(ai, agent_cli_recorder, monkeyp
         "SEC-27 must check both the HTTP response body and service diagnostics"
     )
     assert secret not in response.text, "planted secret leaked into HTTP response"
-    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    log_text = logs.text
+    assert log_text.strip(), (
+        "SEC-27 captured no service diagnostics at all, so 'the secret is "
+        "absent from the logs' asserts nothing. The provider failure staged "
+        "above must produce output on the channel being read."
+    )
     assert secret not in log_text, "planted secret leaked into service diagnostics"

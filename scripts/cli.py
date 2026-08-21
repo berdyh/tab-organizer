@@ -152,6 +152,49 @@ def _legacy_single_token() -> str:
         return ""
 
 
+# A configured token must clear this to be accepted. `secrets.token_urlsafe(32)`
+# mints 43 characters, so this floor is well under anything the tooling itself
+# produces and only rejects values no one would choose deliberately.
+MIN_SERVICE_TOKEN_LENGTH = 16
+
+
+def _require_adequate_token(env_name: str, value: str) -> None:
+    """Refuse a configured bearer token that is too short to be one.
+
+    `ensure_service_token` treats an already-set env/.env value as the record
+    that a human chose it, and never clobbers it. That precedence is correct and
+    deliberate. What was missing is that "non-empty" was standing in for "a
+    human chose this" -- non-empty is a test for PRESENCE, never for adequacy,
+    and consent to a token is not consent to a one-character one.
+
+    Observed, not hypothetical: an author's `.env` carried
+    `BACKEND_CALLBACK_TOKEN=:`, a single colon guarding `POST /api/v1/ingest/v1`
+    -- the content write path. Two harms followed. The door was trivially
+    guessable. And SEC-27's global redaction audit asserts that no configured
+    token value appears in any response body, so a one-character token matched
+    every JSON response that contained a colon and read as a credential leak
+    inside an otherwise-green suite.
+
+    Fails closed at startup rather than warning, because a warning about a
+    credential is a warning nobody acts on.
+    """
+    if len(value) >= MIN_SERVICE_TOKEN_LENGTH:
+        return
+    raise SystemExit(
+        f"code: service_token_too_short\n"
+        f"cause: {env_name} is set to a {len(value)}-character value. Tokens "
+        f"shorter than {MIN_SERVICE_TOKEN_LENGTH} characters are refused: this "
+        f"one guards a service trust boundary, and a guessable value is not a "
+        f"credential. An already-set variable is consent to a token, not "
+        f"consent to this one.\n"
+        f"fix: Remove {env_name} from .env (or leave it blank) and re-run "
+        f"./scripts/cli.py start -- a fresh 43-character token is minted and "
+        f"persisted per scope in data/service-tokens.json. To keep a value you "
+        f"chose yourself, make it at least {MIN_SERVICE_TOKEN_LENGTH} "
+        f"characters."
+    )
+
+
 def ensure_service_token(env_name: str) -> str:
     """Return the stable local bearer token for one service trust scope.
 
@@ -165,11 +208,15 @@ def ensure_service_token(env_name: str) -> str:
     """
     configured = os.getenv(env_name, "").strip()
     if configured:
+        _require_adequate_token(env_name, configured)
         return configured
 
     store = _read_service_token_store()
     persisted = store.get(env_name, "").strip()
     if persisted:
+        # `data/service-tokens.json` is a file a human can edit, so it is a
+        # second door onto the same trust boundary and gets the same check.
+        _require_adequate_token(env_name, persisted)
         return persisted
 
     token = ""
@@ -1159,6 +1206,26 @@ def run_backend_tab_tool(tool, *args, **kwargs) -> None:
         raise SystemExit(1) from error
 
 
+def cmd_privacy_list(args):
+    """Show every recorded per-domain embedding decision."""
+    run_backend_tab_tool(mcp_tabs.privacy_list)
+
+
+def cmd_privacy_allow(args):
+    """Permit embedding for one domain's flagged pages."""
+    run_backend_tab_tool(mcp_tabs.privacy_set, args.domain, "allow", args.reason or "")
+
+
+def cmd_privacy_deny(args):
+    """Refuse embedding for one domain; keyword search still finds its pages."""
+    run_backend_tab_tool(mcp_tabs.privacy_set, args.domain, "deny", args.reason or "")
+
+
+def cmd_privacy_forget(args):
+    """Return a domain to undecided; its pages are held again next run."""
+    run_backend_tab_tool(mcp_tabs.privacy_forget, args.domain)
+
+
 def cmd_tabs_import(args):
     """Import currently open browser tabs through Backend Core."""
     run_backend_tab_tool(
@@ -1540,6 +1607,30 @@ Examples:
         ),
     )
     configure_provider_parser.set_defaults(func=cmd_configure_provider)
+
+    # privacy (per-domain embedding consent -- plan decision 37)
+    privacy_parser = subparsers.add_parser(
+        "privacy",
+        help="Review and answer which domains may be embedded",
+    )
+    privacy_sub = privacy_parser.add_subparsers(
+        dest="privacy_command", help="Privacy commands", required=True
+    )
+    privacy_list_parser = privacy_sub.add_parser(
+        "list", help="Show recorded per-domain embedding decisions"
+    )
+    privacy_list_parser.set_defaults(func=cmd_privacy_list)
+    for name, handler, blurb in (
+        ("allow", cmd_privacy_allow, "Permit embedding for a domain"),
+        ("deny", cmd_privacy_deny, "Refuse embedding for a domain"),
+        ("forget", cmd_privacy_forget, "Return a domain to undecided"),
+    ):
+        sub = privacy_sub.add_parser(name, help=blurb)
+        sub.add_argument("domain", help="Domain, e.g. claude.ai")
+        sub.add_argument(
+            "--reason", default="", help="Why, for your own future reference"
+        )
+        sub.set_defaults(func=handler)
 
     # tabs
     tabs_parser = subparsers.add_parser(

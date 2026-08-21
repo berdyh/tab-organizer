@@ -815,3 +815,309 @@ degenerated to k=2 (ARI 0.002), so a B2 arm with a k≥5 floor was added to avoi
 crediting arm A against a broken comparator. That change strengthens the
 TypeScript side — it pushes toward the null. The verdict is identical with B2
 deleted.
+
+### Addendum 2026-08-15 — wk1 landed: the TS edge facade exists and passes the freeze
+
+The 2026-08-05 addendum's status line ("No TypeScript exists — no `package.json`,
+no `tsconfig.json`, no `.ts` file") is now historical. It is left as written
+rather than edited, because the date on it is what makes it useful.
+
+| # | Decision | Class |
+|---|---|---|
+| 51 | The facade's route table generates BOTH the published OpenAPI document and the runtime auth guard, and `scope: 'public'` structurally requires a written reason | Mechanical (P5) |
+| 52 | The facade forwards the caller's own credential and never mints one server-side | Mechanical (P5) |
+| 53 | Framework defaults taken as written: `better-sqlite3` stands; the Next.js-vs-TanStack call is deferred to wk2, when the app package actually needs it. The gateway is a standalone Fastify process either way | Mechanical, resolves half of the standing UNRESOLVED item |
+
+**What shipped.** `server/gateway` (Fastify, Node native type-stripping, no build
+step) in front of Python backend-core, owning browser-origin policy, scoped
+capability tokens, `X-Request-ID`, and the SEC-45 outbound projection.
+`packages/contracts` holds the route table, the generated OpenAPI document, and
+the `{code, cause, fix}` error contract. `/api/v1/platform/*` is not exposed —
+decision 41 taking effect, with a test asserting the absence so nobody "fixes"
+it by porting the routes.
+
+**Acceptance, per decision 43.** Frozen suite in attached mode, `SEC_BACKEND_URL`
+at the gateway, ai/browser still Python: **186 passed, 27 skipped, 0 failed**
+(SECSUITE 1.6.0). Skips are the 21 `sec_managed` probes, four needing internet,
+and gitleaks absent from PATH. Decision 43 predicted only CORS and token scopes
+would bite from the first facade commit; in practice SEC-44/45 bit hardest,
+because they demand the facade publish a complete, correctly-classified route
+table rather than a partial one. That is a better outcome than predicted, not a
+worse one — but it means a TS facade cannot ship a *subset* of the backend
+surface, which constrains wk2-6 sequencing.
+
+**Non-vacuity, checked rather than assumed.** The standing counter-argument in
+the 2026-08-05 addendum ("we are rewriting it, so a documented invariant will be
+implemented correctly" — 0 for 3, plus six more from the wk0 rounds) applies with
+full force to a green suite on new code. Two checks, both run: setting
+`CORS_ALLOWED_ORIGINS='*'` makes SEC-43 `[backend]` fail on both its checks while
+`[ai]`/`[browser]` keep passing; stopping the gateway while backend-core keeps
+serving on :8080 fails all four SEC-44/45 probes. The probes read the facade.
+
+**One thing the port surfaced in the Python stack.** `routes.py` allows six
+metadata keys on the URL listing; the frozen SEC-45 probe allows five. They
+disagree about `credential_scope_drop`, and the first capture redirected off its
+credential's origin will fail SEC-45 against **Python**. It has never fired
+because no probe capture triggers a scope drop. Recorded in the
+`MODULE_INDEX.md` ledger as needing a decision — widen the probe (ledger row +
+`SECSUITE_VERSION` bump, per the freeze rule) or narrow the service. The facade
+mirrors the service for now, and says so in its card.
+
+**Clock check.** The wk16 reverse kill-switch started when wk0 landed
+(2026-08-09 by the last commit on that work). wk1 landing 2026-08-15 puts this
+comfortably inside the box; the wk10 atomic cutover and the wk11-12 funded
+deletion phase remain the gated, high-risk events they were, and nothing here
+touches them.
+
+### Addendum 2026-08-19 — blockers resolved; wk2 handoff
+
+Session goal was to clear blockers and record state, not to write more of the
+port. Implementation resumes from a fresh session. Below is everything the next
+session needs, and nothing it has to rediscover.
+
+| # | Decision | Class |
+|---|---|---|
+| 54 | **Next.js** for the app package. The framework half of the standing UNRESOLVED item is closed; `better-sqlite3` was already the default and stands | User-directed |
+| 55 | SEC-45's metadata whitelist is **six keys**. The probe was widened, not the service narrowed; `SECSUITE_VERSION` 1.6.0 → 1.7.0 | User-directed |
+| 56 | The real-tab CDP run happens against a browser **the user launches** with `--remote-debugging-port`. The app attaches; it never launches or closes a browser (existing invariant) | User-directed |
+
+**RESOLVED — the semantic pipeline works.** WI0 B1 said it never had on this
+deployment. Verified by CALLING the endpoint, not by reading a status field,
+because this repo's most expensive mistake was recording a capability from a
+listing: `POST /embed` returned one 4096-dim vector from openrouter
+`qwen/qwen3-embedding-8b`. `OPENROUTER_API_KEY` is set and the Ollama volume now
+holds `llama3.2` + `nomic-embed-text`, so the local fallback is real too.
+
+**RESOLVED — SEC-45 contract disagreement** (decision 55). Full reasoning in
+`tests/security/README.md` "New in 1.7.0" and the `MODULE_INDEX.md` ledger row.
+Verified green at 1.7.0 against BOTH implementations from one stack:
+Python backend :8080 → 186 passed / 27 skipped / 0 failed; TS facade :8085 →
+186 passed / 27 skipped / 0 failed.
+
+**STILL OPEN — the real-tab CDP run.** `tab_import_jobs` is still 0 in the live
+database (161 sessions, 190 url_records, 20 FTS rows — the FTS count moving off
+zero confirms the B3 fix landed). Two things were tried this session and did not
+work: the Chromium already running holds :9222 but was launched WITHOUT
+`--remote-debugging-port` (every `/json/*` path 404s, cmdline read from
+`/proc`), and reading the Brave profile's `Sessions/Tabs_*` to harvest a URL
+list was refused by the agent permission layer as exfiltration-shaped. Next
+session: the user starts `brave --remote-debugging-port=9223` with real tabs and
+the run proceeds through the app's own attach path. Remember WI0 B2 — Chrome
+binds the debug port to 127.0.0.1 and rejects non-IP Host headers, so a
+CONTAINERISED browser-engine cannot reach it via `host.docker.internal`; expect
+to need browser-engine on the host, or to prove B2 has since been fixed.
+
+**STILL OPEN — T6 / `SEC_BOOT_*_CMD`, and it is the critical path.** Decision 42
+requires it before the first TS commit touching credentials, tokens, or agent
+subprocesses. The wk1 gateway touched none of those; the agent layer does, and
+the agent layer is next. Until boot mode exists, 21 `sec_managed` probes
+auto-skip in attached mode — including ALL agent-subprocess hardening (SEC-28..33,
+46, 47) — so a TS agent runner would ship with zero executable coverage of
+exactly the properties step 3 says to port rather than assume the SDK provides.
+**Start here next session.**
+
+**NEW, needs a decision — `cli.py` accepts a bearer token of any quality.**
+`ensure_service_token` (`scripts/cli.py:166`) documents that an explicit
+environment/.env value wins and is never clobbered, which is the correct
+"an already-set env var is consent" rule. But it accepts ANY non-empty string.
+The author's `.env` carried `BACKEND_CALLBACK_TOKEN=:` — a one-character bearer
+token guarding `POST /api/v1/ingest/v1` and the legacy scrape callback, i.e. the
+content write path. Two harms, both observed: the door is trivially guessable,
+and a 1-char token makes SEC-27's global redaction audit match every response
+body containing a colon, which reads as a leak in a suite that is otherwise
+green. Commit `b429976` fixed the shredding symptom in the scripts; nothing
+rejects the value. Consent to a token is not consent to a one-character one.
+Suggested fix: refuse a configured token below a minimum length with a
+`{code, cause, fix}` error at startup, and cover it in the tooling unit tests
+(a deployment-shape assertion, so NOT in the frozen black-box suite).
+
+**Environment notes for the next session.** Work continues on branch
+`ts-facade`, worktree `~/Projects/github/tab-organizer/ts-facade`, based on
+`plan-completion`. That worktree has its own `.env` (the broken callback token
+blanked so `cli.py` mints a real 43-char one; `.env.bak` holds the original) and
+its own Docker volumes (`ts-facade_*`), so the WI0 dataset in
+`tab-organizer_backend-data` is untouched. A `.venv` there runs the frozen suite;
+`pnpm typecheck && pnpm test` are the hermetic TS gates. **`plan-completion/.env`
+and `main/.env` still carry the one-character callback token** — deliberately not
+edited, since they are the author's files.
+
+### Addendum 2026-08-19 (b) — T6 landed: boot mode exists, and it caught a TS regression
+
+| # | Decision | Class |
+|---|---|---|
+| 57 | `SEC_BOOT_*_CMD` is implemented (`SECSUITE_VERSION` 1.7.0 → 1.8.0). Decision 42's precondition on the agent layer is **satisfied** | Executes 42 |
+| 58 | Security-suite mode is resolved **per service** (boot > attached > managed), not globally, so a booted TS service and a managed Python one coexist in one run | Mechanical |
+| 59 | A probe reading an observation channel that is dead in the current mode must fail, not pass. SEC-27 gains a non-vacuity assertion; new probes reading a service-side channel must state what they observe when it is dead | Mechanical, generalises the SEC-27 fix |
+
+**What was blocking.** The wk1 gateway touched no credentials, tokens or agent
+subprocesses, so decision 42 did not bite. The agent layer touches all three,
+and until boot mode existed the 21 `sec_managed` probes auto-skipped against
+anything that is not this Python stack — meaning a TS agent runner could have
+shipped green with zero executable coverage of agent subprocess hardening,
+credential isolation, prompt-envelope containment, token fail-closed defaults,
+the CORS non-vacuity check, and URL safety under controlled config. Decision 44
+had already moved every one of those contracts into `fixtures/*.json`; what was
+still owed was the mechanism to *launch* a service with that data's environment.
+It is now paid, and **wk2's agent layer is unblocked**.
+
+**The part that was not obvious.** Boot mode green against Python is necessary
+and not sufficient — it is satisfiable by observing nothing. Four channels carry
+what the `sec_managed` probes actually see, and each had to be asked what it
+asserts when it is dead across a process boundary. The agent recorder was
+already guarded (`assert dumps`) and SEC-10's canary already had a positive
+control, but **SEC-27's was broken**: `caplog` captures nothing from a
+subprocess, so "the planted secret is absent from the logs" would have passed
+against an empty string. It now reads a mode-symmetric channel and asserts the
+capture is non-empty — which strengthens managed mode too. This is the same
+shape as the repo's standing counter-argument: documentation states the class,
+only a probe tests it, and a probe that observes nothing tests nothing.
+
+**Evidence.** Managed mode before and after: 205 passed / 3 skipped / 5
+deselected. Boot mode, all three Python services launched as real subprocesses:
+205 passed / 3 skipped / 5 deselected. Attached mode: unchanged. The six
+code-side mutations from the SECSUITE 1.6.0 ledger row were re-applied to a
+throwaway copy of `services/` and each was observed failing **in boot mode**; a
+seventh (`_redact` made a no-op) was added for the new log channel and caught by
+SEC-27 reading the planted `sk-ant-…` sentinel out of the launched child's
+stderr. Then the decisive one: the **TypeScript** gateway was booted by the
+harness, `http://localhost:8089` was removed from its `DEFAULT_ALLOWED_ORIGINS`,
+and SEC-43[backend] failed. The frozen Python suite caught a TypeScript
+regression through a harness-launched Node process. That is what T6 was for.
+
+**Still open, unchanged by this work.** The real-tab CDP run (WI0) — the live
+`tab-organizer_backend-data` still reads `tab_import_jobs = 0`. Worth recording
+precisely, because the two records looked contradictory: the 2026-08-06
+checkpoint's claim that G2 closed with an executed run is **true**, and lands in
+`main_backend-data` (4 jobs / 25 sessions / 27 url_records). The mechanism works;
+what has never happened is WI0's actual bar — ~50 real tabs through
+attach→scrape→index→search→chat against the live dataset, letting the result
+reorder the bug list. Also still open: `cli.py` accepting a bearer token of any
+quality (see the previous addendum).
+
+### Addendum 2026-08-20 — WORK ITEM ZERO IS DONE, and it reordered the bug list
+
+46 live tabs from a user-started Brave, through attach → scrape → index →
+search → chat. `tab_import_jobs` is no longer 0. The run is what decision 36
+asked for and it did exactly what that decision predicted: it found defects
+that code review, CI, and a curated three-tab run had all missed.
+
+| # | Decision | Class |
+|---|---|---|
+| 60 | A tab is imported, skipped, or failed — **never imported empty**. A skip carries a reason and is counted in `total` | Mechanical, from the run |
+| 61 | A **sign-in page is not content**. It is skipped rather than embedded, reusing the classifier SEC-39 already freezes | User-directed |
+| 62 | Job counters record progress **when it is achieved**, not when the job ends | Mechanical, from the run |
+| 63 | `tab_import_jobs.skipped` + `_migrate_schema` — the first additive-migration path this database has had | Mechanical |
+
+**The defect that mattered.** Two arXiv PDFs harvested as empty strings, because
+Chrome renders a PDF in PDFium rather than the DOM. The embedding provider
+rejects the **entire batch** an empty string arrives in, so **0 of 46 tabs
+indexed**. Two blank tabs lost forty-four good ones. No amount of review would
+have found this: every layer was individually correct, and a curated three-tab
+run has no blank tab in it. That is the whole argument for work item zero.
+
+**The defect that hid it.** The job reported `total=0 imported=0` while the
+database held 43 fully captured pages with FTS rows — counters were written only
+on the success path. And `raise_for_status()` discarded every downstream error
+body at three separate layers, so each diagnosis needed a direct call to the
+inner service to recover a message the caller already had in hand. A run that
+was two-thirds successful reported as though nothing had happened, and said
+nothing about why.
+
+**What the run confirms works.** CDP attach at real scale. The B3 fix: 43 FTS
+rows with full content, against the original diagnosis of 15 scrapes → 0 rows.
+Keyword search. Semantic search that is genuinely semantic — "nerve pain in the
+leg" retrieves *Lumbosacral radiculoplexus neuropathy* (0.53) and "3d modelling
+software" retrieves Blender/Maya MCP (0.66), neither sharing a keyword with its
+query. Chat, citing one of the two PDFs the fix recovered.
+
+**Finding 5 — decision 37 is documented as a HARD GATE and does not exist.**
+`grep auth_used services/ai-engine/` returns **zero occurrences**; nothing on the
+embedding path reads the flag. `services/backend-core/app/sessions/MODULE.md`
+already said so in its own words ("the decision-37 gate is a separate work
+item") — this addendum records that the plan's own text at line 563 still reads
+as though it were enforced. Worse, the CDP tab-import document carries no auth
+field **at all** (`HarvestedTab.to_document`), and ambient browser-session auth
+is invisible by design, so the gate would not have fired for this run even if it
+existed. The user was told this before the run proceeded and chose to embed
+through the metered remote provider anyway; that is a recorded decision, not an
+oversight. **The gate remains unbuilt and is now a named work item.**
+
+This is the standing counter-argument landing a fourth time: a documented
+invariant that was never executed. The plan records it 0-for-3 plus six from
+wk0. Add this one.
+
+**Not a defect, but it cost debugging time twice.** `validate_cdp_url` accepts
+only four literal host spellings while `LOCAL_CDP_NETWORKS` admits a wider set
+of resolved addresses. That is coherent by design — the input gate constrains
+what an operator may NAME, the resolved-address allowlist constrains where those
+names may POINT — but `services/browser-engine/MODULE.md` told the reader to
+"test with the resolved IP", which reads as an instruction to pass a bridge IP
+as `cdp_url`, and that is a 400. The card now distinguishes the two.
+
+**Environment.** Port 9223 (not 9222), `socat TCP-LISTEN:9223,fork,bind=172.17.0.1`,
+and `ufw allow from 172.20.0.0/16 to 172.17.0.1 port 9223 proto tcp`. That rule
+grants unauthenticated CDP control of the user's browser to any container on the
+project network and **is still open** — revoke with the matching `ufw delete`.
+The 2026-08-06 port-9222 rules were already gone. Run landed in the isolated
+`ts-facade_*` volumes by choice; the `tab-organizer_backend-data` dataset the
+plan measures is untouched, and the 2026-08-06 checkpoint's G2 claim is true and
+lives in `main_backend-data` (4 jobs).
+
+### Addendum 2026-08-21 — decision 37, rebuilt on a signal that can fire
+
+| # | Decision | Class |
+|---|---|---|
+| 64 | Decision 37's gate runs on a **content-derived privacy signal**, not `auth_used`. That flag means "we spent a credential from our own store" and cannot fire on the browser-tab path | Amends 37 |
+| 65 | The gate's outcome is **hold-until-answered**, not force-local-embeddings. Per-domain allow/deny, and an absent decision is never permission | User-directed, amends 37 |
+| 66 | A configured bearer token below 16 characters is refused at startup | User-directed |
+| 67 | Content is scanned for credential shapes before embedding; a hit holds the document. Kinds and counts are reported, never the matched value | User-directed |
+
+**Why 64 amends rather than executes 37.** Decision 37 named its own
+prerequisite — "propagating an auth flag from capture to index (does not exist
+today)" — and that prerequisite was built: `auth_used` flows capture → ledger →
+`/index` metadata, with a real column behind it. The gate was never built on top,
+and this addendum records *why that was the right instinct*: `auth_used` is set
+only in the three credential-store branches, so it means **"we spent a credential
+from our own store."** A tab open in the user's already-logged-in browser spends
+none. Building decision 37 on that flag would have produced a gate that is
+correct for scrape-with-stored-credentials and **silently inert on the main
+path** — looking built, testing green, protecting nothing where it matters most.
+That is a worse outcome than the acknowledged gap.
+
+The replacement signal is derived from page content the harvester already holds:
+sign-OUT affordances and account chrome mean we are logged IN (the inverse of
+the auth-wall check, which catches the logged-OUT case and skips it), plus OAuth
+session infrastructure and host shape. No extra network call.
+
+**Why 65 changes the outcome.** Decision 37 says an authenticated capture must
+not reach a non-local embedding provider. The user chose a different remedy:
+flag, ask once, then remember per domain. It is stronger for undecided content —
+nothing is embedded *anywhere*, local or remote — and it puts the judgement with
+the person whose data it is, which a heuristic classifier should not take from
+them. Held captures remain stored and keyword-searchable, so holding costs
+recall on the semantic leg only, and only until the question is answered.
+
+**What is still NOT built, stated plainly so nobody reads this as 37 completed:**
+once a domain is **allowed**, its documents go to whatever `EMBEDDING_PROVIDER`
+is configured — including a remote metered one. Provider-forcing (37's literal
+requirement) and its per-domain escape hatch are a separate work item. The
+per-domain toggle UI and chat group-toggling are TypeScript work by the user's
+direction; `domain_index_consent` plus `/api/v1/privacy/domains` is the
+mechanism they will read.
+
+**Why this was fixed in Python despite the "do not fix twice" rule.** The
+embedding leg ports at stage 2 and capture at stage 4, so this code will be
+rewritten. It was still worth building now: the gap is live, it sends the user's
+logged-in pages to a metered third party today, and the same triage rule already
+carries an exception for defects that bite before the migration lands
+(fail-closed credentials, `auth/queue.py`). The classifier and the consent table
+are small; what survives the port is the *contract*, which is now written down.
+
+**Decision 66** closes the last open item from the 2026-08-19 addendum.
+`ensure_service_token` treated "non-empty" as the test for "a human chose this".
+Non-empty tests presence, never adequacy. An author's `.env` carried
+`BACKEND_CALLBACK_TOKEN=:` — one colon guarding the content write path — and it
+was accepted, which also made SEC-27's redaction audit match every JSON response
+containing a colon and report a leak inside a green suite. The floor sits well
+under the 43 characters the tooling mints, asserted so a fresh install cannot
+trip it.

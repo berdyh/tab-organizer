@@ -5,4 +5,8 @@ pydantic==2.5.3
 playwright==1.41.0
 cryptography==42.0.0
 trafilatura==1.8.1
+# PDF text extraction for CDP tab import. Chrome renders PDFs in PDFium, so a
+# PDF tab's DOM is an empty viewer shell and the tab harvests as blank -- which
+# made the embedding provider reject the whole batch it travelled in.
+pypdf==4.2.0
 PyYAML==6.0.2

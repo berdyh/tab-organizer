@@ -1,6 +1,6 @@
 # Security-Invariant Suite (FROZEN)
 
-This suite is **FROZEN** at `SECSUITE_VERSION = "1.6.0"` (see `__init__.py`). It
+This suite is **FROZEN** at `SECSUITE_VERSION = "1.8.0"` (see `__init__.py`). It
 is the black-box security contract for the Tab Organizer backend. The
 TypeScript reimplementation **must pass the same probes** by pointing the
 harness env vars at its own servers/boot commands — the test IDs and fixture
@@ -20,6 +20,66 @@ in `docs/MODULE_INDEX.md`'s ledger and a bump of `SECSUITE_VERSION`. See
 `sec_seam` exceptions (SEC-26 MCP tool surface, SEC-39 auth classifier, SEC-40
 RAG chat prompt-assembly seam, SEC-41 cluster-label prompt-assembly seam,
 SEC-42 agent env-allowlist drift check, SEC-48 fixture-completeness guard).
+
+## New in 1.7.0 (SEC-45 metadata whitelist widened to six keys)
+
+SEC-45's subset assertion and the service's own
+`routes.py::URL_LIST_METADATA_FIELDS` had disagreed ever since
+`credential_scope_drop` was added to the service and not to the probe. The
+service can emit six keys; this asserted a subset of five. **The first capture
+whose fetch was redirected off the origin its credentials belong to would have
+failed SEC-45 against the PYTHON stack**, not merely against a port. It never
+fired because no probe capture triggers a scope drop — a could-not-fail gap
+wearing the costume of a passing test, which is the class this repo has now met
+six times.
+
+Found by the TypeScript port, which had to pick one of the two lists to mirror
+and could not, because they were not the same list.
+
+Widened the probe rather than narrowing the service. `credential_scope_drop` is
+a security SIGNAL, not a leak: it records that a redirect carried the fetch
+off-origin so the stored credentials were dropped instead of being sent onward.
+Removing it from the listing is what would let a logged-out capture read as an
+authenticated one — the exact confusion `auth_used=False` exists to prevent, and
+which feeds the decision-37 "authenticated capture ⇒ local embeddings" gate.
+
+Payload verified by reading the producer rather than trusting the comment above
+it (`engine.py::_credential_drop_fields`, `CredentialHopTrace`): the value is
+`{reason, auth_type, credential_origin_host, dropped_at_host, hops, 
+credential_scope_domain, credential_scope_subdomains}` — hostnames via
+`urlparse(...).hostname`, an integer hop COUNT, booleans and an auth-type label.
+No credentials, no paths, no queries. The comment's "hosts only, never full
+URLs" is accurate.
+
+**No assertion was weakened.** It remains a subset assertion against a closed,
+reviewed list; a seventh key still fails, and the probe still ingests a capture
+carrying an unreviewed `description` key and requires it dropped, so the
+deny-by-default property is still executable rather than assumed.
+
+## New in 1.8.0 (T6 — boot mode implemented)
+
+`SEC_BOOT_*_CMD` exists. See "`SEC_BOOT_*_CMD` — IMPLEMENTED at 1.8.0" above
+for the mechanism, the per-channel vacuity analysis, and the mutation evidence.
+What changed inside the suite:
+
+- `boot.py` (new) — the launcher: free-port allocation, health-gated startup,
+  restart on environment drift, append-only child log capture, the
+  `sitecustomize` playwright shim, and `BootFailure`.
+- `conftest.py` — mode is now resolved **per service** (`SERVICE_MODES`), the
+  `sec_managed` skip decision moved from collection time to client-acquisition
+  time (SEC-21 picks its service from a fixture at runtime, which a
+  collection-time rule cannot see), a boot client that cannot be built raises
+  instead of skipping, and boot runs print `executed N/21` plus the nodeid of
+  every `sec_managed` probe that did not run.
+- `test_credential_isolation.py` — SEC-27 reads `ai.capture_logs(...)` instead
+  of `caplog`, and asserts the capture is non-empty.
+
+**No assertion was weakened.** One was added (SEC-27's non-vacuity check, which
+also strengthens managed mode) and one observation channel was made
+mode-symmetric. Managed mode before and after: **205 passed / 3 skipped / 5
+deselected**. Boot mode with all three Python services launched as subprocesses:
+**205 passed / 3 skipped / 5 deselected**. Attached mode: unchanged, 21
+`sec_managed` skipped.
 
 ## New in 1.6.0 (plan decision 44 — the boot-mode hedge, executed)
 
@@ -69,8 +129,8 @@ arithmetic in this file, which still said "175 of 194" and "the 19
 `sec_managed` probes" — both were the pre-1.5.0 numbers. At 1.5.0 the real
 figures were 196 probes / 21 `sec_managed`; at 1.6.0 they are **213 probes, 21
 `sec_managed`, 192 that run in attached mode**. `docs/ARCHITECTURE_PLAN.md`'s
-Addendum 2026-08-05 carries the same stale pair ("173 of 192", "19") and is
-outside this suite's ownership; it needs the same correction.
+Addendum 2026-08-05 carried the same stale pair; it was corrected in place on
+2026-08-07 and now reads 21 `sec_managed` of 213, 192 attached-runnable.
 
 ## New in 1.5.0 (gemini_cli adapter)
 
@@ -154,49 +214,103 @@ pytest tests/security -q
   so managed mode works **only** against this Python stack.
 - **Attached mode**: set any `SEC_*_URL`; the harness issues real HTTP to the
   running services and `sec_managed` probes auto-skip (their env can't be
-  controlled remotely). Attached mode is language-agnostic — it is how the
-  TypeScript port runs this suite today, and **192 of 213** probes work there;
-  the **21** `sec_managed` ones auto-skip.
+  controlled remotely). Attached mode is language-agnostic — **192 of 213**
+  probes work there; the **21** `sec_managed` ones auto-skip.
+- **Boot mode** (`SEC_BOOT_*_CMD`, new at 1.8.0): the harness *launches* the
+  service itself and restarts it whenever a probe changes the environment, so
+  all 213 probes run against any language. See below.
 
-### `SEC_BOOT_*_CMD` — PLANNED, NOT IMPLEMENTED
+Mode is decided **per service** — boot beats attached beats managed — so a
+booted TypeScript backend can be probed in the same run as a managed Python
+ai-engine.
 
-A third mode in which the harness *launches* each service from a command it
-controls (`SEC_BOOT_BACKEND_CMD="node dist/server.js --port {port}"`), so it
-regains per-test env control against any language. **It does not exist.** The
-name appears only in prose here, in `MODULE.md`, and in `conftest.py`'s
-docstring; there is no implementation behind it.
+### `SEC_BOOT_*_CMD` — IMPLEMENTED at 1.8.0 (T6, plan decision 42)
 
-What that costs today: the 21 `sec_managed` probes auto-skip in attached mode,
-so a TypeScript port can go green having never exercised agent subprocess
-hardening (SEC-28..33, SEC-46..47), credential isolation, prompt-envelope
-containment, token fail-closed defaults, the CORS non-vacuity check, or
-URL-safety refusals under controlled config. Those are premise 4 in executable
-form.
+The harness launches each service from a command it owns and gets per-test
+environment control back against any language:
 
-**When it must land** (revised 2026-08-05, supersedes "before TS facade work
-begins"): before the first TypeScript commit that touches credentials, tokens,
-or agent subprocesses — in practice around the wk8 rehearsal, not wk1. The
-components those 19 probes validate (browser-engine capture, ai-engine
-providers) port at or after the wk10 cutover, so building boot mode earlier
-would mean validating a TS implementation that does not exist yet.
+```bash
+SEC_BOOT_BACKEND_CMD="sh -c 'GATEWAY_PORT={port} exec node server/gateway/src/main.ts'" \
+SEC_BOOT_AI_CMD="python -m uvicorn services.ai_engine.app.main:app --host 127.0.0.1 --port {port}" \
+  pytest tests/security -m "security and not integration" -q
+```
 
-The two invariants that DO apply from the first facade commit — CORS policy and
-token scopes — need no boot mode. They are plain HTTP assertions: point
-`SEC_BACKEND_URL` at the TS facade and they run in attached mode.
+`{port}` is substituted into the command with a free port the harness picked;
+the same value is also exported to the child as `SEC_BOOT_PORT` for services
+that read their port from the environment. `{host}` is available too.
 
-**Hedge against deferring — DONE at 1.6.0** (decision 44). Each `sec_managed`
-probe's inputs and expected refusals now live in language-neutral JSON
-fixtures, the pattern SEC-25/42 already used for the agent env allowlist; see
-"New in 1.6.0" above for the file-to-probe map. Boot mode is therefore a runner
-over data when it lands, and the contract cannot be quietly softened to fit
-whatever got built — changing it means editing a fixture in a reviewable diff,
-and SEC-48 fails if a new `sec_managed` probe skips the fixture entirely.
-What boot mode still owes: the mechanism to *launch* a service with that data's
-environment. The data itself is no longer blocked on it.
-- `@pytest.mark.security` — all tests. `integration` — needs internet/live LLM
-  (module-gated on `SEC_ALLOW_NETWORK=1`). `sec_managed` — needs
-  harness-controlled env. `sec_seam` — Python-seam exception with a TS-porting
-  rule.
+**Why it exists.** Managed mode gets its environment control by importing the
+FastAPI app, which is Python-only. Without boot mode the 21 `sec_managed`
+probes auto-skip against any other implementation, so a TypeScript port could
+go green having never exercised agent subprocess hardening (SEC-28..33,
+46..47), credential isolation, prompt-envelope containment, token fail-closed
+defaults, the CORS non-vacuity check, or URL-safety refusals under controlled
+config. Those are premise 4 in executable form.
+
+**How environment control is restored.** The child is restarted whenever the
+staged environment differs from the one it was launched with. Three rules make
+that trustworthy rather than merely convenient:
+
+1. **Restart granularity is per REQUEST, not per test.** SEC-22 stages
+   `hatch_absent`, asserts 401, mutates the environment, then asserts the hatch
+   really opens — inside one test function. A per-test restart would serve both
+   halves from one process and silently collapse the probe into one assertion.
+2. **A failed launch RAISES (`BootFailure`), it never skips.** The managed-mode
+   "app unavailable → skip" path removes probes silently; a child that dies on a
+   bad command, a missing dependency or a port collision must fail the run, not
+   delete the coverage boot mode was added to provide. The child's captured
+   output is in the message.
+3. **A restart resets service state.** Inherent to a process boundary. Probes
+   that stage environment → switch provider → act are safe because nothing
+   mutates between the switch and the act; a probe needing server state to
+   survive an environment change cannot be expressed in boot mode and must say
+   so rather than quietly observe a fresh process.
+
+**Observation channels had to cross the boundary too.** A probe that reads a
+channel which is dead in boot mode passes having seen nothing, which is worse
+than not running. The four channels and where each stands:
+
+| Channel | Probes | Cross-process status |
+| --- | --- | --- |
+| `agent_cli_recorder.dumps()` | SEC-25, 28..33, 34/35, 46/47 | Already guarded — `assert dumps` fails when the recorder saw nothing. The stub is exec'd by the child and writes to a shared path. |
+| `canary_listener.count` | SEC-10 (`sec_managed`) | Already guarded — the `hatch_set` step requires `canary_connections_min`, so an unreachable canary fails instead of reading as "correctly refused". |
+| service diagnostics | SEC-27 | **Changed at 1.8.0.** `caplog` sees nothing from a subprocess, so SEC-27 now reads `ai.capture_logs(...)`: the root logger in managed mode, the child's stdout/stderr in boot mode. The capture is additionally asserted **non-empty**, because "the secret is absent from an empty log" asserts nothing. |
+| `switch_llm_provider` | agent-subprocess families | Skips when a provider is unavailable. SEC-46/47 already assert the switch returned 200; for the rest, boot runs print `executed N/21 sec_managed probes` and name every probe that did not run, so a silent removal is visible. |
+
+**Restart behaviour is observed, not inferred.** `boot.py` writes a
+`=== boot #N ===` marker to the child log on every launch. Counted during a run:
+SEC-22 restarts **twice** (once per staged environment, which is what keeps its
+two halves from collapsing into one), and SEC-28 restarts **once** across its
+two requests (so a provider switch survives to the call that depends on it, and
+the environment comparison is not firing indiscriminately). `ENV_NOISE_KEYS` is
+load-bearing in one direction only: a key wrongly added is a silent false pass,
+a key wrongly omitted only costs a restart.
+
+**Playwright across the boundary.** Managed mode injects a fake
+`playwright.async_api` into `sys.modules` before importing browser-engine.
+`sys.modules` does not survive exec, so boot mode reinstalls the same shim in
+the child through a generated `sitecustomize.py` on `PYTHONPATH`. Without it a
+booted browser-engine fails to import for a reason unrelated to any invariant.
+
+**Verified by mutation, in both languages.** Boot-mode-green is satisfiable
+vacuously, so the six code-side mutations from the 1.6.0 ledger were re-applied
+to a throwaway copy of `services/` and each was observed failing **in boot
+mode**: claude `--tools ""`→`"all"` (SEC-28), `ENV_ALLOWLIST` + `ANTHROPIC_API_KEY`
+(SEC-25), the ai-engine unset-token 401 → `return` (SEC-21[ai_embed],
+SEC-22[hatch_absent]), `http://localhost:8089` dropped from the CORS default
+(SEC-43 ×3), `private_scrape_urls_allowed()`→`True` (SEC-10[hatch_absent]), plus
+a seventh added for the new channel — `_redact` made a no-op, caught by SEC-27
+reading the planted `sk-ant-…` sentinel out of the launched child's stderr. The
+same mutation was confirmed still failing in managed mode, so the `caplog`
+→ `capture_logs` swap did not weaken it. Finally the **TypeScript** gateway was
+booted by the harness and `http://localhost:8089` removed from its
+`DEFAULT_ALLOWED_ORIGINS`: SEC-43[backend] failed. That is the whole point of
+T6 — the frozen Python suite catching a TypeScript regression.
+
+**Hedge (decision 44) still stands.** Each `sec_managed` probe's inputs and
+expected refusals live in `fixtures/*.json`, so boot mode is a runner over data
+and softening a contract is a reviewable fixture diff. Boot mode owed the launch
+mechanism; that debt is now paid.
 
 ## Seam exceptions
 

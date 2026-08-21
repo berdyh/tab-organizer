@@ -44,6 +44,25 @@ env/
 .env.tmp
 # Same, for `scripts/cli.py`'s service-token store.
 data/service-tokens.json.tmp
+# Editor/agent backups of .env. `.env.bak` is not covered by `.env` or
+# `.env.*.local` above, and a backup carries every API key and bearer token the
+# original does. One was created and deleted on 2026-08-19; the rule closes the
+# window rather than relying on remembering.
+.env.bak
+.env.orig
+.env.save
+
+# Node / TypeScript (the wk1 facade onward)
+node_modules/
+# pnpm's content-addressable store and per-project state.
+.pnpm-store/
+# tsc scratch: present whenever anything switches to `--build` / project refs.
+*.tsbuildinfo
+# Next.js and Vite outputs, for the app package that lands in wk2.
+.next/
+.turbo/
+# `dist/` and `build/` are already ignored above by the Python block, which is
+# load-bearing here too -- do not "clean up" those lines.
 
 # Docker
 docker-compose.override.yml

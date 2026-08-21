@@ -257,6 +257,30 @@ def tab_import_from_browser(
     return BackendCoreClient().request("POST", "/tabs/import", payload)
 
 
+def privacy_list() -> dict[str, Any]:
+    """Return every recorded per-domain embedding decision."""
+    return BackendCoreClient().request("GET", "/privacy/domains")
+
+
+def privacy_set(domain: str, decision: str, reason: str = "") -> dict[str, Any]:
+    """Record allow/deny for one domain's flagged pages."""
+    return BackendCoreClient().request(
+        "POST",
+        "/privacy/domains",
+        {
+            "domain": _require_non_empty(domain, "domain"),
+            "decision": decision,
+            "reason": reason,
+        },
+    )
+
+
+def privacy_forget(domain: str) -> dict[str, Any]:
+    """Return a domain to undecided."""
+    encoded = urllib.parse.quote(_require_non_empty(domain, "domain"), safe="")
+    return BackendCoreClient().request("DELETE", f"/privacy/domains/{encoded}")
+
+
 def tab_import_status(job_id: str) -> dict[str, Any]:
     """Return status for a tab import job."""
     encoded_job_id = urllib.parse.quote(_require_non_empty(job_id, "job_id"), safe="")

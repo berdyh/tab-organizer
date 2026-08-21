@@ -5,8 +5,16 @@ pytest-timeout==2.3.1
 httpx==0.26.0
 requests==2.32.3
 fastapi==0.109.0
+# Pinned to match all three services/*/requirements.txt. Boot mode (T6) launches
+# a service as a real subprocess to regain per-test env control against any
+# language; proving that mechanism against THIS stack means the test image has
+# to be able to start the Python services the same way production does.
+uvicorn[standard]==0.27.0
 pydantic==2.5.3
 jinja2==3.1.3
+# Pinned to match services/browser-engine/requirements.txt: the PDF-extraction
+# unit tests import it, and a test image without it fails on ModuleNotFoundError.
+pypdf==4.2.0
 PyYAML==6.0.2
 numpy==1.26.3
 pandas==2.2.0

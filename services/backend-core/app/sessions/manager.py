@@ -122,6 +122,11 @@ class TabImportJob:
     total: int = 0
     imported: int = 0
     indexed: int = 0
+    # Tabs deliberately NOT imported, with per-tab reasons in `metadata`
+    # ("skipped_tabs"). Distinct from `failed`: a skip is a decision the
+    # harvester made and can explain, a failure is something that went wrong.
+    # Counted separately so neither hides inside the other.
+    skipped: int = 0
     failed: int = 0
     error: Optional[str] = None
     metadata: dict = field(default_factory=dict)
@@ -138,6 +143,12 @@ TERMINAL_TAB_IMPORT_STATUSES = {
 }
 
 
+# Migration identifiers are interpolated into DDL because SQLite cannot bind
+# them. These patterns are the guard that keeps that interpolation safe.
+_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SQL_DEFINITION = re.compile(r"^[A-Za-z0-9_ ]+$")
+
+
 class SessionManager:
     """Manage multiple sessions."""
 
@@ -145,6 +156,9 @@ class SessionManager:
         self._lock = threading.RLock()
         self._sessions: dict[str, Session] = {}
         self._tab_import_jobs: dict[str, TabImportJob] = {}
+        # In-memory mirror of domain_index_consent; the file-backed and
+        # in-memory paths must stay behaviourally equivalent.
+        self._domain_consent: dict[str, str] = {}
         # In-memory ingest ledger (used only when persistence is disabled; the
         # SQLite path queries the ingest_captures table directly). Kept append/
         # update-only, never load-all-into-dicts + reinsert.
@@ -218,6 +232,7 @@ class SessionManager:
                     total INTEGER NOT NULL,
                     imported INTEGER NOT NULL,
                     indexed INTEGER NOT NULL,
+                    skipped INTEGER NOT NULL DEFAULT 0,
                     failed INTEGER NOT NULL,
                     error TEXT,
                     metadata TEXT NOT NULL,
@@ -251,7 +266,50 @@ class SessionManager:
 
                 CREATE INDEX IF NOT EXISTS idx_ingest_captures_key
                     ON ingest_captures(session_id, normalized);
+
+                CREATE TABLE IF NOT EXISTS domain_index_consent (
+                    domain     TEXT PRIMARY KEY,
+                    decision   TEXT NOT NULL,
+                    reason     TEXT,
+                    updated_at TEXT NOT NULL
+                );
                 """)
+            self._migrate_schema(conn)
+
+    @staticmethod
+    def _migrate_schema(conn) -> None:
+        """Additive column migrations for databases created by earlier builds.
+
+        The schema above is `CREATE TABLE IF NOT EXISTS`, which is a no-op
+        against an existing file -- so a column added to that block never
+        reaches a database that already exists. Every deployment that has ever
+        run this service therefore needs the column added explicitly.
+
+        Additive and idempotent only: a new column with a DEFAULT, guarded by
+        `PRAGMA table_info`. No drops, no renames, no type changes -- those need
+        a real migration story rather than a startup side effect.
+        """
+        migrations = (("tab_import_jobs", "skipped", "INTEGER NOT NULL DEFAULT 0"),)
+        for table, column, definition in migrations:
+            # SQLite cannot parameterise identifiers or DDL, so these must be
+            # interpolated. Guard the CLASS rather than trusting that the tuple
+            # above stays hardcoded: if anything ever threads a caller-supplied
+            # name in here, it fails loudly instead of becoming injection.
+            if not all(
+                _SQL_IDENTIFIER.match(part) for part in (table, column)
+            ) or not _SQL_DEFINITION.match(definition):
+                raise ValueError(
+                    f"refusing unsafe migration identifier: {table}.{column}"
+                )
+            try:
+                existing = {
+                    row[1] for row in conn.execute(f"PRAGMA table_info({table})")
+                }
+            except Exception:
+                continue
+            if not existing or column in existing:
+                continue
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _load_from_db(self) -> None:
         with self._connect() as conn:
@@ -307,6 +365,7 @@ class SessionManager:
                 total=row["total"],
                 imported=row["imported"],
                 indexed=row["indexed"],
+                skipped=self._row_value(row, "skipped", 0),
                 failed=row["failed"],
                 error=row["error"],
                 metadata=self._loads_json(row["metadata"], {}),
@@ -404,10 +463,10 @@ class SessionManager:
             conn.execute(
                 """
                 INSERT INTO tab_import_jobs (
-                    id, session_id, cdp_url, status, total, imported, indexed, failed,
-                    error, metadata, created_at, updated_at
+                    id, session_id, cdp_url, status, total, imported, indexed,
+                    skipped, failed, error, metadata, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     session_id = excluded.session_id,
                     cdp_url = excluded.cdp_url,
@@ -415,6 +474,7 @@ class SessionManager:
                     total = excluded.total,
                     imported = excluded.imported,
                     indexed = excluded.indexed,
+                    skipped = excluded.skipped,
                     failed = excluded.failed,
                     error = excluded.error,
                     metadata = excluded.metadata,
@@ -429,6 +489,7 @@ class SessionManager:
                     job.total,
                     job.imported,
                     job.indexed,
+                    job.skipped,
                     job.failed,
                     job.error,
                     self._dumps_json(job.metadata),
@@ -1183,6 +1244,21 @@ class SessionManager:
             self._save_tab_import_job(job)
             return job
 
+    @staticmethod
+    def _row_value(row, column: str, default):
+        """Read a column that may be absent from an older database file.
+
+        There is no migration framework here; the schema is `CREATE TABLE IF
+        NOT EXISTS`, so a table created before a column existed keeps its old
+        shape. `_migrate_schema` adds the column, but this stays defensive
+        because a read must never crash on a database written by an older build.
+        """
+        try:
+            value = row[column]
+        except (IndexError, KeyError):
+            return default
+        return default if value is None else value
+
     def update_tab_import_job(
         self,
         job_id: str,
@@ -1191,6 +1267,7 @@ class SessionManager:
         total: Optional[int] = None,
         imported: Optional[int] = None,
         indexed: Optional[int] = None,
+        skipped: Optional[int] = None,
         failed: Optional[int] = None,
         error: Optional[str] = None,
         metadata: Optional[dict] = None,
@@ -1211,6 +1288,8 @@ class SessionManager:
                 job.imported = max(0, int(imported))
             if indexed is not None:
                 job.indexed = max(0, int(indexed))
+            if skipped is not None:
+                job.skipped = max(0, int(skipped))
             if failed is not None:
                 job.failed = max(0, int(failed))
             if error is not None:
@@ -1220,6 +1299,89 @@ class SessionManager:
             job.updated_at = datetime.utcnow()
             self._save_tab_import_job(job)
             return job
+
+    # ------------------------------------------------------------------
+    # Per-domain indexing consent (plan decision 37's "explicit opt-in")
+    # ------------------------------------------------------------------
+
+    def get_domain_consent(self, domain: str) -> Optional[str]:
+        """Return ``"allow"``, ``"deny"``, or None when nobody has decided yet.
+
+        None is the important value: it means the question has not been put to
+        a human, and a document from that domain is HELD rather than embedded.
+        Absence of a decision is never read as permission.
+        """
+        key = (domain or "").strip().lower()
+        if not key:
+            return None
+        if self._db_path:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT decision FROM domain_index_consent WHERE domain = ?",
+                    (key,),
+                ).fetchone()
+                return row["decision"] if row else None
+        return self._domain_consent.get(key)
+
+    def set_domain_consent(self, domain: str, decision: str, reason: str = "") -> None:
+        """Record a human's answer for one domain. ``allow`` or ``deny`` only."""
+        key = (domain or "").strip().lower()
+        if not key:
+            raise ValueError("domain is required")
+        if decision not in {"allow", "deny"}:
+            raise ValueError(f"decision must be 'allow' or 'deny', got {decision!r}")
+        with self._lock:
+            self._domain_consent[key] = decision
+            if self._db_path:
+                with self._connect() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO domain_index_consent
+                            (domain, decision, reason, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(domain) DO UPDATE SET
+                            decision = excluded.decision,
+                            reason = excluded.reason,
+                            updated_at = excluded.updated_at
+                        """,
+                        (key, decision, reason, datetime.utcnow().isoformat()),
+                    )
+
+    def forget_domain_consent(self, domain: str) -> bool:
+        """Remove a decision, returning it to undecided. True if one existed.
+
+        Deliberately does NOT purge anything already embedded under a previous
+        `allow`: forgetting the answer and deleting the vectors it authorised
+        are different operations, and quietly doing the second inside the first
+        would make a settings toggle destroy data. Documents from this domain
+        are simply HELD again on the next run.
+        """
+        key = (domain or "").strip().lower()
+        if not key:
+            return False
+        with self._lock:
+            existed = self._domain_consent.pop(key, None) is not None
+            if self._db_path:
+                with self._connect() as conn:
+                    cursor = conn.execute(
+                        "DELETE FROM domain_index_consent WHERE domain = ?", (key,)
+                    )
+                    existed = existed or cursor.rowcount > 0
+            return existed
+
+    def list_domain_consent(self) -> list[dict]:
+        """Every recorded decision, for the settings list the TS UI will show."""
+        if self._db_path:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT domain, decision, reason, updated_at "
+                    "FROM domain_index_consent ORDER BY domain"
+                ).fetchall()
+                return [dict(row) for row in rows]
+        return [
+            {"domain": d, "decision": v, "reason": "", "updated_at": ""}
+            for d, v in sorted(self._domain_consent.items())
+        ]
 
     def get_tab_import_job(self, job_id: str) -> Optional[TabImportJob]:
         """Return a tab import job by id."""

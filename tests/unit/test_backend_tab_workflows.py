@@ -305,3 +305,194 @@ async def test_backend_keyword_search_endpoint_supports_global_query(
     assert response["count"] == 1
     assert response["results"][0]["session_id"] == session.id
     assert response["results"][0]["url"] == "https://example.com/global"
+
+
+# ---------------------------------------------------------------------------
+# Import-job accounting: progress survives a later failure, skips stay visible
+# ---------------------------------------------------------------------------
+
+
+class _StubResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _StubAsyncClient:
+    """Stands in for httpx.AsyncClient, returning one canned browser payload."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, *args, **kwargs):
+        return _StubResponse(self._payload)
+
+
+def _install_browser_payload(monkeypatch, payload):
+    monkeypatch.setattr(
+        routes.httpx, "AsyncClient", lambda *a, **k: _StubAsyncClient(payload)
+    )
+    monkeypatch.setattr(routes, "_browser_engine_url", lambda: "http://browser.test")
+    monkeypatch.setattr(routes, "_browser_engine_request_headers", lambda: {})
+
+
+@pytest.mark.asyncio
+async def test_import_job_reports_skips_and_never_indexes_a_blank_document(
+    tmp_path, monkeypatch
+):
+    """A blank document is dropped before indexing AND reported as a skip.
+
+    This is the general form of the defect a 46-tab import surfaced: the
+    embedding provider rejects the WHOLE batch when one entry is an empty
+    string, so two blank tabs indexed zero of forty-six. Dropping them silently
+    would fix the batch and hide the loss; the count and the reason both have
+    to survive.
+    """
+    manager = SessionManager(db_path=str(tmp_path / "backend.sqlite3"))
+    session = manager.create_session("Skips")
+    job = manager.create_tab_import_job(
+        session_id=session.id, cdp_url="http://localhost:9222"
+    )
+    monkeypatch.setattr(routes, "session_manager", manager)
+
+    _install_browser_payload(
+        monkeypatch,
+        {
+            "total": 3,
+            "imported": 2,
+            "skipped": 1,
+            "failed": 0,
+            "tabs": [
+                {
+                    "id": "https://good.example",
+                    "url": "https://good.example",
+                    "title": "Good",
+                    "content": "real text",
+                    "metadata": {},
+                },
+                {
+                    "id": "https://blank.example",
+                    "url": "https://blank.example",
+                    "title": "Blank",
+                    "content": "   ",
+                    "metadata": {},
+                },
+            ],
+            "skipped_tabs": [
+                {
+                    "url": "https://login.example",
+                    "title": "Sign in",
+                    "reason": "auth_wall",
+                    "detail": "page is a sign-in prompt",
+                }
+            ],
+            "errors": [],
+        },
+    )
+
+    indexed_batches = []
+
+    async def fake_index(session_id, documents):
+        indexed_batches.append(list(documents))
+        return len(documents)
+
+    monkeypatch.setattr(routes, "_index_tab_documents", fake_index)
+
+    await routes.import_tabs_background(job.id, "http://localhost:9222", 100)
+
+    final = manager.get_tab_import_job(job.id)
+    assert final.status == "completed"
+    # The blank tab never reaches the embedding provider...
+    assert [d["url"] for d in indexed_batches[0]] == ["https://good.example"]
+    # ...but it is still counted and explained, alongside the harvester's skip.
+    assert final.skipped == 2
+    reasons = {s["reason"] for s in final.metadata["skipped_tabs"]}
+    assert reasons == {"auth_wall", "blank"}
+
+
+@pytest.mark.asyncio
+async def test_import_job_keeps_its_counters_when_indexing_fails(tmp_path, monkeypatch):
+    """A failure in the LAST leg must not erase what the earlier legs achieved.
+
+    Observed on a real run: indexing failed, the job recorded
+    `total=0 imported=0`, and the database held 43 fully captured pages. The
+    status field said nothing had happened while the corpus said otherwise, so
+    the operator's only true source was a manual sqlite query.
+    """
+    manager = SessionManager(db_path=str(tmp_path / "backend.sqlite3"))
+    session = manager.create_session("Partial")
+    job = manager.create_tab_import_job(
+        session_id=session.id, cdp_url="http://localhost:9222"
+    )
+    monkeypatch.setattr(routes, "session_manager", manager)
+
+    _install_browser_payload(
+        monkeypatch,
+        {
+            "total": 2,
+            "imported": 2,
+            "skipped": 0,
+            "failed": 0,
+            "tabs": [
+                {
+                    "id": f"https://page{n}.example",
+                    "url": f"https://page{n}.example",
+                    "title": f"Page {n}",
+                    "content": "captured text",
+                    "metadata": {},
+                }
+                for n in (1, 2)
+            ],
+            "skipped_tabs": [],
+            "errors": [],
+        },
+    )
+
+    async def failing_index(session_id, documents):
+        raise RuntimeError("embedding provider rejected the batch")
+
+    monkeypatch.setattr(routes, "_index_tab_documents", failing_index)
+
+    await routes.import_tabs_background(job.id, "http://localhost:9222", 100)
+
+    final = manager.get_tab_import_job(job.id)
+    assert final.status == "failed"
+    assert "embedding provider rejected the batch" in final.error
+    # The captures happened and are durable; the counters must say so.
+    assert final.total == 2
+    assert final.imported == 2
+    assert final.indexed == 0
+
+
+def test_downstream_error_text_keeps_the_response_body(monkeypatch):
+    """`raise_for_status()` renders a status line; the cause is in the body.
+
+    Every failure in this path comes from another service that explained itself
+    in the response body -- "must be a local Chrome debugging endpoint",
+    "expected string to have >=1 characters" -- and all of it was discarded,
+    leaving an operator a status code and no cause.
+    """
+
+    class _Resp:
+        text = "detail: must be a local Chrome debugging endpoint"
+
+    error = RuntimeError("Client error '400 Bad Request' for url 'http://b/tabs/import'")
+    error.response = _Resp()
+
+    rendered = routes._downstream_error_text(error)
+    assert "400 Bad Request" in rendered
+    assert "must be a local Chrome debugging endpoint" in rendered
+
+    plain = routes._downstream_error_text(RuntimeError("connection refused"))
+    assert plain == "connection refused"
